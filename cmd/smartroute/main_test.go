@@ -27,3 +27,19 @@ func TestRunVersion(t *testing.T) {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
 }
+
+func TestRunServeRejectsEmptyNetworkProfileBeforeListening(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"serve", "-network-profile", ""}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "network-profile") {
+		t.Fatalf("run(serve) error = %v", err)
+	}
+}
+
+func TestRunServeRequiresDirectProbeAcknowledgmentBeforeListening(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"serve"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "acknowledge-direct-probes") {
+		t.Fatalf("run(serve) error = %v", err)
+	}
+}

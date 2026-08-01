@@ -22,5 +22,7 @@ jobs:
         run: go vet ./...
       - name: Unit tests
         run: go test -race ./...
+      - name: Isolated test lab
+        run: go run ./cmd/smartroute-testlab
       - name: Documentation consistency
         run: bash scripts/check-docs.sh

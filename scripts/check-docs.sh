@@ -25,8 +25,10 @@ required_files=(
   "docs/04-component-catalog.md"
   "docs/05-upstreams.md"
   "docs/06-protocol-capability-matrix.md"
+  "docs/07-isolated-test-lab.md"
   "docs/adr/README.md"
   "docs/adr/0001-sidecar-first.md"
+  "docs/adr/0002-isolated-test-lab.md"
   "configs/smartroute.example.json"
   "upstreams.lock"
 )
@@ -57,6 +59,12 @@ if ! matches '^MIT License$' "${project_root}/LICENSE" ||
   ! matches 'first-party standalone source is MIT-licensed' "${project_root}/AGENTS.md" ||
   ! matches '活文档' "${project_root}/README.md"; then
   echo "license or living-document governance is inconsistent" >&2
+  exit 1
+fi
+
+if ! matches '127\.0\.0\.1:0' "${project_root}/docs/07-isolated-test-lab.md" ||
+  ! matches 'Automated tests must not inspect, change, reload, or share listeners' "${project_root}/AGENTS.md"; then
+  echo "isolated test-lab boundary is missing or inconsistent" >&2
   exit 1
 fi
 

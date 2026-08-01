@@ -14,7 +14,8 @@ The repository is in Phase 0: architecture and feasibility spike.
 
 Current scope:
 
-- Go-based TCP/SOCKS5 sidecar and decision engine.
+- Go-based TCP/SOCKS5 sidecar, staggered candidate racer, and decision engine.
+- Deterministic loopback-only Test Lab before any live Mihomo integration.
 - macOS-first development while keeping platform boundaries explicit.
 - TCP and TLS observability first.
 - DNS as a separate diagnostic path.
@@ -54,10 +55,14 @@ Keep this map current whenever a top-level component is added, removed, or renam
 | Path | Responsibility |
 | --- | --- |
 | `cmd/smartroute/` | Main CLI/daemon entry point |
+| `cmd/smartroute-testlab/` | Standalone deterministic integration-test executable |
 | `internal/config/` | Configuration schema, defaults, validation |
 | `internal/decision/` | Policy state machine and route decisions |
 | `internal/model/` | Stable domain types shared by internal components |
 | `internal/transport/` | Candidate dialers and protocol-aware readiness gates |
+| `internal/socks5/` | Minimal no-authentication SOCKS5 client/server protocol |
+| `internal/sidecar/` | Inbound SOCKS server, path commitment, and TCP relay |
+| `internal/testlab/` | Loopback targets, fake gateways, and fault scenarios |
 | `internal/upstream/` | Mihomo integration boundaries and adapters |
 | `docs/` | Maintained product, architecture, interface, and validation documentation |
 | `docs/adr/` | Architecture Decision Records |
@@ -153,6 +158,17 @@ Minimum tests by layer:
 | End-to-end | Direct-only, proxy-only, both fail, DNS fault, network-profile change |
 
 Tests must not depend on public censorship behavior or a third-party website remaining reachable. Use deterministic local fault injection.
+
+### Test-environment isolation
+
+Automated tests must not inspect, change, reload, or share listeners with the user's active Clash/Mihomo environment.
+
+- Unit tests use in-memory fixtures or `net.Pipe` where practical.
+- The default integration Test Lab binds only literal loopback addresses with port `0`; the operating system allocates every port.
+- The Test Lab makes no external connection and never reads or writes Clash Verge Rev profiles, generated configs, controller state, system proxy settings, or TUN state.
+- An isolated Mihomo test must launch its own pinned child process with a generated temporary config, separate data directory, dedicated ports, and no system proxy/TUN changes.
+- Tests involving the active Clash environment, system proxy, TUN, or real destinations are manually invoked, opt-in, and require explicit user authorization for the exact scope.
+- `smartroute serve` is never started by a default automated test; automation uses `smartroute-testlab`.
 
 ## 9. Upstream and dependency policy
 

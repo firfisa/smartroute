@@ -1,19 +1,26 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/firfisa/smartroute/internal/config"
 	"github.com/firfisa/smartroute/internal/decision"
 	"github.com/firfisa/smartroute/internal/model"
+	"github.com/firfisa/smartroute/internal/sidecar"
+	"github.com/firfisa/smartroute/internal/transport"
 )
 
 var (
@@ -43,6 +50,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return runValidate(args[1:], stdout, stderr)
 	case "trace":
 		return runTrace(args[1:], stdout, stderr)
+	case "serve":
+		return runServe(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return nil
@@ -50,6 +59,54 @@ func run(args []string, stdout, stderr io.Writer) error {
 		printUsage(stderr)
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+func runServe(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	path := flags.String("config", "configs/smartroute.example.json", "path to SmartRoute JSON config")
+	profileID := flags.String("network-profile", "manual-experimental", "local network profile label for decision events")
+	allowDirectProbes := flags.Bool("acknowledge-direct-probes", false, "explicitly allow this experimental process to open Direct candidates")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *profileID == "" {
+		return errors.New("network-profile must not be empty")
+	}
+	if !*allowDirectProbes {
+		return errors.New("serve requires -acknowledge-direct-probes because privacy allowlists are not implemented yet")
+	}
+
+	cfg, err := config.Load(*path)
+	if err != nil {
+		return err
+	}
+	listener, err := net.Listen("tcp", cfg.ListenAddress)
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", cfg.ListenAddress, err)
+	}
+	defer listener.Close()
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	var outputMu sync.Mutex
+	server := sidecar.Server{
+		NetworkProfileID: *profileID,
+		HandshakeTimeout: cfg.CandidateTimeout(),
+		Racer: transport.Racer{
+			Direct:    transport.SOCKS5Dialer{Path: model.PathDirect, Endpoint: cfg.DirectEndpoint},
+			Proxy:     transport.SOCKS5Dialer{Path: model.PathProxy, Endpoint: cfg.ProxyEndpoint},
+			HeadStart: cfg.DirectHeadStart(),
+			Timeout:   cfg.CandidateTimeout(),
+		},
+		OnDecision: func(event sidecar.DecisionEvent) {
+			outputMu.Lock()
+			defer outputMu.Unlock()
+			_ = json.NewEncoder(stdout).Encode(event)
+		},
+	}
+	fmt.Fprintf(stderr, "experimental sidecar listening on %s; no Clash files are read or modified\n", listener.Addr())
+	return server.Serve(ctx, listener)
 }
 
 func runValidate(args []string, stdout, stderr io.Writer) error {
@@ -146,7 +203,10 @@ Usage:
   smartroute version
   smartroute validate [-config path]
   smartroute trace [-config path] [-direct spec] [-proxy spec]
+  smartroute serve -acknowledge-direct-probes [-config path] [-network-profile label]
 
-The trace command evaluates one synthetic paired observation. It does not
-open network connections or persist learned policy.`)
+The trace command evaluates one synthetic paired observation. The experimental
+serve command opens only the configured loopback listener and does not read or
+modify Clash configuration. It requires an explicit Direct-probe acknowledgment
+and does not persist learned policy yet.`)
 }

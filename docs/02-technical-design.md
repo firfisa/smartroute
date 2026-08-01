@@ -94,6 +94,23 @@ sidecar 接收 SOCKS5 目标后，再分别通过 `17891` 和 `17892` 建立候�
 
 MVP 可以让高置信度决策继续经过 sidecar，由本地缓存直接选择路径；这样不需要频繁重载 Mihomo。规则导出是优化和可移植功能，不是运行时依赖。
 
+### 3.1 当前已实现切片
+
+```mermaid
+flowchart LR
+    Client["SOCKS5 TCP client"] --> Inbound["internal/sidecar\ninbound handshake + relay"]
+    Inbound --> Racer["internal/transport.Racer\nDirect-first stagger"]
+    Racer --> D["SOCKS5Dialer: Direct endpoint"]
+    Racer --> P["SOCKS5Dialer: Proxy endpoint"]
+    D --> Winner["First TCP-ready connection"]
+    P --> Winner
+    Winner --> Relay["Commit one path and relay bytes"]
+```
+
+这一切片已能通过带显式 `-acknowledge-direct-probes` 的 `smartroute serve` 接收 SOCKS5 CONNECT、保留域名形式目标、错峰启动两条 SOCKS5 候选路径、取消 loser，并只在选定一条 TCP-ready 路径后向客户端回复成功。它仍只证明 TCP/SOCKS 层，不把 TCP CONNECT 当成 TLS 或应用成功，也不产生持久化学习策略。
+
+自动化验证不连接真实 Mihomo。`smartroute-testlab` 使用随机回环端口模拟两条上游路径和目标服务，边界见 `docs/07-isolated-test-lab.md`。真实 Mihomo 拓扑仍属于下一项隔离子进程 Spike。
+
 ## 4. 决策优先级
 
 推荐从高到低：

@@ -18,8 +18,13 @@ All notable project changes are recorded here. The project has not published a r
 - MIT license for SmartRoute's first-party standalone source.
 - Living-architecture governance: diagrams, catalogs, ADRs, and `AGENTS.md` evolve with verified implementation evidence.
 - Portable documentation checks with a standard `grep` fallback, plus current GitHub Actions runtimes.
+- Minimal no-authentication SOCKS5 client/server protocol with domain-form target preservation.
+- Staggered Direct/Proxy TCP candidate racing with loser cancellation and structured reason codes.
+- Experimental loopback sidecar relay and `smartroute serve` command.
+- Standalone `smartroute-testlab` with ephemeral loopback ports, fake gateways, deterministic faults, and JSON reports.
+- ADR and enforced rules that keep automated tests separate from the active Clash/Mihomo environment.
 
 ### Known limitations
 
-- No SOCKS server, real network dialing, learning persistence, TLS parser, or Mihomo adapter is implemented yet.
+- TCP-level SOCKS relay is experimental; TLS readiness, learning persistence, and the Mihomo adapter are not implemented yet.
 - No public release artifacts have been published yet.
