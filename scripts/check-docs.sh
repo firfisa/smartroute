@@ -4,6 +4,7 @@ set -euo pipefail
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 required_files=(
+  "LICENSE"
   "AGENTS.md"
   "README.md"
   "CHANGELOG.md"
@@ -38,6 +39,13 @@ fi
 
 if ! rg -q 'v2\.5\.2' "${project_root}/upstreams.lock" "${project_root}/docs/05-upstreams.md"; then
   echo "Clash Verge Rev lock and upstream documentation are inconsistent" >&2
+  exit 1
+fi
+
+if ! rg -q '^MIT License$' "${project_root}/LICENSE" ||
+  ! rg -q 'first-party standalone source is MIT-licensed' "${project_root}/AGENTS.md" ||
+  ! rg -q '活文档' "${project_root}/README.md"; then
+  echo "license or living-document governance is inconsistent" >&2
   exit 1
 fi
 

@@ -11,7 +11,7 @@ SmartRoute keeps upstream sources outside the tracked repository in `.upstream/`
 | Mihomo | `MetaCubeX/mihomo` | `v1.19.29` | `e26714a181ac0e2fa803453c0a8e9a9ce94e31cb` | GPL-3.0 | TUN, DNS, static routing, Direct and proxy outbounds | Source contract verified; runtime topology Spike pending |
 | Clash Verge Rev | `clash-verge-rev/clash-verge-rev` | `v2.5.2` | `28f2efc504059b1dc75c793618b775c8e1b2a5f1` | GPL-3.0 | Possible future desktop UI and lifecycle integration | Reference only; no fork |
 
-The SmartRoute project license has not been selected yet. Do not publish a release or copy/link GPL code into first-party packages until the licensing boundary is reviewed.
+SmartRoute's first-party standalone source is released under MIT. The upstream projects in this table remain under GPL-3.0 and are not relicensed by SmartRoute. The current sidecar-first boundary keeps their source outside this repository; any future copying, linking, fork distribution, or bundled release requires a fresh license-boundary review and the notices/source obligations applicable to that distribution model.
 
 ## 2. Mihomo source-contract evidence
 

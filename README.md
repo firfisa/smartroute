@@ -78,6 +78,14 @@ bash scripts/prepare-upstreams.sh
 - [架构决策记录](docs/adr/README.md)
 - [变更日志](CHANGELOG.md)
 
-协作和文档维护规则见 [AGENTS.md](AGENTS.md)。项目许可证与首次 GitHub 仓库可见性尚待确认，在此之前不发布二进制版本。
+协作和文档维护规则见 [AGENTS.md](AGENTS.md)。仓库公开维护，第一方独立代码采用 MIT 许可；当前阶段仍不发布二进制版本。
+
+架构图、接口表和 `AGENTS.md` 都是随实现演进的活文档：实验或代码推翻现有假设时，应在同一变更中更新文档与 ADR，而不是把早期框架固化为最终设计。
+
+## 许可证
+
+SmartRoute 的第一方独立代码采用 [MIT License](LICENSE)。Mihomo 与 Clash Verge Rev 等上游项目继续适用各自许可证；当前仅将其作为锁定版本的外部参考，不把上游源码纳入本仓库。
+
+公开仓库：[github.com/firfisa/smartroute](https://github.com/firfisa/smartroute)
 
 研究与设计快照日期：2026-08-02。

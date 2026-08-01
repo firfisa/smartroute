@@ -91,6 +91,17 @@ Documentation requirements:
 - Never document a planned interface as implemented. Mark it `planned`, `experimental`, or `stable`.
 - Use exact commands and paths. Do not claim verification without recording the command and result.
 
+### Living architecture and operating rules
+
+Architecture diagrams, interface tables, plans, and this `AGENTS.md` describe the best verified current state; they are maintained constraints, not immutable historical snapshots.
+
+- Change them whenever implementation evidence, experiments, upstream behavior, or project phase makes an assumption stale.
+- Update affected diagrams, status labels, tables, and operating rules in the same commit as the code or decision that changed them.
+- Do not preserve a stale diagram merely for visual or narrative consistency. Git history and ADRs preserve the previous design.
+- Mark capabilities as `planned`, `experimental`, or `stable`; never let a future design appear to be current behavior.
+- Record architectural, safety, privacy, or compatibility changes in an ADR with evidence, migration/rollback impact, and superseded decisions.
+- `AGENTS.md` may evolve with the project phase, but weakening an invariant requires an explicit ADR and prominent review note.
+
 ## 6. Change workflow
 
 Before editing:
@@ -151,16 +162,18 @@ Tests must not depend on public censorship behavior or a third-party website rem
 - Prefer scripts that clone into ignored `.upstream/` paths over committing upstream source.
 - Do not modify files inside `.upstream/`; patches belong in this repository or an explicitly managed fork.
 - New runtime dependencies require a reason, license check, maintenance assessment, and tests.
+- SmartRoute's first-party standalone source is MIT-licensed. GPL-licensed upstream source remains under its own license and must not be copied, linked, or redistributed as part of SmartRoute without an explicit license-boundary review.
 
 ## 10. Git and GitHub maintenance
 
+- The canonical repository is the public `firfisa/smartroute` repository and the project license is MIT.
 - The main branch must remain buildable and documented.
 - Use focused commits with imperative subjects, for example `feat(decision): add unknown target state`.
 - Do not commit generated binaries, real databases, logs, subscriptions, tokens, or `.upstream/` sources.
 - Pull requests must include: problem, design impact, tests, risk/rollback, and documentation impact.
 - CI must pass before merge.
 - Tag experimental releases clearly; do not call the sidecar production-ready until the validation gates in `docs/03-mvp-validation-plan.md` pass.
-- Before the first push, confirm the GitHub owner, repository visibility, license, and branch protection settings.
+- Before changing repository ownership, visibility, license, or branch protection, record the intended change and confirm it explicitly with the owner.
 
 ## 11. Security and privacy review triggers
 

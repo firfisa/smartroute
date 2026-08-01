@@ -15,9 +15,10 @@ All notable project changes are recorded here. The project has not published a r
 - Reproducible upstream locks for Mihomo v1.19.29 and Clash Verge Rev v2.5.2.
 - Source-level verification of Mihomo forced-listener routing and SOCKS domain preservation at the locked commit.
 - Documentation checks, tests, vet, formatting, and GitHub Actions workflow.
+- MIT license for SmartRoute's first-party standalone source.
+- Living-architecture governance: diagrams, catalogs, ADRs, and `AGENTS.md` evolve with verified implementation evidence.
 
 ### Known limitations
 
 - No SOCKS server, real network dialing, learning persistence, TLS parser, or Mihomo adapter is implemented yet.
-- The repository license and GitHub visibility are pending owner confirmation.
-- GitHub authentication for the local `gh` CLI is currently invalid and must be refreshed before the first push.
+- No public release artifacts have been published yet.
