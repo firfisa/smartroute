@@ -23,6 +23,8 @@ All notable project changes are recorded here. The project has not published a r
 - Experimental loopback sidecar relay and `smartroute serve` command.
 - Standalone `smartroute-testlab` with ephemeral loopback ports, fake gateways, deterministic faults, and JSON reports.
 - ADR and enforced rules that keep automated tests separate from the active Clash/Mihomo environment.
+- Read-only, redacted active Clash inspection policy and a coordinated configuration replacement/rollback boundary.
+- Local observation schema, privacy controls, retention requirements, and live-trial procedure.
 
 ### Known limitations
 

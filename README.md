@@ -74,6 +74,8 @@ make testlab
 
 当前覆盖 Direct 快速成功、Direct 卡住后 Proxy 恢复、两条路径均失败、域名目标保留和真实字节转发。更详细的边界见 [独立测试环境](docs/07-isolated-test-lab.md)。真实 Mihomo 测试后续也会启动单独子进程和临时配置，不会复用 Clash Verge Rev 的活动环境。
 
+为适配真实环境，可以对活动 Clash Verge Rev 目录进行只读、脱敏的结构检查；现阶段仍禁止自动写入或重载。待隔离 Mihomo 测试、备份和回滚验证完成后，再在用户配合下进入短时真实试用，并使用默认关闭、本地保存、可清空的结构化观测记录。详见 [观测与真实试用计划](docs/08-observation-and-live-trial.md)。
+
 准备锁定版本的上游源码到被忽略的 `.upstream/`：
 
 ```bash
@@ -89,6 +91,7 @@ bash scripts/prepare-upstreams.sh
 - [上游项目与版本锁定](docs/05-upstreams.md)
 - [协议能力矩阵](docs/06-protocol-capability-matrix.md)
 - [独立测试环境](docs/07-isolated-test-lab.md)
+- [观测与真实试用计划](docs/08-observation-and-live-trial.md)
 - [架构决策记录](docs/adr/README.md)
 - [变更日志](CHANGELOG.md)
 

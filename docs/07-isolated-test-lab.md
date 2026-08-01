@@ -72,12 +72,16 @@ The next integration tier will launch the locked Mihomo version as a child proce
 3. Use a separate Mihomo home/data directory and controller secret.
 4. Disable system proxy changes and TUN by default.
 5. Track and terminate only the child PID created by the test.
-6. Never inspect or write Clash Verge Rev's application-support directory.
+6. Never inspect or write Clash Verge Rev's application-support directory from this automated tier; read-only compatibility inspection is a separate manual lane.
 7. Save sanitized logs under the test's temporary artifact directory.
 
 System-proxy and TUN validation will be a distinct, manual opt-in suite because those operations can affect the host network even when a separate config is used.
 
-## 5. Limitations
+## 5. Separate read-only and live-trial lanes
+
+The owner permits scoped, redacted read-only inspection of the active Clash Verge Rev environment. This does not weaken the Test Lab: its code and CI still perform zero active-environment reads. Configuration writes, reloads, system-proxy changes, and TUN changes remain reserved for a later coordinated live trial with backup and rollback controls. See `docs/08-observation-and-live-trial.md` and ADR-0003.
+
+## 6. Limitations
 
 - Current readiness is TCP/SOCKS CONNECT, not TLS validity.
 - Fake gateways simulate path behavior; they do not reproduce Mihomo selectors, Fake-IP, DNS, or TUN semantics.

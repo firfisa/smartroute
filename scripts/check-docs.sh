@@ -26,9 +26,11 @@ required_files=(
   "docs/05-upstreams.md"
   "docs/06-protocol-capability-matrix.md"
   "docs/07-isolated-test-lab.md"
+  "docs/08-observation-and-live-trial.md"
   "docs/adr/README.md"
   "docs/adr/0001-sidecar-first.md"
   "docs/adr/0002-isolated-test-lab.md"
+  "docs/adr/0003-read-only-clash-inspection-and-live-rollout.md"
   "configs/smartroute.example.json"
   "upstreams.lock"
 )
@@ -65,6 +67,12 @@ fi
 if ! matches '127\.0\.0\.1:0' "${project_root}/docs/07-isolated-test-lab.md" ||
   ! matches 'Automated tests must not inspect, change, reload, or share listeners' "${project_root}/AGENTS.md"; then
   echo "isolated test-lab boundary is missing or inconsistent" >&2
+  exit 1
+fi
+
+if ! matches 'Scoped read-only inspection' "${project_root}/AGENTS.md" ||
+  ! matches 'Until this procedure reaches step 7 with explicit confirmation' "${project_root}/docs/08-observation-and-live-trial.md"; then
+  echo "read-only inspection or coordinated live-write boundary is missing" >&2
   exit 1
 fi
 

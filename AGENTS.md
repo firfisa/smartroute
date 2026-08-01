@@ -170,6 +170,17 @@ Automated tests must not inspect, change, reload, or share listeners with the us
 - Tests involving the active Clash environment, system proxy, TUN, or real destinations are manually invoked, opt-in, and require explicit user authorization for the exact scope.
 - `smartroute serve` is never started by a default automated test; automation uses `smartroute-testlab`.
 
+### Active-environment inspection and live rollout
+
+- Scoped read-only inspection of the user's active Clash Verge Rev files is permitted for compatibility analysis.
+- Read-only results must be redacted: do not print or copy subscription URLs, credentials, controller secrets, node secrets, cookies, full rule contents, or unrelated browsing logs.
+- Report which paths and structural fields were inspected; do not imply that read permission authorizes a write, reload, system-proxy change, or TUN change.
+- Active configuration writes happen only in a user-coordinated live-trial window after isolated syntax/topology tests pass.
+- Before a write, prepare a fresh recoverable backup, redacted diff, exact target list, verified rollback action, smoke test, and stop conditions.
+- Prefer changing the durable active profile merge/script layer over editing a generated output, but determine the real binding read-only each time.
+- Live observation recording is local and off by default. It requires bounded retention and explicit controls for cleartext hostname, process identity, export, pause, and deletion.
+- Never record payloads, URL paths/queries, headers, cookies, credentials, subscription contents, or TLS secrets.
+
 ## 9. Upstream and dependency policy
 
 - Track Mihomo and Clash Verge Rev as upstream references, not copied source trees, until an ADR approves a fork.
@@ -202,6 +213,7 @@ Stop and add an explicit review section or ADR when a change:
 - Adds automatic suffix generalization.
 - Probes private, link-local, metadata, or user-denied destinations.
 - Changes fail-open/fail-closed behavior.
+- Persists target, process, network-profile, or client-outcome observations, even when local-only.
 
 ## 12. Definition of done for Phase 0
 
