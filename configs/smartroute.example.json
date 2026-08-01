@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "listen_address": "127.0.0.1:17890",
+  "direct_endpoint": "127.0.0.1:17891",
+  "proxy_endpoint": "127.0.0.1:17892",
+  "original_fallback": "proxy",
+  "decision": {
+    "direct_head_start_ms": 200,
+    "max_direct_penalty_ms": 150,
+    "candidate_timeout_ms": 5000
+  },
+  "learning": {
+    "proxy_promotion_wins": 3,
+    "direct_promotion_wins": 5,
+    "policy_ttl_hours": 72
+  },
+  "privacy": {
+    "mode": "explicit-opt-in",
+    "never_direct_probe": []
+  }
+}

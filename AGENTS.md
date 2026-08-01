@@ -1,0 +1,188 @@
+# SmartRoute Agent Guide
+
+This file is the operating contract for humans and coding agents working in this repository.
+
+## 1. Project mission
+
+SmartRoute is a local-first adaptive routing layer for the Mihomo/Clash ecosystem. It preserves trusted static rules and applies explainable Direct/Proxy decisions only to traffic explicitly placed in an adaptive lane.
+
+The project succeeds only if it improves measured connection experience or proxy usage without reducing reliability, privacy, or rollback safety.
+
+## 2. Current phase
+
+The repository is in Phase 0: architecture and feasibility spike.
+
+Current scope:
+
+- Go-based TCP/SOCKS5 sidecar and decision engine.
+- macOS-first development while keeping platform boundaries explicit.
+- TCP and TLS observability first.
+- DNS as a separate diagnostic path.
+- UDP/QUIC use static or historical policy until protocol-specific validators exist.
+- SQLite persistence only after the domain model and event schema are stable.
+
+Out of scope until an ADR changes it:
+
+- Reimplementing TUN, DNS interception, subscriptions, or proxy protocols already provided by Mihomo.
+- A full Clash Verge Rev fork.
+- Generic replay of application payloads.
+- Generic first-packet UDP/QUIC racing.
+- Cloud collection, shared browsing history, or automatic domain uploads.
+- Black-box ML routing.
+
+## 3. Architectural invariants
+
+These rules must not be weakened silently:
+
+1. `REJECT`, private-network rules, administrative policy, and manual locks outrank learned policy.
+2. SmartRoute replaces or intercepts selected low-confidence rules and the final catch-all; it does not wait for traffic to fall past `MATCH`.
+3. `Direct failed + Proxy succeeded` is strong proxy evidence. A Direct failure alone is not.
+4. A failure on both paths does not promote either route.
+5. A learned policy is scoped by network profile, target identity, port, and transport.
+6. Automatically learned policy expires and decays. Only users or administrators create permanent locks.
+7. Once potentially side-effecting application data has been committed to a remote path, SmartRoute must not transparently replay it on another path.
+8. TLS 1.3 early data must never be duplicated.
+9. Unknown UDP has no generic success signal and must not be treated as if it were TCP.
+10. The runtime must fail back to the user's original routing policy when SmartRoute is unavailable.
+11. Domain observations, process information, and network fingerprints remain local by default.
+12. Every automatic decision must expose a machine-readable reason and evidence summary.
+
+## 4. Repository map
+
+Keep this map current whenever a top-level component is added, removed, or renamed.
+
+| Path | Responsibility |
+| --- | --- |
+| `cmd/smartroute/` | Main CLI/daemon entry point |
+| `internal/config/` | Configuration schema, defaults, validation |
+| `internal/decision/` | Policy state machine and route decisions |
+| `internal/model/` | Stable domain types shared by internal components |
+| `internal/transport/` | Candidate dialers and protocol-aware readiness gates |
+| `internal/upstream/` | Mihomo integration boundaries and adapters |
+| `docs/` | Maintained product, architecture, interface, and validation documentation |
+| `docs/adr/` | Architecture Decision Records |
+| `configs/` | Safe examples; never store real subscriptions or secrets |
+| `scripts/` | Reproducible development and upstream-preparation commands |
+| `.github/workflows/` | CI checks required before merge |
+
+## 5. Documentation governance
+
+Documentation is part of the implementation, not an afterthought.
+
+For any material change, update the relevant artifacts in the same commit:
+
+| Change | Required documentation |
+| --- | --- |
+| Component added/removed or responsibility moved | `docs/04-component-catalog.md` and architecture diagram |
+| Public/internal interface signature changes | Interface table in `docs/04-component-catalog.md` |
+| Routing semantics or safety invariant changes | New ADR in `docs/adr/` and this file when invariant changes |
+| Config field added/changed | Config reference table and example config |
+| Observation/event schema changes | Event catalog and migration notes |
+| Large refactor | Before/after Mermaid diagram, affected-component table, and ADR |
+| User-visible behavior changes | README summary and validation plan when metrics change |
+| Dependency or upstream version changes | `docs/05-upstreams.md`, license note, and compatibility status |
+
+Documentation requirements:
+
+- Prefer Mermaid diagrams, state diagrams, sequence diagrams, and tables for relationships and lifecycle behavior.
+- Keep prose for rationale and constraints, not as the only representation of architecture.
+- Every interface entry must record owner, inputs, outputs, error behavior, stability, and tests.
+- Every major decision uses an ADR with status, context, decision, alternatives, and consequences.
+- Never document a planned interface as implemented. Mark it `planned`, `experimental`, or `stable`.
+- Use exact commands and paths. Do not claim verification without recording the command and result.
+
+## 6. Change workflow
+
+Before editing:
+
+1. Read `README.md`, the relevant design document, and all applicable ADRs.
+2. Inspect the current code path and tests; do not infer runtime behavior from a diagram alone.
+3. Define the smallest reversible change and its verification surface.
+
+During editing:
+
+1. Keep one responsibility per package.
+2. Add or update tests with behavior changes.
+3. Preserve backward-compatible config behavior unless an ADR explicitly approves a break.
+4. Do not mix upstream source snapshots with first-party code.
+5. Do not add telemetry or network calls without an explicit privacy review and configuration switch.
+
+Before handoff or commit:
+
+1. Run formatting, unit tests, static checks, and config validation.
+2. Update diagrams, interface/config tables, ADRs, and upstream inventory when applicable.
+3. Report what was verified and what remains experimental.
+4. Check that no subscription URLs, tokens, domain histories, or user network identifiers are staged.
+
+## 7. Go conventions
+
+- Use the Go version declared in `go.mod`.
+- Keep executable wiring in `cmd/`; business rules belong in `internal/` packages.
+- Accept `context.Context` for blocking or cancellable operations.
+- Use explicit typed errors or error wrapping; callers must be able to distinguish timeout, cancellation, validation, and path failure.
+- Inject clocks and dialers into decision code to keep tests deterministic.
+- Avoid package globals for mutable state.
+- Keep interfaces small and consumer-owned.
+- Use structured events; do not parse human log strings to drive decisions.
+- Use `gofmt` and `go test ./...` before commit.
+- Add race testing when concurrency enters the data path: `go test -race ./...`.
+
+## 8. Test policy
+
+Minimum tests by layer:
+
+| Layer | Required coverage |
+| --- | --- |
+| Config | Defaults, invalid combinations, safe fallback |
+| Decision engine | All outcome-matrix transitions, TTL, decay, manual precedence |
+| Transport | Cancellation, stagger timing, loser cleanup, no unsafe replay |
+| TLS readiness | Fragmented ClientHello, malformed input, TLS 1.3 early-data rejection |
+| Mihomo adapter | Loop prevention, forced outbound mapping, unavailable sidecar fallback |
+| Persistence | Schema migration, crash recovery, corrupted-record behavior |
+| End-to-end | Direct-only, proxy-only, both fail, DNS fault, network-profile change |
+
+Tests must not depend on public censorship behavior or a third-party website remaining reachable. Use deterministic local fault injection.
+
+## 9. Upstream and dependency policy
+
+- Track Mihomo and Clash Verge Rev as upstream references, not copied source trees, until an ADR approves a fork.
+- Pin every prepared upstream to a commit or release in `docs/05-upstreams.md`.
+- Record license, purpose, integration boundary, and update procedure.
+- Prefer scripts that clone into ignored `.upstream/` paths over committing upstream source.
+- Do not modify files inside `.upstream/`; patches belong in this repository or an explicitly managed fork.
+- New runtime dependencies require a reason, license check, maintenance assessment, and tests.
+
+## 10. Git and GitHub maintenance
+
+- The main branch must remain buildable and documented.
+- Use focused commits with imperative subjects, for example `feat(decision): add unknown target state`.
+- Do not commit generated binaries, real databases, logs, subscriptions, tokens, or `.upstream/` sources.
+- Pull requests must include: problem, design impact, tests, risk/rollback, and documentation impact.
+- CI must pass before merge.
+- Tag experimental releases clearly; do not call the sidecar production-ready until the validation gates in `docs/03-mvp-validation-plan.md` pass.
+- Before the first push, confirm the GitHub owner, repository visibility, license, and branch protection settings.
+
+## 11. Security and privacy review triggers
+
+Stop and add an explicit review section or ADR when a change:
+
+- Sends domain, process, network, or observation data off-device.
+- Exposes a controller or management API.
+- Opens a listener beyond loopback.
+- Changes replay, retry, TLS, DNS, or credential-handling behavior.
+- Adds automatic suffix generalization.
+- Probes private, link-local, metadata, or user-denied destinations.
+- Changes fail-open/fail-closed behavior.
+
+## 12. Definition of done for Phase 0
+
+Phase 0 is complete only when:
+
+- The repository builds and tests from a clean checkout.
+- A minimal CLI exposes version/config validation and an experimental decision trace.
+- Core model and decision interfaces are documented in a maintained catalog.
+- At least one ADR records the sidecar architecture.
+- Example configuration contains no secrets and validates locally.
+- Upstream repositories are pinned and can be prepared reproducibly.
+- CI runs formatting, tests, vet, and documentation consistency checks.
+- Known limitations and the next validation gate are visible from the README.
