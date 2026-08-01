@@ -17,6 +17,7 @@ All notable project changes are recorded here. The project has not published a r
 - Documentation checks, tests, vet, formatting, and GitHub Actions workflow.
 - MIT license for SmartRoute's first-party standalone source.
 - Living-architecture governance: diagrams, catalogs, ADRs, and `AGENTS.md` evolve with verified implementation evidence.
+- Portable documentation checks with a standard `grep` fallback, plus current GitHub Actions runtimes.
 
 ### Known limitations
 
