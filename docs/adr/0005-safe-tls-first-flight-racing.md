@@ -65,5 +65,5 @@ sequenceDiagram
 
 - Unit tests cover fragmented ClientHello and ServerHello, malformed/truncated input, early-data rejection before dialing, TLS alerts, loser cancellation, and prefetched-byte replay.
 - Sidecar `net.Pipe` tests cover local SOCKS admission, Proxy L3 commitment, early-data rejection with zero candidate attempts, and a complete Go `crypto/tls` 1.3 handshake plus encrypted echo through the winner.
-- `make mihomo-lab` verifies macOS/v1.19.29 recovery from a Direct path with no ServerHello to a forced Proxy path with `stage_reached=tls`.
+- `make mihomo-lab` verifies macOS arm64 and Linux amd64/v1.19.29 recovery from a Direct path with no ServerHello to a forced Proxy path with `stage_reached=tls`.
 - The isolated run uses only temporary files, synthetic TLS/DNS services, and random loopback ports; it does not read or write active Clash state.

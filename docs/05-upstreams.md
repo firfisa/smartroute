@@ -8,7 +8,7 @@ SmartRoute keeps upstream sources outside the tracked repository in `.upstream/`
 
 | Project | Repository | Locked release | Commit | License | Role | Integration status |
 | --- | --- | --- | --- | --- | --- | --- |
-| Mihomo | `MetaCubeX/mihomo` | `v1.19.29` | `e26714a181ac0e2fa803453c0a8e9a9ce94e31cb` | GPL-3.0 | TUN, DNS, static routing, Direct and proxy outbounds | macOS isolated topology verified; readiness caveat recorded in ADR-0004 |
+| Mihomo | `MetaCubeX/mihomo` | `v1.19.29` | `e26714a181ac0e2fa803453c0a8e9a9ce94e31cb` | GPL-3.0 | TUN, DNS, static routing, Direct and proxy outbounds | macOS arm64 and Linux amd64 isolated TLS topology verified; ADR-0004/0005 apply |
 | Clash Verge Rev | `clash-verge-rev/clash-verge-rev` | `v2.5.2` | `28f2efc504059b1dc75c793618b775c8e1b2a5f1` | GPL-3.0 | Possible future desktop UI and lifecycle integration | Reference only; no fork |
 
 SmartRoute's first-party standalone source is released under MIT. The upstream projects in this table remain under GPL-3.0 and are not relicensed by SmartRoute. The current sidecar-first boundary keeps their source outside this repository; any future copying, linking, fork distribution, or bundled release requires a fresh license-boundary review and the notices/source obligations applicable to that distribution model.
@@ -27,7 +27,7 @@ The following evidence was inspected at the locked v1.19.29 commit and compared 
 | SOCKS outbound performs CONNECT to the sidecar | `.upstream/mihomo/adapter/outbound/socks5.go` | `DialContext` connects to the local SOCKS server and performs a CONNECT handshake with serialized target metadata |
 | Inbound SOCKS success precedes target dial | `.upstream/mihomo/transport/socks5/socks5.go` and tunnel handoff | `ServerHandshake` writes success before `tunnel.HandleTCPConn` resolves/dials; classify the ACK as L1 `StageOutbound` |
 
-Isolated runtime results from `make mihomo-lab` on macOS:
+Isolated runtime results from `make mihomo-lab` on macOS arm64 and the Ubuntu amd64 GitHub runner:
 
 | Contract | Result |
 | --- | --- |

@@ -50,7 +50,7 @@ flowchart LR
 | TLS ClientHello/0-RTT 安全处理 | 已实现分片重组；检测到 `early_data` 时在拨号前拒绝 |
 | SQLite 学习、TTL、网络画像 | 未实现 |
 | 独立 Mihomo listener 拓扑 | v1.19.29 已验证强制 Direct/Proxy、域名保留和循环规避 |
-| Mihomo HTTPS/TLS 自适应路径 | macOS/v1.19.29 已验证 Direct 无 ServerHello 后由 Proxy 恢复并提交 L3 |
+| Mihomo HTTPS/TLS 自适应路径 | macOS arm64 与 Linux amd64/v1.19.29 已验证 Direct 无 ServerHello 后由 Proxy 恢复并提交 L3 |
 | 活动 Clash Verge Rev 集成 | 尚未写入或重载；留待配合下的真实试用 |
 
 ## 本地开发

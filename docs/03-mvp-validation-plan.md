@@ -59,7 +59,7 @@ MVP 不是为了证明“能够自动写 YAML”，而是回答五个可证伪�
 | Direct-first 错峰候选竞争 | 实验性完成 | Direct 快速、Proxy 恢复、双失败场景 |
 | 域名形式目标保留 | 实验性完成 | `echo.test` 经 sidecar 和 fake gateway 断言 |
 | 隔离故障目标 | 第一批完成 | `go run ./cmd/smartroute-testlab` |
-| 独立 Mihomo listener 拓扑 | macOS/v1.19.29 已完成 | `make mihomo-lab`；临时目录、随机端口、独立子进程 |
+| 独立 Mihomo listener 拓扑 | macOS arm64、Linux amd64/v1.19.29 已完成 | `make mihomo-lab`；临时目录、随机端口、独立子进程 |
 | SOCKS readiness 契约 | 已识别安全缺口并封闸 | Mihomo L1 候选产生 `candidate_below_commit_stage`，不得提交或学习 |
 | TLS readiness gate | 实验性完成 | 分片 ClientHello、early-data 预拨号拒绝、ServerHello L3、精确预读回放 |
 | 系统代理与 TUN | 待执行且仅手动 opt-in | 不使用活动 Clash 实例 |
@@ -262,7 +262,7 @@ MVP 不是为了证明“能够自动写 YAML”，而是回答五个可证伪�
 
 1. 确定实现语言：优先 Go，便于复用网络生态并与 Mihomo 行为对齐；Rust 也可，但开发验证成本可能更高。
 2. 实现最小 SOCKS5 server/client relay。
-3. 用两个 Mihomo listener 验证 Direct/Proxy 路径隔离。macOS/v1.19.29 已完成；其 SOCKS ACK 只证明 L1。
+3. 用两个 Mihomo listener 验证 Direct/Proxy 路径隔离。macOS arm64 与 Linux amd64/v1.19.29 已完成；其 SOCKS ACK 只证明 L1。
 4. 实现候选拨号、延迟启动、取消和结构化事件。
 5. 实现 TLS record 与跨包 ClientHello 解析；明确拒绝复制 early data。最小安全切片已完成，完整真实 TLS 握手兼容矩阵仍待扩展。
 6. 建立 SQLite schema 和 deterministic state machine。
