@@ -15,7 +15,7 @@ The repository is in Phase 0: architecture and feasibility spike.
 Current scope:
 
 - Go-based TCP/SOCKS5 sidecar, staggered candidate racer, and decision engine.
-- Deterministic loopback-only Test Lab before any live Mihomo integration.
+- Deterministic loopback Test Lab plus a pinned, isolated Mihomo child-process contract lab before any active Clash integration.
 - macOS-first development while keeping platform boundaries explicit.
 - TCP and TLS observability first.
 - DNS as a separate diagnostic path.
@@ -47,6 +47,7 @@ These rules must not be weakened silently:
 10. The runtime must fail back to the user's original routing policy when SmartRoute is unavailable.
 11. Domain observations, process information, and network fingerprints remain local by default.
 12. Every automatic decision must expose a machine-readable reason and evidence summary.
+13. Mihomo SOCKS CONNECT success is only `StageOutbound`; it must not be committed or learned as target TCP success without a stronger readiness gate.
 
 ## 4. Repository map
 
@@ -56,6 +57,7 @@ Keep this map current whenever a top-level component is added, removed, or renam
 | --- | --- |
 | `cmd/smartroute/` | Main CLI/daemon entry point |
 | `cmd/smartroute-testlab/` | Standalone deterministic integration-test executable |
+| `cmd/smartroute-mihomo-lab/` | Isolated pinned-Mihomo topology and contract probe |
 | `internal/config/` | Configuration schema, defaults, validation |
 | `internal/decision/` | Policy state machine and route decisions |
 | `internal/model/` | Stable domain types shared by internal components |
@@ -63,6 +65,7 @@ Keep this map current whenever a top-level component is added, removed, or renam
 | `internal/socks5/` | Minimal no-authentication SOCKS5 client/server protocol |
 | `internal/sidecar/` | Inbound SOCKS server, path commitment, and TCP relay |
 | `internal/testlab/` | Loopback targets, fake gateways, and fault scenarios |
+| `internal/mihomolab/` | Temporary Mihomo config, child lifecycle, synthetic DNS, and topology assertions |
 | `internal/upstream/` | Mihomo integration boundaries and adapters |
 | `docs/` | Maintained product, architecture, interface, and validation documentation |
 | `docs/adr/` | Architecture Decision Records |

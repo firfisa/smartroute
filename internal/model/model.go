@@ -116,8 +116,8 @@ func (o Observation) Validate() error {
 	if o.Latency < 0 {
 		return fmt.Errorf("latency must not be negative")
 	}
-	if o.Success && o.StageReached < StageTCP {
-		return fmt.Errorf("successful observation must reach at least tcp stage")
+	if o.Success && o.StageReached < StageOutbound {
+		return fmt.Errorf("successful observation must reach at least outbound stage")
 	}
 	if !o.Success && o.FailureClass == "" {
 		return fmt.Errorf("failed observation requires failure_class")

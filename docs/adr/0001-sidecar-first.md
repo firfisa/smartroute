@@ -8,7 +8,7 @@
 
 SmartRoute needs to compare Direct and Proxy paths for traffic selected by low-confidence rules or the final catch-all. A controller that only observes Mihomo after routing cannot reliably recover the first connection, while a full Mihomo or Clash Verge Rev fork would introduce large maintenance costs before the product hypothesis is validated.
 
-Mihomo supports local SOCKS outbounds and listeners with a forced proxy target. At the locked v1.19.29 source, `listener/inbound/base.go` decodes `proxy` into `SpecialProxy`, `listener/inbound/mixed.go` passes that addition into the mixed listener, and `tunnel/tunnel.go` resolves `SpecialProxy` before normal rule matching. Its SOCKS inbound/outbound utilities preserve a domain-form target through `metadata.Host`. This source evidence permits an experimental topology in which Mihomo sends adaptive traffic to a local SmartRoute SOCKS sidecar, and the sidecar opens candidates through two loopback-only Mihomo listeners: one forced to `DIRECT`, one forced to the user's proxy policy. End-to-end runtime behavior remains unverified.
+Mihomo supports local SOCKS outbounds and listeners with a forced proxy target. At the locked v1.19.29 source, `listener/inbound/base.go` decodes `proxy` into `SpecialProxy`, `listener/inbound/mixed.go` passes that addition into the mixed listener, and `tunnel/tunnel.go` resolves `SpecialProxy` before normal rule matching. Its SOCKS inbound/outbound utilities preserve a domain-form target through `metadata.Host`. The isolated runtime lab confirms this topology and loop prevention, but also proves that Mihomo replies to inbound SOCKS before target dialing. ADR-0004 therefore constrains path commitment to a stronger readiness gate.
 
 ## Decision
 

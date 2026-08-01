@@ -7,8 +7,28 @@ upstream_root="${SMARTRoute_UPSTREAM_ROOT:-${project_root}/.upstream}"
 
 mkdir -p "${upstream_root}"
 
+is_requested() {
+  local candidate="$1"
+  shift
+  if [[ "$#" -eq 0 ]]; then
+    return 0
+  fi
+  local requested
+  for requested in "$@"; do
+    if [[ "${requested}" == "${candidate}" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+prepared=0
+
 while IFS=$'\t' read -r name repository tag commit license; do
   if [[ -z "${name}" || "${name}" == \#* ]]; then
+    continue
+  fi
+  if ! is_requested "${name}" "$@"; then
     continue
   fi
   if [[ ! "${name}" =~ ^[a-z0-9-]+$ || ! "${commit}" =~ ^[0-9a-f]{40}$ ]]; then
@@ -29,4 +49,10 @@ while IFS=$'\t' read -r name repository tag commit license; do
     exit 1
   fi
   echo "prepared ${name} ${tag} ${commit} (${license})"
+  prepared=$((prepared + 1))
 done < "${lock_file}"
+
+if [[ "$#" -gt 0 && "${prepared}" -ne "$#" ]]; then
+  echo "one or more requested upstream names were not found in upstreams.lock" >&2
+  exit 1
+fi

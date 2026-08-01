@@ -29,6 +29,12 @@ func (e PairEvaluator) Evaluate(direct, proxy model.Observation) (model.Decision
 	if err := proxy.Validate(); err != nil {
 		return model.Decision{}, fmt.Errorf("proxy observation: %w", err)
 	}
+	if direct.Success && direct.StageReached < model.StageTCP {
+		return model.Decision{}, fmt.Errorf("direct observation does not prove target TCP readiness")
+	}
+	if proxy.Success && proxy.StageReached < model.StageTCP {
+		return model.Decision{}, fmt.Errorf("proxy observation does not prove target TCP readiness")
+	}
 	if direct.Path != model.PathDirect || proxy.Path != model.PathProxy {
 		return model.Decision{}, fmt.Errorf("paired observations must be ordered direct then proxy")
 	}

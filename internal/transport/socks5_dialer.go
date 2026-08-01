@@ -13,8 +13,9 @@ import (
 
 // SOCKS5Dialer opens one candidate through a loopback SOCKS5 endpoint.
 type SOCKS5Dialer struct {
-	Path     model.Path
-	Endpoint string
+	Path           model.Path
+	Endpoint       string
+	ReadinessStage model.Stage
 }
 
 func (d SOCKS5Dialer) Dial(ctx context.Context, target model.Target) (net.Conn, model.Observation, error) {
@@ -36,7 +37,17 @@ func (d SOCKS5Dialer) Dial(ctx context.Context, target model.Target) (net.Conn, 
 		return nil, observation, err
 	}
 	observation.Success = true
-	observation.StageReached = model.StageTCP
+	observation.StageReached = d.ReadinessStage
+	if observation.StageReached == model.StageNone {
+		observation.StageReached = model.StageOutbound
+	}
+	if observation.StageReached < model.StageOutbound || observation.StageReached > model.StageApplication {
+		_ = conn.Close()
+		observation.Success = false
+		observation.StageReached = model.StageOutbound
+		observation.FailureClass = "invalid_readiness_stage"
+		return nil, observation, fmt.Errorf("invalid SOCKS5 readiness stage")
+	}
 	return conn, observation, nil
 }
 

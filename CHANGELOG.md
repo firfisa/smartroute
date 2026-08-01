@@ -25,6 +25,11 @@ All notable project changes are recorded here. The project has not published a r
 - ADR and enforced rules that keep automated tests separate from the active Clash/Mihomo environment.
 - Read-only, redacted active Clash inspection policy and a coordinated configuration replacement/rollback boundary.
 - Local observation schema, privacy controls, retention requirements, and live-trial procedure.
+- Isolated pinned-Mihomo child-process lab with temporary home, synthetic DNS, random loopback ports, and no TUN/system-proxy changes.
+- Runtime verification of forced Direct, forced Proxy, SOCKS domain preservation, and loop prevention on Mihomo v1.19.29.
+- Conservative readiness correction: Mihomo SOCKS success is `StageOutbound`, while the sidecar requires `StageTCP` to commit.
+- `candidate_below_commit_stage` rejection so experimental routing fails safely until TLS readiness exists.
+- Manual GitHub Actions workflow for the isolated pinned-Mihomo contract lab.
 
 ### Known limitations
 

@@ -64,12 +64,54 @@ type gatewayBehavior struct {
 	fail  bool
 }
 
+// EchoTarget is a loopback-only TCP echo service reusable by higher-level
+// integration labs.
+type EchoTarget struct {
+	server *echoServer
+}
+
+func StartEchoTarget(ctx context.Context) (*EchoTarget, error) {
+	server, err := startEchoServer(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &EchoTarget{server: server}, nil
+}
+
+func (t *EchoTarget) Address() string { return t.server.Address() }
+func (t *EchoTarget) Port() uint16    { return t.server.Port() }
+func (t *EchoTarget) Close()          { t.server.Close() }
+
+// SOCKSGateway is a loopback-only, no-authentication SOCKS5 gateway that maps
+// every accepted target to one synthetic loopback destination while recording
+// whether the domain-form target was preserved.
+type SOCKSGateway struct {
+	gateway *fakeGateway
+}
+
+func StartSOCKSGateway(ctx context.Context, targetAddress string) (*SOCKSGateway, error) {
+	gateway, err := startGateway(ctx, targetAddress, gatewayBehavior{})
+	if err != nil {
+		return nil, err
+	}
+	return &SOCKSGateway{gateway: gateway}, nil
+}
+
+func (g *SOCKSGateway) Address() string { return g.gateway.Address() }
+func (g *SOCKSGateway) Close()          { g.gateway.Close() }
+func (g *SOCKSGateway) Stats(expectedHost string) (int, bool) {
+	return g.gateway.Stats(expectedHost)
+}
+func (g *SOCKSGateway) Snapshot() (attempts int, lastHost string) {
+	return g.gateway.Snapshot()
+}
+
 // RunAll runs the first deterministic data-plane matrix. All sockets are
 // created inside this process on OS-assigned loopback ports.
 func RunAll(ctx context.Context) (Report, error) {
 	specs := []scenarioSpec{
 		{
-			name: "direct_ready_before_head_start", direct: gatewayBehavior{},
+			name: "direct_candidate_before_head_start", direct: gatewayBehavior{},
 			proxy:        gatewayBehavior{delay: 80 * time.Millisecond},
 			expectedPath: model.PathDirect, headStart: 30 * time.Millisecond,
 		},
@@ -137,8 +179,12 @@ func runScenario(parent context.Context, spec scenarioSpec) (ScenarioResult, err
 		NetworkProfileID: "isolated-test-lab",
 		HandshakeTimeout: time.Second,
 		Racer: transport.Racer{
-			Direct:    transport.SOCKS5Dialer{Path: model.PathDirect, Endpoint: direct.Address()},
-			Proxy:     transport.SOCKS5Dialer{Path: model.PathProxy, Endpoint: proxy.Address()},
+			Direct: transport.SOCKS5Dialer{
+				Path: model.PathDirect, Endpoint: direct.Address(), ReadinessStage: model.StageTCP,
+			},
+			Proxy: transport.SOCKS5Dialer{
+				Path: model.PathProxy, Endpoint: proxy.Address(), ReadinessStage: model.StageTCP,
+			},
 			HeadStart: spec.headStart,
 			Timeout:   time.Second,
 		},
@@ -295,6 +341,12 @@ func (g *fakeGateway) Stats(expectedHost string) (int, bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.attempts, g.attempts > 0 && g.lastHost == expectedHost
+}
+
+func (g *fakeGateway) Snapshot() (attempts int, lastHost string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.attempts, g.lastHost
 }
 
 func (g *fakeGateway) serve(ctx context.Context) {

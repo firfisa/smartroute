@@ -56,9 +56,9 @@ flowchart TB
 
 Mihomo 已支持为 listener 指定固定 `proxy`，也支持按 `IN-NAME` 等条件匹配规则；因此可以为 SmartRoute 暴露两个仅监听 loopback 的专用入口，一个强制 `DIRECT`，一个强制使用用户选定代理组。[Mihomo listeners](https://wiki.metacubex.one/en/config/inbound/listeners/)、[Mihomo 路由规则](https://wiki.metacubex.one/en/config/rules/)
 
-该配置契约已经在锁定的 Mihomo v1.19.29 源码中核对：`listener/inbound/base.go`、`listener/inbound/mixed.go`、`tunnel/tunnel.go` 和 SOCKS inbound/outbound 工具链共同支持强制代理与域名目标转发。当前结论仍是“源码契约成立、端到端运行待测”，证据表见 `docs/05-upstreams.md`。
+该配置契约已经在锁定的 Mihomo v1.19.29 源码和独立子进程中核对：强制 Direct/Proxy、域名形式目标转发与循环规避成立。不过运行实验同时证明，Mihomo inbound 在目标解析和拨号前就回复 SOCKS 成功；该响应只能记作 L1 `StageOutbound`，不能当作 L2 `StageTCP`。证据表见 `docs/05-upstreams.md` 和 ADR-0004。
 
-候选拓扑如下，具体字段和循环规避必须在技术 Spike 中对目标 Mihomo 版本逐平台验证：
+候选拓扑如下。该结构已在 macOS 与锁定版本的独立子进程中验证，其他平台、TUN/Fake-IP 和真实 selector 仍需分别验证：
 
 ```yaml
 proxies:
@@ -102,14 +102,16 @@ flowchart LR
     Inbound --> Racer["internal/transport.Racer\nDirect-first stagger"]
     Racer --> D["SOCKS5Dialer: Direct endpoint"]
     Racer --> P["SOCKS5Dialer: Proxy endpoint"]
-    D --> Winner["First TCP-ready connection"]
-    P --> Winner
-    Winner --> Relay["Commit one path and relay bytes"]
+    D --> Candidate["Candidate admitted at declared readiness stage"]
+    P --> Candidate
+    Candidate --> Gate{"At least required readiness?"}
+    Gate -->|"yes"| Relay["Commit one path and relay bytes"]
+    Gate -->|"no"| Reject["Close and fail safely"]
 ```
 
-这一切片已能通过带显式 `-acknowledge-direct-probes` 的 `smartroute serve` 接收 SOCKS5 CONNECT、保留域名形式目标、错峰启动两条 SOCKS5 候选路径、取消 loser，并只在选定一条 TCP-ready 路径后向客户端回复成功。它仍只证明 TCP/SOCKS 层，不把 TCP CONNECT 当成 TLS 或应用成功，也不产生持久化学习策略。
+这一切片已能通过带显式 `-acknowledge-direct-probes` 的 `smartroute serve` 接收 SOCKS5 CONNECT、保留域名目标、错峰启动两条候选路径并取消 loser。每个 dialer 必须显式声明其成功所达到的 readiness；sidecar 默认只提交至少 L2 `StageTCP` 的候选。进程内 fake gateway 采用“目标连接成功后才回复”的测试契约，因此可声明 L2；真实 Mihomo listener 只能声明 L1，并会被 `candidate_below_commit_stage` 安全拒绝。
 
-自动化验证不连接真实 Mihomo。`smartroute-testlab` 使用随机回环端口模拟两条上游路径和目标服务，边界见 `docs/07-isolated-test-lab.md`。真实 Mihomo 拓扑仍属于下一项隔离子进程 Spike。
+`smartroute-testlab` 使用随机回环端口模拟两条上游路径和目标服务；`smartroute-mihomo-lab` 使用锁定二进制、临时 home、随机回环端口、合成 DNS 和本地 fake proxy 运行真实子进程。两者都不接触活动 Clash 环境。完整自适应数据路径必须等 TLS readiness gate 能从真实数据流证明 L3 后再开放。
 
 ## 4. 决策优先级
 

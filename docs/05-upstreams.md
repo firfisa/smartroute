@@ -8,14 +8,14 @@ SmartRoute keeps upstream sources outside the tracked repository in `.upstream/`
 
 | Project | Repository | Locked release | Commit | License | Role | Integration status |
 | --- | --- | --- | --- | --- | --- | --- |
-| Mihomo | `MetaCubeX/mihomo` | `v1.19.29` | `e26714a181ac0e2fa803453c0a8e9a9ce94e31cb` | GPL-3.0 | TUN, DNS, static routing, Direct and proxy outbounds | Source contract verified; runtime topology Spike pending |
+| Mihomo | `MetaCubeX/mihomo` | `v1.19.29` | `e26714a181ac0e2fa803453c0a8e9a9ce94e31cb` | GPL-3.0 | TUN, DNS, static routing, Direct and proxy outbounds | macOS isolated topology verified; readiness caveat recorded in ADR-0004 |
 | Clash Verge Rev | `clash-verge-rev/clash-verge-rev` | `v2.5.2` | `28f2efc504059b1dc75c793618b775c8e1b2a5f1` | GPL-3.0 | Possible future desktop UI and lifecycle integration | Reference only; no fork |
 
 SmartRoute's first-party standalone source is released under MIT. The upstream projects in this table remain under GPL-3.0 and are not relicensed by SmartRoute. The current sidecar-first boundary keeps their source outside this repository; any future copying, linking, fork distribution, or bundled release requires a fresh license-boundary review and the notices/source obligations applicable to that distribution model.
 
 ## 2. Mihomo source-contract evidence
 
-The following evidence was inspected at the locked v1.19.29 commit. These are source-level findings, not a successful end-to-end runtime test.
+The following evidence was inspected at the locked v1.19.29 commit and compared with the isolated runtime lab.
 
 | Required assumption | Verified source path | Finding |
 | --- | --- | --- |
@@ -25,11 +25,23 @@ The following evidence was inspected at the locked v1.19.29 commit. These are so
 | SOCKS inbound preserves a domain target | `.upstream/mihomo/adapter/inbound/util.go` | SOCKS domain address populates `metadata.Host` and destination port |
 | SOCKS outbound forwards a domain target | `.upstream/mihomo/adapter/outbound/util.go` | `serializesSocksAddr` emits SOCKS domain form when `metadata.Host` is present |
 | SOCKS outbound performs CONNECT to the sidecar | `.upstream/mihomo/adapter/outbound/socks5.go` | `DialContext` connects to the local SOCKS server and performs a CONNECT handshake with serialized target metadata |
+| Inbound SOCKS success precedes target dial | `.upstream/mihomo/transport/socks5/socks5.go` and tunnel handoff | `ServerHandshake` writes success before `tunnel.HandleTCPConn` resolves/dials; classify the ACK as L1 `StageOutbound` |
+
+Isolated runtime results from `make mihomo-lab` on macOS:
+
+| Contract | Result |
+| --- | --- |
+| Exact binary | v1.19.29 at locked commit, version injected by the reproducible build script |
+| Forced Direct listener | Local loopback payload passed |
+| Forced Proxy listener | Local fake SOCKS proxy received the domain-form `echo.test` target and relayed bytes |
+| Loop prevention | Only the front adaptive connection entered SmartRoute; forced listeners did not recurse |
+| Readiness semantics | Front Mihomo listener produced L1 before target availability; sidecar rejected it as `candidate_below_commit_stage` |
+| Isolation | Temporary home/config, synthetic local DNS, random loopback ports, no TUN/system proxy/external network/active Clash reads or writes |
 
 Remaining runtime checks:
 
 - Confirm Fake-IP/TUN combinations preserve `metadata.Host` before the adapter boundary.
-- Confirm both forced listeners work through config reloads on macOS.
+- Confirm both forced listeners work through config reloads on macOS; startup behavior is verified.
 - Confirm the proxy listener cannot resolve to `DIRECT` through a user selector when collecting a Proxy counterfactual.
 - Implement and fault-test an automatic fallback to the user's original `MATCH` policy when the sidecar is unavailable.
 
@@ -37,11 +49,12 @@ Remaining runtime checks:
 
 ```bash
 bash scripts/prepare-upstreams.sh
+bash scripts/prepare-upstreams.sh mihomo
 ```
 
 The script:
 
-1. Reads `upstreams.lock`.
+1. Reads `upstreams.lock`; optional positional names select a subset.
 2. Clones with blob filtering into ignored `.upstream/<name>` directories.
 3. Fetches and checks out the exact commit in detached mode.
 4. Verifies `HEAD` matches the lock.

@@ -78,3 +78,16 @@ func TestPairEvaluatorRejectsDirectFailureWithoutClass(t *testing.T) {
 		t.Fatal("Evaluate() error = nil, want validation error")
 	}
 }
+
+func TestPairEvaluatorRejectsOutboundAdmissionAsRouteSuccess(t *testing.T) {
+	evaluator := PairEvaluator{OriginalFallback: model.PathProxy}
+	direct := model.Observation{
+		Path: model.PathDirect, Success: true,
+		StageReached: model.StageOutbound, Latency: 10 * time.Millisecond,
+	}
+	proxy := success(model.PathProxy, 100*time.Millisecond)
+
+	if _, err := evaluator.Evaluate(direct, proxy); err == nil {
+		t.Fatal("Evaluate() error = nil, want target-readiness error")
+	}
+}

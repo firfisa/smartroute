@@ -1,0 +1,23 @@
+name: Pinned Mihomo Lab
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mihomo-lab:
+    name: Isolated Mihomo contract lab
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Prepare locked Mihomo source
+        run: bash scripts/prepare-upstreams.sh mihomo
+      - name: Run isolated Mihomo lab
+        run: make mihomo-lab

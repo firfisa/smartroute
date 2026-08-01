@@ -11,9 +11,9 @@ import (
 )
 
 const (
-	ReasonDirectReadyBeforeHeadStart = "direct_ready_before_head_start"
-	ReasonDirectWonRace              = "direct_won_race"
-	ReasonProxyWonRace               = "proxy_won_race"
+	ReasonDirectCandidateBeforeHeadStart = "direct_candidate_before_head_start"
+	ReasonDirectCandidateWon             = "direct_candidate_won"
+	ReasonProxyCandidateWon              = "proxy_candidate_won"
 )
 
 // RaceResult owns the selected connection. The caller must close it.
@@ -35,8 +35,9 @@ func (e *RaceError) Error() string {
 }
 
 // Racer starts Direct first and starts Proxy after HeadStart, or immediately
-// after an early Direct failure. It returns the first TCP-ready candidate and
-// closes every losing connection.
+// after an early Direct failure. It returns the first candidate admitted by its
+// dialer and closes every losing connection. Observation.StageReached records
+// whether admission means only an outbound handshake or stronger readiness.
 type Racer struct {
 	Direct    CandidateDialer
 	Proxy     CandidateDialer
@@ -94,11 +95,11 @@ func (r Racer) Race(ctx context.Context, target model.Target) (RaceResult, error
 			received++
 			observations[result.observation.Path] = result.observation
 			if result.err == nil && result.conn != nil {
-				reason := ReasonProxyWonRace
+				reason := ReasonProxyCandidateWon
 				if result.observation.Path == model.PathDirect {
-					reason = ReasonDirectWonRace
+					reason = ReasonDirectCandidateWon
 					if !proxyStarted {
-						reason = ReasonDirectReadyBeforeHeadStart
+						reason = ReasonDirectCandidateBeforeHeadStart
 					}
 				}
 				cancel()

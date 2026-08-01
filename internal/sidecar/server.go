@@ -22,13 +22,17 @@ type DecisionEvent struct {
 	SelectedPath model.Path        `json:"selected_path"`
 	ReasonCode   string            `json:"reason_code"`
 	Observation  model.Observation `json:"observation"`
+	Committed    bool              `json:"committed"`
 }
 
+const ReasonCandidateBelowCommitStage = "candidate_below_commit_stage"
+
 type Server struct {
-	Racer            transport.Racer
-	NetworkProfileID string
-	HandshakeTimeout time.Duration
-	OnDecision       func(DecisionEvent)
+	Racer              transport.Racer
+	NetworkProfileID   string
+	HandshakeTimeout   time.Duration
+	MinimumCommitStage model.Stage
+	OnDecision         func(DecisionEvent)
 }
 
 func (s Server) Serve(ctx context.Context, listener net.Listener) error {
@@ -79,6 +83,21 @@ func (s Server) handle(ctx context.Context, inbound net.Conn) {
 		return
 	}
 	defer result.Conn.Close()
+	minimumCommitStage := s.MinimumCommitStage
+	if minimumCommitStage < model.StageTCP {
+		minimumCommitStage = model.StageTCP
+	}
+	if result.Observation.StageReached < minimumCommitStage {
+		if s.OnDecision != nil {
+			s.OnDecision(DecisionEvent{
+				Target: target, SelectedPath: result.Observation.Path,
+				ReasonCode: ReasonCandidateBelowCommitStage, Observation: result.Observation,
+				Committed: false,
+			})
+		}
+		_ = socks5.WriteReply(inbound, socks5.ReplyConnectionRefused)
+		return
+	}
 	if err := socks5.WriteReply(inbound, socks5.ReplySucceeded); err != nil {
 		return
 	}
@@ -87,6 +106,7 @@ func (s Server) handle(ctx context.Context, inbound net.Conn) {
 		s.OnDecision(DecisionEvent{
 			Target: target, SelectedPath: result.Observation.Path,
 			ReasonCode: result.ReasonCode, Observation: result.Observation,
+			Committed: true,
 		})
 	}
 	relay(inbound, result.Conn)

@@ -2,7 +2,7 @@
 
 SmartRoute 是一个面向 Mihomo/Clash 生态的“自适应分流”实验项目。它不重新实现代理协议，而是在现有静态规则与代理内核之间加入一个可观测、可解释、可撤销的决策层：对规则无法确定的目标比较 `DIRECT` 与 `PROXY` 路径，按当前网络环境积累证据，并逐渐形成个人化路由策略。
 
-当前状态：Phase 0 架构与可行性验证。已经实现实验性的 TCP/SOCKS5 sidecar 数据通路和独立 Test Lab；尚未接入真实 Mihomo、TLS readiness、学习持久化或发布安装包。
+当前状态：Phase 0 架构与可行性验证。已经实现实验性的 TCP/SOCKS5 sidecar、进程内 Test Lab，以及锁定 Mihomo v1.19.29 的独立子进程契约测试；尚未实现 TLS readiness、学习持久化、活动 Clash 配置接入或发布安装包。
 
 ## 当前结论
 
@@ -49,7 +49,9 @@ flowchart LR
 | TLS readiness gate | 接口已定义，解析未实现 |
 | TLS ClientHello/0-RTT 安全处理 | 未实现 |
 | SQLite 学习、TTL、网络画像 | 未实现 |
-| Mihomo/Clash Verge Rev 集成 | 上游已锁定，Spike 待执行 |
+| 独立 Mihomo listener 拓扑 | v1.19.29 已验证强制 Direct/Proxy、域名保留和循环规避 |
+| Mihomo 自适应路径提交 | 安全门已实现；等待 TLS readiness，当前拒绝 L1 假阳性 |
+| 活动 Clash Verge Rev 集成 | 尚未写入或重载；留待配合下的真实试用 |
 
 ## 本地开发
 
@@ -66,13 +68,15 @@ make check
 
 ## 独立测试环境
 
-日常开发和 CI 不使用本机正在运行的 Clash。独立 Test Lab 只在当前进程内创建 `127.0.0.1:0` 随机端口，模拟目标服务、Direct 网关和 Proxy 网关；不会读取 Clash 配置、访问外网、修改系统代理或启动 TUN。
+日常开发和 CI 不使用本机正在运行的 Clash。进程内 Test Lab 只创建 `127.0.0.1:0` 随机端口；Mihomo Lab 则构建锁定版本，启动专属子进程、临时 home、随机回环端口和合成 DNS。两者都不会读取活动 Clash 配置、访问外网、修改系统代理或启动 TUN。
 
 ```bash
 make testlab
+bash scripts/prepare-upstreams.sh mihomo  # first Mihomo Lab run only
+make mihomo-lab
 ```
 
-当前覆盖 Direct 快速成功、Direct 卡住后 Proxy 恢复、两条路径均失败、域名目标保留和真实字节转发。更详细的边界见 [独立测试环境](docs/07-isolated-test-lab.md)。真实 Mihomo 测试后续也会启动单独子进程和临时配置，不会复用 Clash Verge Rev 的活动环境。
+进程内场景覆盖 Direct 快速成功、Direct 卡住后 Proxy 恢复、两条路径均失败、域名目标保留和真实字节转发。Mihomo 场景验证了强制 Direct、强制 Proxy、域名形式保留、无递归，并确认 Mihomo 的 SOCKS 成功响应只是 L1 `StageOutbound`，不能作为 L2 `StageTCP` 提交。更详细的边界见 [独立测试环境](docs/07-isolated-test-lab.md) 和 [ADR-0004](docs/adr/0004-mihomo-socks-ack-is-not-target-readiness.md)。
 
 为适配真实环境，可以对活动 Clash Verge Rev 目录进行只读、脱敏的结构检查；现阶段仍禁止自动写入或重载。待隔离 Mihomo 测试、备份和回滚验证完成后，再在用户配合下进入短时真实试用，并使用默认关闭、本地保存、可清空的结构化观测记录。详见 [观测与真实试用计划](docs/08-observation-and-live-trial.md)。
 

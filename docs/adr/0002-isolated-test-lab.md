@@ -25,7 +25,7 @@ flowchart LR
 | --- | --- | ---: | --- |
 | 1 | Pure unit tests and `net.Pipe` | Yes | Protocol parsing, decisions, cancellation, state transitions |
 | 2 | In-process loopback Test Lab on OS-assigned ports | Yes | End-to-end SOCKS, racing, relay, deterministic faults |
-| 3 | Separate pinned Mihomo process with generated temporary home/config | Later, explicit command | Validate listener topology and hostname preservation |
+| 3 | Separate pinned Mihomo process with generated temporary home/config | Explicit `make mihomo-lab` | Validate listener topology, hostname preservation, and readiness semantics |
 | 4 | User's active Clash/Mihomo environment | Never | Manually authorized compatibility investigation only |
 
 Tier 2 binds only literal loopback addresses with port `0`, makes no external network connection, and does not discover, read, or write Clash files. Tier 3 must use a temporary directory, newly allocated ports, a separately owned process, and no system proxy/TUN changes by default. Tier 4 requires explicit user authorization for the exact action and is never part of CI.
@@ -42,7 +42,7 @@ Positive:
 Negative:
 
 - Fake gateways cannot prove all Mihomo and operating-system behavior.
-- A separate Mihomo integration tier is still required before production claims.
+- The isolated Mihomo tier cannot model active TUN, system proxy, selectors, sleep/wake, or real network changes.
 - Loopback tests do not model real packet loss, TUN capture, sleep/wake, or network changes.
 
 ## Validation and rollback
@@ -50,4 +50,5 @@ Negative:
 - `go run ./cmd/smartroute-testlab` must report the isolation claims and scenario results as JSON.
 - `go test -race ./...` must cover the Test Lab and candidate cancellation.
 - CI runs the standalone Test Lab as a named step.
+- The pinned Mihomo lab remains an explicit integration command and may run in a separately named workflow.
 - If a future test needs non-loopback access or a Clash file, it must move to a separately named opt-in tier and supersede or amend this decision through an ADR.

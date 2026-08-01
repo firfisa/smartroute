@@ -59,7 +59,9 @@ MVP 不是为了证明“能够自动写 YAML”，而是回答五个可证伪�
 | Direct-first 错峰候选竞争 | 实验性完成 | Direct 快速、Proxy 恢复、双失败场景 |
 | 域名形式目标保留 | 实验性完成 | `echo.test` 经 sidecar 和 fake gateway 断言 |
 | 隔离故障目标 | 第一批完成 | `go run ./cmd/smartroute-testlab` |
-| 独立 Mihomo listener 拓扑 | 待执行 | 临时目录、随机端口、独立子进程 |
+| 独立 Mihomo listener 拓扑 | macOS/v1.19.29 已完成 | `make mihomo-lab`；临时目录、随机端口、独立子进程 |
+| SOCKS readiness 契约 | 已识别安全缺口并封闸 | Mihomo L1 候选产生 `candidate_below_commit_stage`，不得提交或学习 |
+| TLS readiness gate | 待实现 | ClientHello 缓冲、有效服务端 TLS 记录与无 0-RTT 复制 |
 | 系统代理与 TUN | 待执行且仅手动 opt-in | 不使用活动 Clash 实例 |
 
 退出条件：
@@ -220,7 +222,7 @@ MVP 不是为了证明“能够自动写 YAML”，而是回答五个可证伪�
 
 ### 8.1 测试执行隔离
 
-默认测试只运行纯单元测试和进程内回环 Test Lab。它不读取 Clash Verge Rev 配置、不访问 controller、不复用固定端口、不访问公网，也不修改系统代理或 TUN。真实 Mihomo 验证必须使用锁定版本的独立子进程、临时 home/config 和专用回环端口；涉及活动网络环境的测试不进入 CI，并且需要用户针对具体动作显式授权。
+默认 CI 运行纯单元测试和进程内回环 Test Lab。显式的 Mihomo Lab 及其独立 workflow 使用锁定版本子进程、临时 home/config 和专用回环端口。两类自动测试都不读取 Clash Verge Rev 配置、不访问 controller、不复用固定端口、不访问公网，也不修改系统代理或 TUN；涉及活动网络环境的测试不进入 CI，并且需要用户针对具体动作显式授权。
 
 ## 9. 用户研究
 
@@ -260,7 +262,7 @@ MVP 不是为了证明“能够自动写 YAML”，而是回答五个可证伪�
 
 1. 确定实现语言：优先 Go，便于复用网络生态并与 Mihomo 行为对齐；Rust 也可，但开发验证成本可能更高。
 2. 实现最小 SOCKS5 server/client relay。
-3. 用两个 Mihomo listener 验证 Direct/Proxy 路径隔离。
+3. 用两个 Mihomo listener 验证 Direct/Proxy 路径隔离。macOS/v1.19.29 已完成；其 SOCKS ACK 只证明 L1。
 4. 实现候选拨号、延迟启动、取消和结构化事件。
 5. 实现 TLS record 与跨包 ClientHello 解析；明确拒绝复制 early data。
 6. 建立 SQLite schema 和 deterministic state machine。

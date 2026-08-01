@@ -7,8 +7,8 @@ Purpose: prevent the TCP/TLS learning model from being incorrectly generalized t
 
 | Traffic | Can route Direct/Proxy | Can learn | Generic first-session race | Phase |
 | --- | ---: | ---: | ---: | --- |
-| TCP + TLS/HTTPS | Yes | Strong evidence through TCP/TLS readiness | Mostly, before application commit | Phase 1–2 |
-| Generic TCP | Yes | TCP-level evidence; application semantics may remain unknown | Connection-level only | Phase 1–2 |
+| TCP + TLS/HTTPS | Yes | Strong evidence only after TLS-aware readiness | Planned; Mihomo SOCKS ACK alone is insufficient | Phase 1–2 |
+| Generic TCP | Yes | Historical or protocol-specific evidence | No generic first-session race through current Mihomo SOCKS listeners | Phase 1–2 |
 | DNS | Yes | Strong request/response semantics | Protocol-specific comparison | Phase 2+ diagnostic module |
 | QUIC/HTTP3 | Yes | Possible with QUIC-aware state | No generic transparent race | Later |
 | STUN | Yes | Protocol-specific response and NAT behavior | Not with the generic engine | Later |
@@ -33,7 +33,7 @@ flowchart TD
 
 | Protocol condition | Allowed | Forbidden |
 | --- | --- | --- |
-| TCP before application bytes | Staggered candidate connection attempts | Treating TCP connect as proof of HTTPS success |
+| TCP before application bytes | Staggered candidate attempts with an explicit readiness contract | Treating Mihomo SOCKS success as target TCP or HTTPS success |
 | TLS without early data | Buffer/parse complete ClientHello; compare safe handshake readiness | Assuming ClientHello arrives in one read |
 | TLS 1.3 early data | Use history or one selected path | Duplicating early application data |
 | Plain HTTP | Connection-level routing; explicit application integration may add safe methods | Generic payload replay based only on method name |

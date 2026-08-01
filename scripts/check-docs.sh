@@ -31,6 +31,7 @@ required_files=(
   "docs/adr/0001-sidecar-first.md"
   "docs/adr/0002-isolated-test-lab.md"
   "docs/adr/0003-read-only-clash-inspection-and-live-rollout.md"
+  "docs/adr/0004-mihomo-socks-ack-is-not-target-readiness.md"
   "configs/smartroute.example.json"
   "upstreams.lock"
 )
@@ -73,6 +74,12 @@ fi
 if ! matches 'Scoped read-only inspection' "${project_root}/AGENTS.md" ||
   ! matches 'Until this procedure reaches step 7 with explicit confirmation' "${project_root}/docs/08-observation-and-live-trial.md"; then
   echo "read-only inspection or coordinated live-write boundary is missing" >&2
+  exit 1
+fi
+
+if ! matches 'candidate_below_commit_stage' "${project_root}/docs/02-technical-design.md" "${project_root}/docs/04-component-catalog.md" ||
+  ! matches 'make mihomo-lab' "${project_root}/README.md" "${project_root}/docs/07-isolated-test-lab.md"; then
+  echo "Mihomo readiness contract or isolated lab documentation is inconsistent" >&2
   exit 1
 fi
 

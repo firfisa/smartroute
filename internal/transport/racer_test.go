@@ -61,7 +61,7 @@ func TestRacerDirectReadyDoesNotStartProxy(t *testing.T) {
 		t.Fatalf("Race() error = %v", err)
 	}
 	defer result.Conn.Close()
-	if result.Observation.Path != model.PathDirect || result.ReasonCode != ReasonDirectReadyBeforeHeadStart {
+	if result.Observation.Path != model.PathDirect || result.ReasonCode != ReasonDirectCandidateBeforeHeadStart {
 		t.Fatalf("Race() = %+v", result)
 	}
 	if proxy.attempts.Load() != 0 {
@@ -80,7 +80,7 @@ func TestRacerProxyWinsAndCancelsDirect(t *testing.T) {
 		t.Fatalf("Race() error = %v", err)
 	}
 	defer result.Conn.Close()
-	if result.Observation.Path != model.PathProxy || result.ReasonCode != ReasonProxyWonRace {
+	if result.Observation.Path != model.PathProxy || result.ReasonCode != ReasonProxyCandidateWon {
 		t.Fatalf("Race() = %+v", result)
 	}
 	select {
