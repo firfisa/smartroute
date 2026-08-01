@@ -1,14 +1,23 @@
 package sidecar
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"io"
+	"math/big"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/firfisa/smartroute/internal/model"
 	"github.com/firfisa/smartroute/internal/socks5"
+	"github.com/firfisa/smartroute/internal/tlsinspect"
 	"github.com/firfisa/smartroute/internal/transport"
 )
 
@@ -74,7 +83,7 @@ func TestServerNeverCommitsCandidateBelowTCP(t *testing.T) {
 
 	select {
 	case event := <-events:
-		if event.Committed || event.ReasonCode != ReasonCandidateBelowCommitStage || event.Observation.StageReached != model.StageOutbound {
+		if event.EventType != EventTypeDecision || event.Committed || event.ReasonCode != ReasonCandidateBelowCommitStage || event.Observation.StageReached != model.StageOutbound {
 			t.Fatalf("event = %+v", event)
 		}
 	case <-time.After(time.Second):
@@ -94,4 +103,257 @@ func TestServerNeverCommitsCandidateBelowTCP(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("handler did not stop")
 	}
+}
+
+type sidecarTLSCandidate struct {
+	path     model.Path
+	handler  func(net.Conn)
+	attempts atomic.Int32
+}
+
+func (d *sidecarTLSCandidate) Dial(_ context.Context, _ model.Target) (net.Conn, model.Observation, error) {
+	d.attempts.Add(1)
+	client, server := net.Pipe()
+	go func() {
+		defer server.Close()
+		d.handler(server)
+	}()
+	return client, model.Observation{Path: d.path, Success: true, StageReached: model.StageOutbound}, nil
+}
+
+func TestServerTLSModeCommitsProxyAfterServerHello(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	serverConn, clientConn := net.Pipe()
+	helloWire := fragmentedClientHello(false)
+	serverWire := validServerHelloRecord()
+	direct := &sidecarTLSCandidate{path: model.PathDirect, handler: func(conn net.Conn) {
+		_, _ = io.CopyN(io.Discard, conn, int64(len(helloWire)))
+		_, _ = io.Copy(io.Discard, conn)
+	}}
+	proxy := &sidecarTLSCandidate{path: model.PathProxy, handler: func(conn net.Conn) {
+		received := make([]byte, len(helloWire))
+		if _, err := io.ReadFull(conn, received); err == nil && bytes.Equal(received, helloWire) {
+			_, _ = conn.Write(serverWire)
+		}
+	}}
+	events := make(chan DecisionEvent, 1)
+	diagnostics := make(chan DiagnosticEvent, 1)
+	server := Server{
+		HandshakeTimeout: time.Second,
+		TLSRacer: &transport.TLSRacer{
+			Direct: direct, Proxy: proxy, Gate: transport.TLSServerHelloGate{},
+			HeadStart: 10 * time.Millisecond, Timeout: time.Second,
+		},
+		OnDecision:   func(event DecisionEvent) { events <- event },
+		OnDiagnostic: func(event DiagnosticEvent) { diagnostics <- event },
+	}
+	handled := make(chan struct{})
+	go func() {
+		server.handle(ctx, serverConn)
+		close(handled)
+	}()
+
+	performSOCKSRequest(t, clientConn)
+	for _, fragment := range [][]byte{helloWire[:7], helloWire[7:23], helloWire[23:]} {
+		if _, err := clientConn.Write(fragment); err != nil {
+			t.Fatal(err)
+		}
+	}
+	receivedServerHello := make([]byte, len(serverWire))
+	if _, err := io.ReadFull(clientConn, receivedServerHello); err != nil || !bytes.Equal(receivedServerHello, serverWire) {
+		t.Fatalf("server replay error=%v bytes=%x", err, receivedServerHello)
+	}
+	select {
+	case event := <-events:
+		if event.EventType != EventTypeDecision || !event.Committed || event.SelectedPath != model.PathProxy || event.Observation.StageReached != model.StageTLS {
+			t.Fatalf("decision event = %+v", event)
+		}
+	case <-ctx.Done():
+		t.Fatal("missing TLS decision event")
+	}
+	select {
+	case diagnostic := <-diagnostics:
+		t.Fatalf("unexpected diagnostic = %+v", diagnostic)
+	default:
+	}
+	_ = clientConn.Close()
+	select {
+	case <-handled:
+	case <-ctx.Done():
+		t.Fatal("TLS handler did not stop")
+	}
+}
+
+func TestServerTLSModeRejectsEarlyDataBeforeCandidateDial(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	serverConn, clientConn := net.Pipe()
+	direct := &sidecarTLSCandidate{path: model.PathDirect, handler: func(net.Conn) {}}
+	proxy := &sidecarTLSCandidate{path: model.PathProxy, handler: func(net.Conn) {}}
+	diagnostics := make(chan DiagnosticEvent, 1)
+	server := Server{
+		HandshakeTimeout: time.Second,
+		TLSRacer: &transport.TLSRacer{
+			Direct: direct, Proxy: proxy, Gate: transport.TLSServerHelloGate{},
+			HeadStart: 10 * time.Millisecond, Timeout: time.Second,
+		},
+		OnDiagnostic: func(event DiagnosticEvent) { diagnostics <- event },
+	}
+	go server.handle(ctx, serverConn)
+	performSOCKSRequest(t, clientConn)
+	if _, err := clientConn.Write(fragmentedClientHello(true)); err != nil {
+		t.Fatal(err)
+	}
+	_ = clientConn.SetReadDeadline(time.Now().Add(time.Second))
+	buffer := make([]byte, 1)
+	if _, err := clientConn.Read(buffer); err == nil {
+		t.Fatal("early-data connection remained open")
+	}
+	select {
+	case event := <-diagnostics:
+		if event.EventType != EventTypeDiagnostic || event.ReasonCode != ReasonClientHelloRejected || event.FailureClass != tlsinspect.FailureTLSEarlyData {
+			t.Fatalf("diagnostic event = %+v", event)
+		}
+	case <-ctx.Done():
+		t.Fatal("missing early-data diagnostic")
+	}
+	if direct.attempts.Load() != 0 || proxy.attempts.Load() != 0 {
+		t.Fatalf("candidate attempts direct=%d proxy=%d", direct.attempts.Load(), proxy.attempts.Load())
+	}
+}
+
+func TestServerTLSModeCompletesGoTLSHandshakeThroughWinner(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	serverConn, clientConn := net.Pipe()
+	certificate := testTLSCertificate(t)
+	direct := &sidecarTLSCandidate{path: model.PathDirect, handler: func(conn net.Conn) {
+		_, _ = tlsinspect.ReadClientHello(conn, 0)
+		_, _ = io.Copy(io.Discard, conn)
+	}}
+	proxy := &sidecarTLSCandidate{path: model.PathProxy, handler: func(conn net.Conn) {
+		server := tls.Server(conn, &tls.Config{Certificates: []tls.Certificate{certificate}, MinVersion: tls.VersionTLS13, MaxVersion: tls.VersionTLS13})
+		if err := server.HandshakeContext(ctx); err != nil {
+			return
+		}
+		payload := make([]byte, 4)
+		if _, err := io.ReadFull(server, payload); err == nil {
+			_, _ = server.Write(payload)
+		}
+	}}
+	events := make(chan DecisionEvent, 1)
+	server := Server{
+		HandshakeTimeout: 2 * time.Second,
+		TLSRacer: &transport.TLSRacer{
+			Direct: direct, Proxy: proxy, Gate: transport.TLSServerHelloGate{},
+			HeadStart: 10 * time.Millisecond, Timeout: 2 * time.Second,
+		},
+		OnDecision: func(event DecisionEvent) { events <- event },
+	}
+	go server.handle(ctx, serverConn)
+	performSOCKSRequest(t, clientConn)
+	client := tls.Client(clientConn, &tls.Config{
+		ServerName: "echo.test", InsecureSkipVerify: true,
+		MinVersion: tls.VersionTLS13, MaxVersion: tls.VersionTLS13,
+	})
+	if err := client.HandshakeContext(ctx); err != nil {
+		t.Fatalf("TLS handshake through sidecar: %v", err)
+	}
+	if _, err := client.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	payload := make([]byte, 4)
+	if _, err := io.ReadFull(client, payload); err != nil || string(payload) != "ping" {
+		t.Fatalf("TLS echo error=%v payload=%q", err, payload)
+	}
+	select {
+	case event := <-events:
+		if event.EventType != EventTypeDecision || event.SelectedPath != model.PathProxy || event.Observation.StageReached != model.StageTLS || !event.Committed {
+			t.Fatalf("decision event = %+v", event)
+		}
+	case <-ctx.Done():
+		t.Fatal("missing real TLS decision event")
+	}
+	_ = client.Close()
+}
+
+func performSOCKSRequest(t *testing.T, conn net.Conn) {
+	t.Helper()
+	if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
+		t.Fatal(err)
+	}
+	methodReply := make([]byte, 2)
+	if _, err := io.ReadFull(conn, methodReply); err != nil {
+		t.Fatal(err)
+	}
+	request := append([]byte{0x05, 0x01, 0x00, 0x03, 0x09}, []byte("echo.test")...)
+	request = append(request, 0x01, 0xbb)
+	if _, err := conn.Write(request); err != nil {
+		t.Fatal(err)
+	}
+	reply := make([]byte, 10)
+	if _, err := io.ReadFull(conn, reply); err != nil {
+		t.Fatal(err)
+	}
+	if reply[1] != byte(socks5.ReplySucceeded) {
+		t.Fatalf("SOCKS reply = 0x%02x", reply[1])
+	}
+}
+
+func fragmentedClientHello(withEarlyData bool) []byte {
+	extensions := []byte{}
+	if withEarlyData {
+		extensions = []byte{0x00, 0x2a, 0x00, 0x00}
+	}
+	body := []byte{0x03, 0x03}
+	body = append(body, make([]byte, 32)...)
+	body = append(body, 0x00, 0x00, 0x02, 0x13, 0x01, 0x01, 0x00)
+	body = append(body, byte(len(extensions)>>8), byte(len(extensions)))
+	body = append(body, extensions...)
+	handshake := append([]byte{1, byte(len(body) >> 16), byte(len(body) >> 8), byte(len(body))}, body...)
+	split := 13
+	return append(tlsRecord(22, handshake[:split]), tlsRecord(22, handshake[split:])...)
+}
+
+func validServerHelloRecord() []byte {
+	body := []byte{0x03, 0x03}
+	body = append(body, make([]byte, 32)...)
+	body = append(body, 0x00, 0x13, 0x01, 0x00, 0x00, 0x06, 0x00, 0x2b, 0x00, 0x02, 0x03, 0x04)
+	handshake := append([]byte{2, byte(len(body) >> 16), byte(len(body) >> 8), byte(len(body))}, body...)
+	return tlsRecord(22, handshake)
+}
+
+func tlsRecord(contentType byte, payload []byte) []byte {
+	return append([]byte{contentType, 0x03, 0x03, byte(len(payload) >> 8), byte(len(payload))}, payload...)
+}
+
+func testTLSCertificate(t *testing.T) tls.Certificate {
+	t.Helper()
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		DNSNames:     []string{"echo.test"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+	}
+	certificateDER, err := x509.CreateCertificate(rand.Reader, template, template, publicKey, privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificatePEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificateDER})
+	privateKeyDER, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateKeyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateKeyDER})
+	certificate, err := tls.X509KeyPair(certificatePEM, privateKeyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return certificate
 }

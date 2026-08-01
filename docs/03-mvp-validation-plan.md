@@ -61,7 +61,7 @@ MVP 不是为了证明“能够自动写 YAML”，而是回答五个可证伪�
 | 隔离故障目标 | 第一批完成 | `go run ./cmd/smartroute-testlab` |
 | 独立 Mihomo listener 拓扑 | macOS/v1.19.29 已完成 | `make mihomo-lab`；临时目录、随机端口、独立子进程 |
 | SOCKS readiness 契约 | 已识别安全缺口并封闸 | Mihomo L1 候选产生 `candidate_below_commit_stage`，不得提交或学习 |
-| TLS readiness gate | 待实现 | ClientHello 缓冲、有效服务端 TLS 记录与无 0-RTT 复制 |
+| TLS readiness gate | 实验性完成 | 分片 ClientHello、early-data 预拨号拒绝、ServerHello L3、精确预读回放 |
 | 系统代理与 TUN | 待执行且仅手动 opt-in | 不使用活动 Clash 实例 |
 
 退出条件：
@@ -264,7 +264,7 @@ MVP 不是为了证明“能够自动写 YAML”，而是回答五个可证伪�
 2. 实现最小 SOCKS5 server/client relay。
 3. 用两个 Mihomo listener 验证 Direct/Proxy 路径隔离。macOS/v1.19.29 已完成；其 SOCKS ACK 只证明 L1。
 4. 实现候选拨号、延迟启动、取消和结构化事件。
-5. 实现 TLS record 与跨包 ClientHello 解析；明确拒绝复制 early data。
+5. 实现 TLS record 与跨包 ClientHello 解析；明确拒绝复制 early data。最小安全切片已完成，完整真实 TLS 握手兼容矩阵仍待扩展。
 6. 建立 SQLite schema 和 deterministic state machine。
 7. 加入网络画像、控制探针和学习冻结。
 8. 做 CLI：状态、观测、锁定、撤销、隐私列表、导出。

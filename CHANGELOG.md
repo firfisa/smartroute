@@ -28,10 +28,15 @@ All notable project changes are recorded here. The project has not published a r
 - Isolated pinned-Mihomo child-process lab with temporary home, synthetic DNS, random loopback ports, and no TUN/system-proxy changes.
 - Runtime verification of forced Direct, forced Proxy, SOCKS domain preservation, and loop prevention on Mihomo v1.19.29.
 - Conservative readiness correction: Mihomo SOCKS success is `StageOutbound`, while the sidecar requires `StageTCP` to commit.
-- `candidate_below_commit_stage` rejection so experimental routing fails safely until TLS readiness exists.
+- `candidate_below_commit_stage` rejection so plain transport candidates fail safely below L2.
 - Manual GitHub Actions workflow for the isolated pinned-Mihomo contract lab.
+- Bounded TLS record inspector with fragmented ClientHello/ServerHello support and stable failure classes.
+- Pre-dial TLS `early_data` rejection, staggered L3 candidate racing, loser cancellation, and exact ServerHello replay.
+- Experimental `serve` TLS mode and `event_type`-discriminated diagnostics for rejected ClientHello or failed TLS candidates.
+- End-to-end Mihomo recovery from an unreachable Direct target to a Proxy `StageTLS` winner.
+- In-memory Go `crypto/tls` 1.3 handshake and encrypted echo through the selected sidecar path.
 
 ### Known limitations
 
-- TCP-level SOCKS relay is experimental; TLS readiness, learning persistence, and the Mihomo adapter are not implemented yet.
+- TLS readiness is structural and experimental; certificate/Finished validation, learning persistence, active Mihomo adapter/fallback, and broad real-site compatibility are not implemented yet.
 - No public release artifacts have been published yet.

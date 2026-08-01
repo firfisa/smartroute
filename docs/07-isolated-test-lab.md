@@ -1,6 +1,6 @@
 # Isolated Test Lab
 
-Version: v0.2
+Version: v0.3
 Status: in-process and pinned-Mihomo tiers implemented
 
 ## 1. Safety boundary
@@ -12,7 +12,7 @@ The default SmartRoute test path is deliberately unable to operate the user's ac
 | Listener addresses | Literal `127.0.0.1` only |
 | Ports | `127.0.0.1:0`; assigned ephemerally by the operating system |
 | External destinations | None |
-| Test target | In-process TCP echo server |
+| Test target | In-process TCP echo and structurally valid synthetic TLS server |
 | Direct and Proxy paths | In-process fake gateways, or dedicated Mihomo forced listeners |
 | Clash configuration/API | Not discovered, read, written, or reloaded |
 | System proxy and TUN | Not changed |
@@ -48,6 +48,8 @@ The gateways map the reserved test hostname `echo.test` to the local echo target
 | `direct_candidate_before_head_start` | Direct immediately reaches the fake gateway's declared L2 contract | Direct selected; Proxy never contacted; payload echoed |
 | `proxy_recovers_slow_direct` | Direct stalls; Proxy becomes ready after stagger | Proxy selected; Direct canceled; payload echoed |
 | `both_paths_fail` | Both gateways reject CONNECT | Client receives failure; no route is promoted |
+
+Additional in-memory TLS tests use `net.Pipe`: one completes a real Go `crypto/tls` 1.3 handshake and encrypted echo through the Proxy winner; another proves an `early_data` ClientHello opens zero candidates.
 
 Run the lab:
 
@@ -89,17 +91,18 @@ flowchart LR
     S --> D["Mihomo forced DIRECT listener"]
     S --> P["Mihomo forced Proxy listener"]
     P --> G["Local fake SOCKS proxy"]
-    D --> E["Local echo target"]
-    G --> E
+    D --> E["Local echo/TLS targets"]
+    G --> T["Synthetic TLS target"]
 ```
 
 | Scenario | Verified contract |
 | --- | --- |
 | `forced_direct_loopback` | Forced Direct listener reaches the local target without touching Proxy |
-| `forced_proxy_preserves_domain` | Forced Proxy uses the local proxy and preserves `echo.test` in domain form |
-| `mihomo_socks_ack_is_not_target_readiness` | Front listener ACK is only L1; sidecar closes it with `candidate_below_commit_stage` and `committed=false` |
+| `forced_proxy_preserves_domain` | Forced Proxy preserves `echo.test` and returns the synthetic ServerHello |
+| `mihomo_socks_ack_is_not_target_readiness` | Forced Direct ACK remains L1 and no ServerHello arrives |
+| `tls_proxy_recovers_unreachable_direct` | Front adaptive flow rejects Direct as unready, commits Proxy at `StageTLS`, and replays ServerHello |
 
-This negative readiness scenario is an expected pass. It proves the current adaptive path fails safely instead of learning from a false target-success signal.
+The negative L1 scenario and positive L3 recovery are both required. Together they prove the sidecar neither learns from a SOCKS false positive nor waits for a later application retry when a safe TLS first flight can recover the connection.
 
 System-proxy and TUN validation will be a distinct, manual opt-in suite because those operations can affect the host network even when a separate config is used.
 
@@ -111,5 +114,6 @@ The owner permits scoped, redacted read-only inspection of the active Clash Verg
 
 - Fake gateways that connect before replying can explicitly claim L2 `StageTCP`; Mihomo SOCKS listeners claim only L1 `StageOutbound`.
 - The isolated Mihomo lab covers startup listener semantics, not active selectors, Fake-IP/TUN capture, reload behavior, or operating-system integration.
-- TLS ClientHello buffering, server-record validation, and 0-RTT handling are not implemented; therefore the real Mihomo adaptive path remains gated.
+- The TLS parser is bounded and structural: it does not validate certificates, Finished, ALPN, application success, or every real-world TLS fingerprint.
+- ClientHello duplication can expose the same handshake fingerprint from Direct and Proxy egresses; privacy-denied targets must never enter this mode.
 - No observations are persisted or promoted into learned policies yet.

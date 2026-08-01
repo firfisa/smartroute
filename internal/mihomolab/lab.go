@@ -23,6 +23,7 @@ import (
 	"github.com/firfisa/smartroute/internal/sidecar"
 	"github.com/firfisa/smartroute/internal/socks5"
 	"github.com/firfisa/smartroute/internal/testlab"
+	"github.com/firfisa/smartroute/internal/tlsinspect"
 	"github.com/firfisa/smartroute/internal/transport"
 )
 
@@ -34,6 +35,7 @@ type Report struct {
 	ConfigValidated      bool             `json:"config_validated"`
 	LoopPrevented        bool             `json:"loop_prevented"`
 	ReadinessGapDetected bool             `json:"readiness_gap_detected"`
+	TLSReadinessVerified bool             `json:"tls_readiness_verified"`
 	DecisionEventCount   int              `json:"decision_event_count"`
 	DecisionEvents       []EventSummary   `json:"decision_events"`
 	GatewayLastHost      string           `json:"gateway_last_host,omitempty"`
@@ -71,6 +73,7 @@ type EventSummary struct {
 	TargetHost   string     `json:"target_host"`
 	SelectedPath model.Path `json:"selected_path"`
 	ReasonCode   string     `json:"reason_code"`
+	Stage        string     `json:"stage_reached"`
 	Committed    bool       `json:"committed"`
 }
 
@@ -118,7 +121,12 @@ func Run(parent context.Context, binaryPath string) (Report, error) {
 		return report, err
 	}
 	defer echo.Close()
-	gateway, err := testlab.StartSOCKSGateway(ctx, echo.Address())
+	tlsTarget, err := startTLSTarget(ctx)
+	if err != nil {
+		return report, err
+	}
+	defer tlsTarget.Close()
+	gateway, err := testlab.StartSOCKSGateway(ctx, tlsTarget.Address())
 	if err != nil {
 		return report, err
 	}
@@ -154,9 +162,10 @@ func Run(parent context.Context, binaryPath string) (Report, error) {
 	server := sidecar.Server{
 		NetworkProfileID: "isolated-mihomo-lab",
 		HandshakeTimeout: 2 * time.Second,
-		Racer: transport.Racer{
+		TLSRacer: &transport.TLSRacer{
 			Direct:    transport.SOCKS5Dialer{Path: model.PathDirect, Endpoint: loopbackAddress(ports.direct)},
 			Proxy:     transport.SOCKS5Dialer{Path: model.PathProxy, Endpoint: loopbackAddress(ports.proxy)},
+			Gate:      transport.TLSServerHelloGate{},
 			HeadStart: 40 * time.Millisecond,
 			Timeout:   2 * time.Second,
 		},
@@ -184,27 +193,31 @@ func Run(parent context.Context, binaryPath string) (Report, error) {
 	directResult.ReasonCode = "forced_listener_direct"
 	directResult.Passed = directResult.PayloadVerified && directResult.ProxyAttempts == 0
 	report.Scenarios = append(report.Scenarios, directResult)
-	proxyListenerResult := runScenario(ctx, loopbackAddress(ports.proxy), "forced_proxy_preserves_domain", mappedHostname, echo.Port(), model.PathProxy, true, gateway)
+	proxyListenerResult := runTLSScenario(ctx, loopbackAddress(ports.proxy), "forced_proxy_preserves_domain", mappedHostname, tlsTarget.Port(), model.PathProxy, true, gateway)
 	proxyListenerResult.SelectedPath = model.PathProxy
 	proxyListenerResult.ReasonCode = "forced_listener_proxy"
 	proxyListenerResult.Passed = proxyListenerResult.PayloadVerified && proxyListenerResult.DomainPreserved && proxyListenerResult.ProxyAttempts == 1
 	report.Scenarios = append(report.Scenarios, proxyListenerResult)
-	gapResult := runScenario(ctx, frontEndpoint, "mihomo_socks_ack_is_not_target_readiness", mappedHostname, echo.Port(), model.PathDirect, false, gateway)
+	gapResult, gapObservation := runOutboundGap(ctx, loopbackAddress(ports.direct), "mihomo_socks_ack_is_not_target_readiness", mappedHostname, tlsTarget.Port(), gateway)
+	gapResult.SelectedPath = model.PathDirect
+	gapResult.ReasonCode = "mihomo_socks_ack_outbound_only"
+	report.ReadinessGapDetected = !gapResult.PayloadVerified && gapObservation.Success &&
+		gapObservation.StageReached == model.StageOutbound && gapResult.ProxyAttempts == 0
+	gapResult.Passed = report.ReadinessGapDetected
 	report.Scenarios = append(report.Scenarios, gapResult)
-
-	for _, index := range []int{2} {
-		event, ok := waitForEvent(ctx, &eventMu, &events, report.Scenarios[index].TargetHost)
-		if !ok {
-			report.Scenarios[index].ObservedError = "missing SmartRoute decision event"
-			continue
-		}
-		report.Scenarios[index].SelectedPath = event.SelectedPath
-		report.Scenarios[index].ReasonCode = event.ReasonCode
-		report.ReadinessGapDetected = !report.Scenarios[index].PayloadVerified && !event.Committed &&
-			event.SelectedPath == model.PathDirect && event.Observation.StageReached == model.StageOutbound &&
-			event.ReasonCode == sidecar.ReasonCandidateBelowCommitStage && report.Scenarios[index].ProxyAttempts == 0
-		report.Scenarios[index].Passed = report.ReadinessGapDetected
+	adaptiveResult := runTLSScenario(ctx, frontEndpoint, "tls_proxy_recovers_unreachable_direct", mappedHostname, tlsTarget.Port(), model.PathProxy, true, gateway)
+	event, ok := waitForEvent(ctx, &eventMu, &events, adaptiveResult.TargetHost)
+	if !ok {
+		adaptiveResult.ObservedError = "missing SmartRoute TLS decision event"
+	} else {
+		adaptiveResult.SelectedPath = event.SelectedPath
+		adaptiveResult.ReasonCode = event.ReasonCode
+		report.TLSReadinessVerified = adaptiveResult.PayloadVerified && adaptiveResult.DomainPreserved &&
+			adaptiveResult.ProxyAttempts == 1 && event.Committed && event.SelectedPath == model.PathProxy &&
+			event.Observation.StageReached == model.StageTLS
+		adaptiveResult.Passed = report.TLSReadinessVerified
 	}
+	report.Scenarios = append(report.Scenarios, adaptiveResult)
 
 	time.Sleep(100 * time.Millisecond)
 	eventMu.Lock()
@@ -212,13 +225,14 @@ func Run(parent context.Context, binaryPath string) (Report, error) {
 	for _, event := range events {
 		report.DecisionEvents = append(report.DecisionEvents, EventSummary{
 			TargetHost: event.Target.Hostname, SelectedPath: event.SelectedPath,
-			ReasonCode: event.ReasonCode, Committed: event.Committed,
+			ReasonCode: event.ReasonCode, Stage: event.Observation.StageReached.String(),
+			Committed: event.Committed,
 		})
 	}
 	eventMu.Unlock()
 	_, report.GatewayLastHost = gateway.Snapshot()
 	report.LoopPrevented = report.DecisionEventCount == 1 && child.Running()
-	report.Passed = report.ConfigValidated && report.LoopPrevented && report.ReadinessGapDetected
+	report.Passed = report.ConfigValidated && report.LoopPrevented && report.ReadinessGapDetected && report.TLSReadinessVerified
 	for _, scenario := range report.Scenarios {
 		report.Passed = report.Passed && scenario.Passed
 	}
@@ -423,6 +437,60 @@ func runScenario(ctx context.Context, frontEndpoint, name, host string, port uin
 	result.ProxyAttempts = afterAttempts - beforeAttempts
 	result.DomainPreserved = result.ProxyAttempts > 0 && lastHost == mappedHostname
 	return result
+}
+
+func runTLSScenario(ctx context.Context, endpoint, name, host string, port uint16, expected model.Path, expectedPayload bool, gateway *testlab.SOCKSGateway) ScenarioResult {
+	beforeAttempts, _ := gateway.Snapshot()
+	result := ScenarioResult{Name: name, TargetHost: host, ExpectedPath: expected, ExpectedPayload: expectedPayload}
+	client, err := socks5.DialContext(ctx, endpoint, socks5.Request{Host: host, Port: port})
+	if err != nil {
+		result.ObservedError = err.Error()
+		return result
+	}
+	defer client.Close()
+	_ = client.SetDeadline(time.Now().Add(3 * time.Second))
+	if _, err := client.Write(syntheticClientHelloRecords()); err != nil {
+		result.ObservedError = fmt.Sprintf("write ClientHello: %v", err)
+		return result
+	}
+	hello, err := tlsinspect.ReadServerHello(client, 0)
+	if err != nil {
+		result.ObservedError = fmt.Sprintf("read ServerHello: %v", err)
+	} else {
+		result.PayloadVerified = bytes.Equal(hello.Wire, syntheticServerHelloRecord())
+	}
+	afterAttempts, lastHost := gateway.Snapshot()
+	result.ProxyAttempts = afterAttempts - beforeAttempts
+	result.DomainPreserved = result.ProxyAttempts > 0 && lastHost == mappedHostname
+	return result
+}
+
+func runOutboundGap(ctx context.Context, endpoint, name, host string, port uint16, gateway *testlab.SOCKSGateway) (ScenarioResult, model.Observation) {
+	beforeAttempts, _ := gateway.Snapshot()
+	result := ScenarioResult{
+		Name: name, TargetHost: host, ExpectedPath: model.PathDirect, ExpectedPayload: false,
+	}
+	client, observation, err := (transport.SOCKS5Dialer{Path: model.PathDirect, Endpoint: endpoint}).Dial(ctx, model.Target{
+		Hostname: host, Port: port, Transport: model.TransportTCP,
+	})
+	if err != nil {
+		result.ObservedError = err.Error()
+		return result, observation
+	}
+	defer client.Close()
+	_ = client.SetDeadline(time.Now().Add(3 * time.Second))
+	if _, err := client.Write(syntheticClientHelloRecords()); err != nil {
+		result.ObservedError = fmt.Sprintf("write ClientHello: %v", err)
+		return result, observation
+	}
+	if _, err := tlsinspect.ReadServerHello(client, 0); err != nil {
+		result.ObservedError = fmt.Sprintf("read ServerHello: %v", err)
+	} else {
+		result.PayloadVerified = true
+	}
+	afterAttempts, _ := gateway.Snapshot()
+	result.ProxyAttempts = afterAttempts - beforeAttempts
+	return result, observation
 }
 
 type dnsServer struct {

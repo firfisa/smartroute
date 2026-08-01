@@ -48,6 +48,7 @@ These rules must not be weakened silently:
 11. Domain observations, process information, and network fingerprints remain local by default.
 12. Every automatic decision must expose a machine-readable reason and evidence summary.
 13. Mihomo SOCKS CONNECT success is only `StageOutbound`; it must not be committed or learned as target TCP success without a stronger readiness gate.
+14. TLS first-flight racing may duplicate only a fully parsed ClientHello without `early_data`; every consumed winner byte must be replayed exactly, and a valid ServerHello is L3 evidence rather than full-handshake success.
 
 ## 4. Repository map
 
@@ -66,6 +67,7 @@ Keep this map current whenever a top-level component is added, removed, or renam
 | `internal/sidecar/` | Inbound SOCKS server, path commitment, and TCP relay |
 | `internal/testlab/` | Loopback targets, fake gateways, and fault scenarios |
 | `internal/mihomolab/` | Temporary Mihomo config, child lifecycle, synthetic DNS, and topology assertions |
+| `internal/tlsinspect/` | Bounded ClientHello/ServerHello record parsing and early-data rejection |
 | `internal/upstream/` | Mihomo integration boundaries and adapters |
 | `docs/` | Maintained product, architecture, interface, and validation documentation |
 | `docs/adr/` | Architecture Decision Records |

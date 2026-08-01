@@ -93,9 +93,10 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	server := sidecar.Server{
 		NetworkProfileID: *profileID,
 		HandshakeTimeout: cfg.CandidateTimeout(),
-		Racer: transport.Racer{
+		TLSRacer: &transport.TLSRacer{
 			Direct:    transport.SOCKS5Dialer{Path: model.PathDirect, Endpoint: cfg.DirectEndpoint},
 			Proxy:     transport.SOCKS5Dialer{Path: model.PathProxy, Endpoint: cfg.ProxyEndpoint},
+			Gate:      transport.TLSServerHelloGate{},
 			HeadStart: cfg.DirectHeadStart(),
 			Timeout:   cfg.CandidateTimeout(),
 		},
@@ -104,8 +105,13 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 			defer outputMu.Unlock()
 			_ = json.NewEncoder(stdout).Encode(event)
 		},
+		OnDiagnostic: func(event sidecar.DiagnosticEvent) {
+			outputMu.Lock()
+			defer outputMu.Unlock()
+			_ = json.NewEncoder(stdout).Encode(event)
+		},
 	}
-	fmt.Fprintf(stderr, "experimental sidecar listening on %s; no Clash files are read or modified\n", listener.Addr())
+	fmt.Fprintf(stderr, "experimental TLS sidecar listening on %s; no Clash files are read or modified\n", listener.Addr())
 	return server.Serve(ctx, listener)
 }
 
@@ -206,7 +212,7 @@ Usage:
   smartroute serve -acknowledge-direct-probes [-config path] [-network-profile label]
 
 The trace command evaluates one synthetic paired observation. The experimental
-serve command opens only the configured loopback listener and does not read or
-modify Clash configuration. It requires an explicit Direct-probe acknowledgment
-and does not persist learned policy yet.`)
+serve command accepts TLS-over-SOCKS on the configured loopback listener and
+does not read or modify Clash configuration. It requires an explicit Direct-
+probe acknowledgment and does not persist learned policy yet.`)
 }

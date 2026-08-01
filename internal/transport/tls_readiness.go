@@ -1,0 +1,191 @@
+package transport
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"time"
+
+	"github.com/firfisa/smartroute/internal/model"
+	"github.com/firfisa/smartroute/internal/tlsinspect"
+)
+
+const (
+	FailureTLSCanceled         = "canceled"
+	FailureTLSTimeout          = "tls_timeout"
+	FailureTLSConnectionClosed = "tls_connection_closed"
+	FailureClientHelloWrite    = "client_hello_write_failed"
+)
+
+// TLSServerHelloGate promotes a candidate only after receiving a complete,
+// structurally valid ServerHello. Every consumed server byte is returned for
+// exact replay to the selected client.
+type TLSServerHelloGate struct {
+	MaxHandshakeBytes int
+}
+
+func (g TLSServerHelloGate) Await(ctx context.Context, conn net.Conn, _ model.Target) (ReadinessResult, error) {
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = conn.SetReadDeadline(deadline)
+	}
+	hello, err := tlsinspect.ReadServerHello(conn, g.MaxHandshakeBytes)
+	if err != nil {
+		result := ReadinessResult{StageReached: model.StageOutbound, FailureClass: classifyTLSReadinessFailure(ctx, err)}
+		if result.FailureClass == tlsinspect.FailureTLSAlert || result.FailureClass == tlsinspect.FailureTLSUnexpected {
+			result.StageReached = model.StageTLS
+		}
+		return result, err
+	}
+	_ = conn.SetReadDeadline(time.Time{})
+	return ReadinessResult{StageReached: model.StageTLS, Prefetched: hello.Wire}, nil
+}
+
+// TLSRacer duplicates only a validated, no-early-data ClientHello across the
+// two candidate paths, then reuses Racer to select the first valid ServerHello.
+type TLSRacer struct {
+	Direct    CandidateDialer
+	Proxy     CandidateDialer
+	Gate      ReadinessGate
+	HeadStart time.Duration
+	Timeout   time.Duration
+}
+
+func (r TLSRacer) Race(ctx context.Context, target model.Target, hello tlsinspect.ClientHello) (RaceResult, error) {
+	if hello.Len() == 0 {
+		return RaceResult{}, errors.New("validated ClientHello is required")
+	}
+	if r.Direct == nil || r.Proxy == nil {
+		return RaceResult{}, errors.New("direct and proxy TLS candidates are required")
+	}
+	if r.Gate == nil {
+		return RaceResult{}, errors.New("TLS readiness gate is required")
+	}
+	wire := hello.WireBytes()
+	return (Racer{
+		Direct:    tlsReadyDialer{base: r.Direct, gate: r.Gate, clientHello: wire},
+		Proxy:     tlsReadyDialer{base: r.Proxy, gate: r.Gate, clientHello: wire},
+		HeadStart: r.HeadStart,
+		Timeout:   r.Timeout,
+	}).Race(ctx, target)
+}
+
+type tlsReadyDialer struct {
+	base        CandidateDialer
+	gate        ReadinessGate
+	clientHello []byte
+}
+
+func (d tlsReadyDialer) Dial(ctx context.Context, target model.Target) (net.Conn, model.Observation, error) {
+	started := time.Now()
+	conn, observation, err := d.base.Dial(ctx, target)
+	if err != nil {
+		return nil, observation, err
+	}
+	if conn == nil {
+		observation.Success = false
+		observation.FailureClass = "candidate_returned_nil_connection"
+		return nil, observation, errors.New("candidate returned nil connection")
+	}
+	stopWatcher := closeConnectionOnCancel(ctx, conn)
+	defer stopWatcher()
+
+	if err := writeFull(conn, d.clientHello); err != nil {
+		_ = conn.Close()
+		observation.Success = false
+		observation.Latency = time.Since(started)
+		observation.FailureClass = classifyClientHelloWriteFailure(ctx, err)
+		return nil, observation, fmt.Errorf("write ClientHello: %w", err)
+	}
+	readiness, err := d.gate.Await(ctx, conn, target)
+	observation.Latency = time.Since(started)
+	if err != nil {
+		_ = conn.Close()
+		observation.Success = false
+		if readiness.StageReached > observation.StageReached {
+			observation.StageReached = readiness.StageReached
+		}
+		observation.FailureClass = readiness.FailureClass
+		if observation.FailureClass == "" {
+			observation.FailureClass = "tls_readiness_failed"
+		}
+		return nil, observation, fmt.Errorf("await TLS readiness: %w", err)
+	}
+	if readiness.StageReached < model.StageTLS || readiness.StageReached > model.StageApplication || len(readiness.Prefetched) == 0 {
+		_ = conn.Close()
+		observation.Success = false
+		observation.FailureClass = "invalid_tls_readiness_result"
+		return nil, observation, errors.New("TLS gate returned an incomplete readiness result")
+	}
+	observation.Success = true
+	observation.StageReached = readiness.StageReached
+	observation.FailureClass = ""
+	return &prefetchedConn{Conn: conn, reader: io.MultiReader(bytes.NewReader(readiness.Prefetched), conn)}, observation, nil
+}
+
+type prefetchedConn struct {
+	net.Conn
+	reader io.Reader
+}
+
+func (c *prefetchedConn) Read(buffer []byte) (int, error) { return c.reader.Read(buffer) }
+
+func writeFull(writer io.Writer, value []byte) error {
+	for len(value) > 0 {
+		written, err := writer.Write(value)
+		if err != nil {
+			return err
+		}
+		if written == 0 {
+			return io.ErrShortWrite
+		}
+		value = value[written:]
+	}
+	return nil
+}
+
+func closeConnectionOnCancel(ctx context.Context, conn net.Conn) func() {
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-stop:
+		}
+	}()
+	return func() {
+		close(stop)
+		<-done
+	}
+}
+
+func classifyTLSReadinessFailure(ctx context.Context, err error) string {
+	if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
+		return FailureTLSCanceled
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+		return FailureTLSTimeout
+	}
+	var netError net.Error
+	if errors.As(err, &netError) && netError.Timeout() {
+		return FailureTLSTimeout
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) {
+		return FailureTLSConnectionClosed
+	}
+	return tlsinspect.FailureClass(err)
+}
+
+func classifyClientHelloWriteFailure(ctx context.Context, err error) string {
+	if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
+		return FailureTLSCanceled
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return FailureTLSTimeout
+	}
+	return FailureClientHelloWrite
+}

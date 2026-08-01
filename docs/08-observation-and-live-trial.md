@@ -79,7 +79,7 @@ Raw observations must never be committed to GitHub. Analysis artifacts intended 
 
 ## 5. Coordinated replacement procedure
 
-The isolated Mihomo listener topology has passed on macOS/v1.19.29, but it also exposed the L1/L2 readiness gap. Configuration replacement will begin only after TLS readiness, sidecar-unavailable fallback, and rollback tests pass.
+The isolated Mihomo listener topology and minimal L3 TLS readiness recovery have passed on macOS/v1.19.29. Configuration replacement will begin only after sidecar-unavailable fallback, rollback tests, and a broader real-TLS compatibility matrix pass.
 
 1. Agree on the trial network, time window, target traffic, and stop conditions.
 2. Resolve the active profile plus merge/script layers read-only.

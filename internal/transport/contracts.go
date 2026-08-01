@@ -13,8 +13,14 @@ type CandidateDialer interface {
 	Dial(ctx context.Context, target model.Target) (net.Conn, model.Observation, error)
 }
 
+type ReadinessResult struct {
+	StageReached model.Stage
+	Prefetched   []byte
+	FailureClass string
+}
+
 // ReadinessGate decides when a connected candidate is safe to commit. A gate
 // must never consume bytes that it cannot replay exactly to the selected path.
 type ReadinessGate interface {
-	Await(ctx context.Context, conn net.Conn, target model.Target) (model.Observation, error)
+	Await(ctx context.Context, conn net.Conn, target model.Target) (ReadinessResult, error)
 }

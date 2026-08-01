@@ -35,7 +35,8 @@ Isolated runtime results from `make mihomo-lab` on macOS:
 | Forced Direct listener | Local loopback payload passed |
 | Forced Proxy listener | Local fake SOCKS proxy received the domain-form `echo.test` target and relayed bytes |
 | Loop prevention | Only the front adaptive connection entered SmartRoute; forced listeners did not recurse |
-| Readiness semantics | Front Mihomo listener produced L1 before target availability; sidecar rejected it as `candidate_below_commit_stage` |
+| Readiness semantics | Forced Direct still proves only L1 when no ServerHello returns |
+| TLS adaptive recovery | Front path copied a parsed no-early-data ClientHello; Proxy returned ServerHello and was committed at `StageTLS` |
 | Isolation | Temporary home/config, synthetic local DNS, random loopback ports, no TUN/system proxy/external network/active Clash reads or writes |
 
 Remaining runtime checks:

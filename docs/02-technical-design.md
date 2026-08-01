@@ -1,6 +1,6 @@
 # SmartRoute 总体技术设计
 
-版本：v0.1
+版本：v0.2
 状态：供原型验证，不是最终实现规范
 
 ## 1. 设计目标
@@ -98,20 +98,21 @@ MVP 可以让高置信度决策继续经过 sidecar，由本地缓存直接选�
 
 ```mermaid
 flowchart LR
-    Client["SOCKS5 TCP client"] --> Inbound["internal/sidecar\ninbound handshake + relay"]
-    Inbound --> Racer["internal/transport.Racer\nDirect-first stagger"]
+    Client["TLS-over-SOCKS client"] --> Inbound["internal/sidecar\nlocal SOCKS admission"]
+    Inbound --> Inspect["internal/tlsinspect\ncomplete ClientHello; reject early_data"]
+    Inspect --> Racer["internal/transport.TLSRacer\nDirect-first stagger"]
     Racer --> D["SOCKS5Dialer: Direct endpoint"]
     Racer --> P["SOCKS5Dialer: Proxy endpoint"]
     D --> Candidate["Candidate admitted at declared readiness stage"]
     P --> Candidate
-    Candidate --> Gate{"At least required readiness?"}
-    Gate -->|"yes"| Relay["Commit one path and relay bytes"]
+    Candidate --> Gate{"Structurally valid ServerHello?"}
+    Gate -->|"yes, L3"| Relay["Replay prefetched bytes; commit one path"]
     Gate -->|"no"| Reject["Close and fail safely"]
 ```
 
-这一切片已能通过带显式 `-acknowledge-direct-probes` 的 `smartroute serve` 接收 SOCKS5 CONNECT、保留域名目标、错峰启动两条候选路径并取消 loser。每个 dialer 必须显式声明其成功所达到的 readiness；sidecar 默认只提交至少 L2 `StageTCP` 的候选。进程内 fake gateway 采用“目标连接成功后才回复”的测试契约，因此可声明 L2；真实 Mihomo listener 只能声明 L1，并会被 `candidate_below_commit_stage` 安全拒绝。
+这一切片已能通过带显式 `-acknowledge-direct-probes` 的 `smartroute serve` 接收 TLS-over-SOCKS。sidecar 先回复本地 SOCKS admission，再跨 TLS record/TCP read 重组完整 ClientHello；畸形、过大、尾随首航字节或 `early_data` 会在候选拨号前拒绝。安全 ClientHello 可以复制到两条候选，首个返回结构合法 ServerHello 的路径达到 L3；gate 消耗的所有服务端字节都会原样回放给客户端，loser 被取消。
 
-`smartroute-testlab` 使用随机回环端口模拟两条上游路径和目标服务；`smartroute-mihomo-lab` 使用锁定二进制、临时 home、随机回环端口、合成 DNS 和本地 fake proxy 运行真实子进程。两者都不接触活动 Clash 环境。完整自适应数据路径必须等 TLS readiness gate 能从真实数据流证明 L3 后再开放。
+普通 TCP fake gateway 仍可通过显式契约声明 L2；真实 Mihomo listener 的 SOCKS ACK 只能声明 L1。`smartroute-mihomo-lab` 已验证 L1 Direct 无 ServerHello 时，Proxy 可凭 L3 ServerHello 赢得首连接。该结论不等于证书验证、Finished 或应用成功；活动配置接入仍需真实 TLS 兼容矩阵和回滚门槛。
 
 ## 4. 决策优先级
 
@@ -187,7 +188,7 @@ sequenceDiagram
 
 | 流量类型 | MVP 策略 | 是否复制首段数据 |
 | --- | --- | --- |
-| TLS 1.2/1.3，无 0-RTT | 解析完整 ClientHello，候选路径都可发送握手；首个返回有效 TLS 记录者胜出 | 仅复制握手 |
+| TLS 1.2/1.3，无 0-RTT | 已实现最小切片：解析完整 ClientHello；首个结构合法 ServerHello 胜出并回放预读字节 | 仅复制握手 |
 | TLS 1.3 早期数据 | 不复制 early data；使用历史路径或仅连接级选择 | 否 |
 | 服务端先发协议（如 SSH banner） | 同时等待候选服务端数据，先返回有效数据者胜出 | 无需复制客户端业务数据 |
 | 明文 HTTP | 默认只做连接级竞争；即使 GET 通常安全也不作为默认重放依据 | 否 |

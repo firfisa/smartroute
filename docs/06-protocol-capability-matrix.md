@@ -1,13 +1,13 @@
 # Protocol Capability Matrix
 
-Version: v0.1
+Version: v0.2
 Purpose: prevent the TCP/TLS learning model from being incorrectly generalized to all traffic.
 
 ## 1. Capability overview
 
 | Traffic | Can route Direct/Proxy | Can learn | Generic first-session race | Phase |
 | --- | ---: | ---: | ---: | --- |
-| TCP + TLS/HTTPS | Yes | Strong evidence only after TLS-aware readiness | Planned; Mihomo SOCKS ACK alone is insufficient | Phase 1–2 |
+| TCP + TLS/HTTPS | Yes | Experimental L3 evidence after structural ServerHello | Yes for parsed ClientHello without `early_data`; full compatibility pending | Phase 1–2 |
 | Generic TCP | Yes | Historical or protocol-specific evidence | No generic first-session race through current Mihomo SOCKS listeners | Phase 1–2 |
 | DNS | Yes | Strong request/response semantics | Protocol-specific comparison | Phase 2+ diagnostic module |
 | QUIC/HTTP3 | Yes | Possible with QUIC-aware state | No generic transparent race | Later |
@@ -36,6 +36,7 @@ flowchart TD
 | TCP before application bytes | Staggered candidate attempts with an explicit readiness contract | Treating Mihomo SOCKS success as target TCP or HTTPS success |
 | TLS without early data | Buffer/parse complete ClientHello; compare safe handshake readiness | Assuming ClientHello arrives in one read |
 | TLS 1.3 early data | Use history or one selected path | Duplicating early application data |
+| ServerHello observed | Commit the winner and replay every consumed record byte | Calling this certificate validation or full-handshake success |
 | Plain HTTP | Connection-level routing; explicit application integration may add safe methods | Generic payload replay based only on method name |
 | DNS | Compare resolver/path outcomes with user consent | Calling a domain hash anonymous or probing denied domains |
 | QUIC | Historical route; future QUIC-aware handshake implementation | Blindly cloning UDP packets across egress identities |

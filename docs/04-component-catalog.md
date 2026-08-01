@@ -1,6 +1,6 @@
 # SmartRoute Component and Interface Catalog
 
-Version: v0.2
+Version: v0.3
 Last updated: 2026-08-02
 
 This file is the maintained registry for components, interfaces, commands, configuration fields, and decision reason codes. Status is explicit: `implemented`, `experimental`, or `planned`.
@@ -15,6 +15,7 @@ flowchart TB
     Decision["internal/decision\nPaired observation evaluator"]
     SOCKS["internal/socks5\nSOCKS5 wire protocol"]
     Transport["internal/transport\nSOCKS dialers and racer"]
+    TLSInspect["internal/tlsinspect\nbounded TLS first-flight parser"]
     Sidecar["internal/sidecar\nInbound relay"]
     TestLab["internal/testlab\nIsolated fault lab"]
     LabCLI["cmd/smartroute-testlab\nJSON lab runner"]
@@ -29,6 +30,8 @@ flowchart TB
     Decision --> Model
     Transport --> Model
     Transport --> SOCKS
+    Transport --> TLSInspect
+    Sidecar --> TLSInspect
     Sidecar --> SOCKS
     Sidecar --> Transport
     TestLab --> Sidecar
@@ -54,8 +57,9 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `internal/model` | Core | implemented | Path, target, readiness, observation, decision types and readable JSON evidence | State persistence | `internal/model/model_test.go` plus consumer tests |
 | `internal/decision` | Core | experimental | Evaluate one paired Direct/Proxy observation | Multi-session promotion and decay | `internal/decision/evaluator_test.go` |
 | `internal/socks5` | Data plane | experimental | No-auth SOCKS5 CONNECT parsing/client handshake and domain preservation | Authentication, UDP ASSOCIATE, BIND | `internal/socks5/protocol_test.go`; Test Lab |
-| `internal/transport` | Data plane | experimental | SOCKS5 candidate dialing, Direct-first stagger, timeout, cancellation, loser cleanup | TLS/application readiness parsing | `internal/transport/racer_test.go`; Test Lab |
-| `internal/sidecar` | Data plane | experimental | Inbound SOCKS5 server, enforce minimum commit stage, bidirectional relay, decision event | TLS parsing, learning persistence, or active Clash modification | Test Lab and Mihomo Lab |
+| `internal/transport` | Data plane | experimental | SOCKS5 candidate dialing, TCP and TLS racing, ServerHello gate, cancellation, exact prefetched-byte replay | Certificate/Finished/application validation | Racer and TLS readiness tests; Mihomo Lab |
+| `internal/tlsinspect` | Data plane | experimental | Bounded TLS record reassembly, ClientHello/ServerHello structure checks, early-data rejection | TLS decryption, certificate validation, payload logging | `internal/tlsinspect/tlsinspect_test.go` |
+| `internal/sidecar` | Data plane | experimental | SOCKS admission, TLS first-flight orchestration, stage enforcement, relay, decision and diagnostic events | Learning persistence or active Clash modification | Sidecar net.Pipe tests, Test Lab and Mihomo Lab |
 | `internal/testlab` | Test | implemented | Ephemeral loopback echo target, fake Direct/Proxy gateways, deterministic faults | External network and active Clash access | `internal/testlab/lab_test.go` |
 | `internal/mihomolab` | Test | implemented | Temporary config/home, child lifecycle, synthetic DNS, forced-listener and readiness assertions | Active Clash discovery, external traffic, TUN, system proxy | `internal/mihomolab/lab_test.go`; explicit runtime command |
 | `internal/upstream` | Integration | planned | Mihomo config/API adapter and topology validation | Shipping Mihomo source | Planned integration tests |
@@ -77,8 +81,11 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `CandidateDialer.Dial(ctx, target)` | `internal/transport` | Context and target | Connection and observation | Implementer classifies cancellation/path error | experimental contract | Racer tests |
 | `SOCKS5Dialer.Dial(ctx, target)` | `internal/transport` | TCP target, fixed endpoint, declared `ReadinessStage` | SOCKS tunnel plus observation at the declared stage; default L1 | Classifies timeout, cancellation, SOCKS failure; rejects invalid stages | experimental | Test Lab and Mihomo Lab |
 | `Racer.Race(ctx, target)` | `internal/transport` | Two dialers, head-start, timeout, target | One owned winning connection and reason | Cancels/drains loser; returns `RaceError` when both fail | experimental | `internal/transport/racer_test.go` |
-| `ReadinessGate.Await(ctx, conn, target)` | `internal/transport` | Context, candidate connection, target | Readiness observation | Must not lose or unsafely replay consumed bytes | contract only | Planned |
-| `sidecar.Server.Serve(ctx, listener)` | `internal/sidecar` | Context, caller-owned listener, optional `MinimumCommitStage` | Serves until cancellation/error; hard floor L2 | Rejects failed or below-stage candidates; a weaker override cannot bypass L2; never reads Clash config | experimental | Test Lab and Mihomo Lab |
+| `tlsinspect.ReadClientHello(reader, max)` | `internal/tlsinspect` | TLS byte stream and byte limit | Opaque validated ClientHello with exact record bytes | Rejects malformed, oversized, trailing first-flight data and `early_data` | experimental | Fragmentation/rejection table |
+| `tlsinspect.ReadServerHello(reader, max)` | `internal/tlsinspect` | TLS byte stream and byte limit | Structurally valid ServerHello plus exact consumed records | Classifies alerts, truncation, malformed and unexpected messages | experimental | Fragmentation/alert tests |
+| `ReadinessGate.Await(ctx, conn, target)` | `internal/transport` | Context, candidate connection, target | Stage, failure class and prefetched bytes | Must not lose or unsafely replay consumed bytes | experimental contract | TLS gate tests |
+| `TLSRacer.Race(ctx, target, hello)` | `internal/transport` | Two candidates, validated no-early-data ClientHello, gate and timing | L3 winner connection with replay prefix | Cancels loser; returns paired classified failures | experimental | `internal/transport/tls_readiness_test.go` |
+| `sidecar.Server.Serve(ctx, listener)` | `internal/sidecar` | Context, listener, plain Racer or TLSRacer | Serves until cancellation/error; TLS mode requires L3 | Rejects unsafe ClientHello before dialing; never reads Clash config | experimental | Sidecar, Test Lab and Mihomo Lab |
 | `testlab.RunAll(ctx)` | `internal/testlab` | Context | Isolation and scenario JSON model | Fails if any scenario invariant fails | implemented | `internal/testlab/lab_test.go` |
 | `mihomolab.Run(ctx, binaryPath)` | `internal/mihomolab` | Context and explicit pinned binary path | Isolation, topology, readiness and scenario report | Rejects wrong version/config; owns and stops only its child | implemented | `internal/mihomolab/lab_test.go`; `make mihomo-lab` |
 
@@ -89,7 +96,7 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `smartroute version` | implemented | Print version, commit, build date | None | None |
 | `smartroute validate -config PATH` | implemented | Strictly parse and validate local JSON config | None | None |
 | `smartroute trace -direct SPEC -proxy SPEC` | implemented | Evaluate one synthetic paired observation and print JSON | None | None |
-| `smartroute serve -acknowledge-direct-probes` | experimental | Run TCP/SOCKS5 sidecar against configured loopback endpoints | Configured loopback listener and candidate dials | None; emits decision JSON only |
+| `smartroute serve -acknowledge-direct-probes` | experimental | Run TLS-over-SOCKS adaptive sidecar against loopback endpoints | Configured loopback listener and candidate TLS first flights | None; emits decision/diagnostic JSON only |
 | `smartroute policy` | planned | Inspect, lock, revoke, or export policy | None by default | Policy store |
 | `smartroute-testlab` | implemented | Run isolated deterministic data-plane scenarios | Ephemeral loopback sockets only | None |
 | `smartroute-mihomo-lab -mihomo PATH` | implemented | Run isolated pinned-Mihomo contract scenarios | Child process, temporary home, local synthetic DNS and ephemeral loopback sockets only | Temporary files removed; JSON report only |
@@ -147,8 +154,10 @@ Runtime race/commit reasons:
 | `direct_candidate_won` | Direct candidate won after both candidates could run | Same stage gate applies |
 | `proxy_candidate_won` | Proxy candidate won | Same stage gate applies |
 | `candidate_below_commit_stage` | Winning transport candidate did not prove target readiness | Close candidate, return SOCKS failure, `committed=false`, never learn |
+| `client_hello_rejected` | Client first flight was unsafe or invalid | Close after local SOCKS admission; open zero candidates |
+| `tls_candidates_failed` | Neither candidate returned a valid ServerHello | Close connection; report both classified path failures; never learn success |
 
-## 7. Planned event catalog
+## 7. Event catalog
 
 | Event | Producer | Minimum fields | Consumer | Status |
 | --- | --- | --- | --- | --- |
@@ -156,7 +165,8 @@ Runtime race/commit reasons:
 | `candidate.ready` | Readiness gate | path, stage, latency | Decision engine | planned |
 | `candidate.failed` | Dialer/gate | path, stage, failure class | Decision engine | planned |
 | `candidate.canceled` | Racer | path, cancellation reason | Metrics | planned |
-| `decision.selected` | Sidecar/decision engine | target, selected path, reason, observation, `committed` | CLI/store/UI | experimental sidecar event; persistent form planned |
+| `decision` | Sidecar/decision engine | `event_type`, target, selected path, reason, observation, `committed` | CLI/store/UI | experimental `DecisionEvent`; persistent form planned |
+| `diagnostic` | Sidecar | `event_type`, target, reason, failure class, optional Direct/Proxy failures | CLI/debug | experimental `DiagnosticEvent`; no payload bytes |
 | `policy.promoted` | Learning engine | old/new state, evidence, expiry | Store/UI/export | planned |
 | `learning.frozen` | Health guard | failing control, profile ID | UI/metrics | planned |
 

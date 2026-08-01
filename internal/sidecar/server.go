@@ -12,12 +12,14 @@ import (
 
 	"github.com/firfisa/smartroute/internal/model"
 	"github.com/firfisa/smartroute/internal/socks5"
+	"github.com/firfisa/smartroute/internal/tlsinspect"
 	"github.com/firfisa/smartroute/internal/transport"
 )
 
 // DecisionEvent is the minimum explainable runtime event emitted by the
 // Phase 0 sidecar. It contains no payload or credentials.
 type DecisionEvent struct {
+	EventType    string            `json:"event_type"`
 	Target       model.Target      `json:"target"`
 	SelectedPath model.Path        `json:"selected_path"`
 	ReasonCode   string            `json:"reason_code"`
@@ -25,14 +27,32 @@ type DecisionEvent struct {
 	Committed    bool              `json:"committed"`
 }
 
-const ReasonCandidateBelowCommitStage = "candidate_below_commit_stage"
+type DiagnosticEvent struct {
+	EventType     string       `json:"event_type"`
+	Target        model.Target `json:"target"`
+	ReasonCode    string       `json:"reason_code"`
+	FailureClass  string       `json:"failure_class"`
+	DirectFailure string       `json:"direct_failure,omitempty"`
+	ProxyFailure  string       `json:"proxy_failure,omitempty"`
+}
+
+const (
+	EventTypeDecision               = "decision"
+	EventTypeDiagnostic             = "diagnostic"
+	ReasonCandidateBelowCommitStage = "candidate_below_commit_stage"
+	ReasonClientHelloRejected       = "client_hello_rejected"
+	ReasonTLSCandidatesFailed       = "tls_candidates_failed"
+)
 
 type Server struct {
-	Racer              transport.Racer
-	NetworkProfileID   string
-	HandshakeTimeout   time.Duration
-	MinimumCommitStage model.Stage
-	OnDecision         func(DecisionEvent)
+	Racer               transport.Racer
+	TLSRacer            *transport.TLSRacer
+	NetworkProfileID    string
+	HandshakeTimeout    time.Duration
+	MaxClientHelloBytes int
+	MinimumCommitStage  model.Stage
+	OnDecision          func(DecisionEvent)
+	OnDiagnostic        func(DiagnosticEvent)
 }
 
 func (s Server) Serve(ctx context.Context, listener net.Listener) error {
@@ -77,6 +97,10 @@ func (s Server) handle(ctx context.Context, inbound net.Conn) {
 		Port:             request.Port,
 		Transport:        model.TransportTCP,
 	}
+	if s.TLSRacer != nil {
+		s.handleTLS(ctx, inbound, target)
+		return
+	}
 	result, err := s.Racer.Race(ctx, target)
 	if err != nil {
 		_ = socks5.WriteReply(inbound, socks5.ReplyConnectionRefused)
@@ -90,7 +114,8 @@ func (s Server) handle(ctx context.Context, inbound net.Conn) {
 	if result.Observation.StageReached < minimumCommitStage {
 		if s.OnDecision != nil {
 			s.OnDecision(DecisionEvent{
-				Target: target, SelectedPath: result.Observation.Path,
+				EventType: EventTypeDecision,
+				Target:    target, SelectedPath: result.Observation.Path,
 				ReasonCode: ReasonCandidateBelowCommitStage, Observation: result.Observation,
 				Committed: false,
 			})
@@ -104,12 +129,82 @@ func (s Server) handle(ctx context.Context, inbound net.Conn) {
 	_ = inbound.SetDeadline(time.Time{})
 	if s.OnDecision != nil {
 		s.OnDecision(DecisionEvent{
-			Target: target, SelectedPath: result.Observation.Path,
+			EventType: EventTypeDecision,
+			Target:    target, SelectedPath: result.Observation.Path,
 			ReasonCode: result.ReasonCode, Observation: result.Observation,
 			Committed: true,
 		})
 	}
 	relay(inbound, result.Conn)
+}
+
+func (s Server) handleTLS(ctx context.Context, inbound net.Conn, target model.Target) {
+	// A SOCKS client does not send ClientHello until CONNECT succeeds. This
+	// acknowledgment is local admission only; no remote path is committed yet.
+	if err := socks5.WriteReply(inbound, socks5.ReplySucceeded); err != nil {
+		return
+	}
+	hello, err := tlsinspect.ReadClientHello(inbound, s.MaxClientHelloBytes)
+	if err != nil {
+		s.emitDiagnostic(DiagnosticEvent{
+			Target: target, ReasonCode: ReasonClientHelloRejected,
+			FailureClass: classifyClientHelloFailure(ctx, err),
+		})
+		return
+	}
+	result, err := s.TLSRacer.Race(ctx, target, hello)
+	if err != nil {
+		event := DiagnosticEvent{Target: target, ReasonCode: ReasonTLSCandidatesFailed, FailureClass: "all_tls_candidates_failed"}
+		var raceError *transport.RaceError
+		if errors.As(err, &raceError) {
+			event.DirectFailure = raceError.Direct.FailureClass
+			event.ProxyFailure = raceError.Proxy.FailureClass
+		}
+		s.emitDiagnostic(event)
+		return
+	}
+	defer result.Conn.Close()
+	if result.Observation.StageReached < model.StageTLS {
+		s.emitDiagnostic(DiagnosticEvent{
+			Target: target, ReasonCode: ReasonCandidateBelowCommitStage,
+			FailureClass: "tls_candidate_below_tls_stage",
+		})
+		return
+	}
+	_ = inbound.SetDeadline(time.Time{})
+	if s.OnDecision != nil {
+		s.OnDecision(DecisionEvent{
+			EventType: EventTypeDecision,
+			Target:    target, SelectedPath: result.Observation.Path,
+			ReasonCode: result.ReasonCode, Observation: result.Observation,
+			Committed: true,
+		})
+	}
+	relay(inbound, result.Conn)
+}
+
+func (s Server) emitDiagnostic(event DiagnosticEvent) {
+	if s.OnDiagnostic != nil {
+		event.EventType = EventTypeDiagnostic
+		s.OnDiagnostic(event)
+	}
+}
+
+func classifyClientHelloFailure(ctx context.Context, err error) string {
+	if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
+		return "canceled"
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+		return "client_hello_timeout"
+	}
+	var netError net.Error
+	if errors.As(err, &netError) && netError.Timeout() {
+		return "client_hello_timeout"
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) {
+		return "client_hello_connection_closed"
+	}
+	return tlsinspect.FailureClass(err)
 }
 
 func relay(left, right net.Conn) {

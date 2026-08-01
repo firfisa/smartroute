@@ -2,7 +2,7 @@
 
 SmartRoute 是一个面向 Mihomo/Clash 生态的“自适应分流”实验项目。它不重新实现代理协议，而是在现有静态规则与代理内核之间加入一个可观测、可解释、可撤销的决策层：对规则无法确定的目标比较 `DIRECT` 与 `PROXY` 路径，按当前网络环境积累证据，并逐渐形成个人化路由策略。
 
-当前状态：Phase 0 架构与可行性验证。已经实现实验性的 TCP/SOCKS5 sidecar、进程内 Test Lab，以及锁定 Mihomo v1.19.29 的独立子进程契约测试；尚未实现 TLS readiness、学习持久化、活动 Clash 配置接入或发布安装包。
+当前状态：Phase 0 架构与可行性验证。已经实现实验性的 TLS-over-SOCKS sidecar、分片 ClientHello 检查、无 0-RTT 的 Direct/Proxy TLS readiness 竞争，以及锁定 Mihomo v1.19.29 的独立子进程测试；尚未实现学习持久化、活动 Clash 配置接入或发布安装包。
 
 ## 当前结论
 
@@ -46,11 +46,11 @@ flowchart LR
 | Direct/Proxy 错峰竞争、取消 loser | 实验性实现 |
 | TCP sidecar relay 与 `serve` 命令 | 实验性实现 |
 | 独立回环 Test Lab 与故障注入 | 已实现第一批场景 |
-| TLS readiness gate | 接口已定义，解析未实现 |
-| TLS ClientHello/0-RTT 安全处理 | 未实现 |
+| TLS readiness gate | 已实现：结构化 ServerHello 达到 L3，预读字节无损回放 |
+| TLS ClientHello/0-RTT 安全处理 | 已实现分片重组；检测到 `early_data` 时在拨号前拒绝 |
 | SQLite 学习、TTL、网络画像 | 未实现 |
 | 独立 Mihomo listener 拓扑 | v1.19.29 已验证强制 Direct/Proxy、域名保留和循环规避 |
-| Mihomo 自适应路径提交 | 安全门已实现；等待 TLS readiness，当前拒绝 L1 假阳性 |
+| Mihomo HTTPS/TLS 自适应路径 | macOS/v1.19.29 已验证 Direct 无 ServerHello 后由 Proxy 恢复并提交 L3 |
 | 活动 Clash Verge Rev 集成 | 尚未写入或重载；留待配合下的真实试用 |
 
 ## 本地开发
@@ -76,7 +76,7 @@ bash scripts/prepare-upstreams.sh mihomo  # first Mihomo Lab run only
 make mihomo-lab
 ```
 
-进程内场景覆盖 Direct 快速成功、Direct 卡住后 Proxy 恢复、两条路径均失败、域名目标保留和真实字节转发。Mihomo 场景验证了强制 Direct、强制 Proxy、域名形式保留、无递归，并确认 Mihomo 的 SOCKS 成功响应只是 L1 `StageOutbound`，不能作为 L2 `StageTCP` 提交。更详细的边界见 [独立测试环境](docs/07-isolated-test-lab.md) 和 [ADR-0004](docs/adr/0004-mihomo-socks-ack-is-not-target-readiness.md)。
+进程内场景覆盖 TCP 候选竞争、分片 ClientHello、early-data 拒绝、TLS loser 取消和 ServerHello 预读回放。Mihomo 场景验证了强制 Direct/Proxy、域名保留、无递归、L1 ACK 假阳性，以及 HTTPS/TLS 从不可达 Direct 自动恢复到 Proxy 的 L3 提交。这里的 L3 只证明收到了结构合法的 ServerHello，不代表证书或完整握手成功。详见 [独立测试环境](docs/07-isolated-test-lab.md)、[ADR-0004](docs/adr/0004-mihomo-socks-ack-is-not-target-readiness.md) 和 [ADR-0005](docs/adr/0005-safe-tls-first-flight-racing.md)。
 
 为适配真实环境，可以对活动 Clash Verge Rev 目录进行只读、脱敏的结构检查；现阶段仍禁止自动写入或重载。待隔离 Mihomo 测试、备份和回滚验证完成后，再在用户配合下进入短时真实试用，并使用默认关闭、本地保存、可清空的结构化观测记录。详见 [观测与真实试用计划](docs/08-observation-and-live-trial.md)。
 
