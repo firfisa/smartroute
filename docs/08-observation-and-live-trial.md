@@ -1,6 +1,6 @@
 # Observation and Live-Trial Plan
 
-Version: v0.3
+Version: v0.4
 Status: bounded recorder implemented; live configuration writes are not implemented
 
 ## 1. Read-only baseline found on 2026-08-02
@@ -28,7 +28,8 @@ No subscriptions, proxy nodes, secrets, controller credentials, rule contents, o
 ```mermaid
 flowchart LR
     Lab["Isolated Test Lab\nno Clash reads"] --> Spike["Isolated Mihomo child\ntemporary config"]
-    Spike --> Inspect["Active environment\nread-only redacted inspection"]
+    Spike --> Preflight["Read-only trial preflight\nfresh content-validated evidence"]
+    Preflight --> Inspect["Active environment\nread-only redacted inspection"]
     Inspect --> Review["Generated candidate config\nsyntax + diff + rollback review"]
     Review -->|"owner approves window"| Trial["Coordinated live trial"]
     Trial --> Analyze["Local bounded observations"]
@@ -105,6 +106,8 @@ ADR-0018 adds paused `observations report`. It strictly reads managed JSONL and 
 
 ADR-0019 adds random trial scoping. When recording is enabled, `supervise` generates one `trial-<128-bit hex>` identifier and passes it to Guard and engine; restarts retain it. Human-readable labels are rejected. The ID remains in pseudonymous JSONL/export for within-trial joining, but aggregate reports output only `trial_sessions_observed` and `unscoped_events`. It is not the network profile and is not the SQLite evidence session. Standalone Guard/engine processes generate separate IDs unless the operator explicitly passes one shared generated-format value.
 
+ADR-0020 adds `trial preflight`. Both lab reports now carry a schema version and UTC generation time. Preflight strictly decodes their full contents, requires the exact non-duplicated scenario set and all isolation booleans to agree, verifies the pinned Mihomo version/build marker, and rejects reports older than 24 hours by default. It also requires observation recording to be enabled and paused, applies separate Direct/cleartext/ephemeral-auto acknowledgments, and matches a verified backup to any existing durable store. Warnings do not block readiness; failures do. The command does not pause/resume, create a backup, run a lab, inspect Clash, or authorize activation.
+
 Operational commands:
 
 ```bash
@@ -114,13 +117,17 @@ smartroute observations report -config PATH -hours 168
 smartroute observations resume -config PATH
 smartroute observations export -config PATH -destination NEW_DIRECTORY
 smartroute observations clear -config PATH -confirm-clear
+smartroute trial preflight -config PATH \
+  -testlab-report TESTLAB_JSON \
+  -mihomo-lab-report MIHOMO_LAB_JSON \
+  -acknowledge-direct-probes
 ```
 
 ## 5. Coordinated replacement procedure
 
 The isolated Mihomo listener topology and minimal L3 TLS readiness recovery have passed on macOS/v1.19.29. Runtime Direct-probe privacy enforcement, shadow/ephemeral learning, preferred-order recovery, independent Guard/engine supervision, and recorder privacy/lifecycle controls are implemented and tested locally. The new Mihomo stop/restart scenarios still need a permitted platform run, and supervisor failure itself still requires an OS service boundary. Configuration replacement will begin only after those availability checks, rollback tests, and a broader real-TLS compatibility matrix pass.
 
-1. Agree on the trial network, time window, target traffic, stop conditions, and whether supervisor-managed automatic session scope will be used.
+1. Agree on the trial network, time window, target traffic, stop conditions, and whether supervisor-managed automatic session scope will be used; capture a successful fresh `trial preflight` report, understanding that it does not itself authorize activation.
 2. Resolve the active profile plus merge/script layers read-only.
 3. Create a fresh full backup without deleting existing backups.
 4. Generate candidate files outside the Clash application directory.

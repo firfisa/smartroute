@@ -16,6 +16,7 @@ import (
 	"github.com/firfisa/smartroute/internal/model"
 	"github.com/firfisa/smartroute/internal/observe"
 	"github.com/firfisa/smartroute/internal/store"
+	"github.com/firfisa/smartroute/internal/trial"
 )
 
 type recordingDurableWriter struct {
@@ -286,6 +287,29 @@ func TestRunObservationsPauseAndStatus(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), `"paused":true`) {
 		t.Fatalf("status = %q", stdout.String())
+	}
+}
+
+func TestRunTrialPreflightEmitsMachineReadableFailure(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "observations")
+	if err := observe.Pause(directory); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Observation.Enabled = true
+	cfg.Observation.Directory = directory
+	configPath := writeConfig(t, cfg)
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"trial", "preflight", "-config", configPath, "-acknowledge-direct-probes"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "preflight failed") {
+		t.Fatalf("error = %v", err)
+	}
+	var report trial.Report
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode report: %v\n%s", err, stdout.String())
+	}
+	if report.Ready || report.Counts.Fail != 2 || report.ActiveClashInspected || report.AuthorizesLiveActivation {
+		t.Fatalf("report = %+v", report)
 	}
 }
 

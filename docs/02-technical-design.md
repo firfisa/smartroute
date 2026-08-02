@@ -1,6 +1,6 @@
 # SmartRoute 总体技术设计
 
-版本：v0.5
+版本：v0.6
 状态：供原型验证，不是最终实现规范
 
 ## 1. 设计目标
@@ -46,11 +46,16 @@ flowchart TB
     E <--> DB["SQLite 学习库"]
     UI["本地 UI / 后续 Clash Verge Rev 集成"] <--> E
     E --> Export["可选规则导出 / rule-provider"]
+    PF["只读 Trial Preflight"] --> Obs
+    PF --> DB
+    Labs["带版本和时间的隔离实验报告"] --> PF
 ```
 
 `smartroute supervise` 只拥有 SmartRoute 的 Guard 与 adaptive engine 子进程，不接管 Mihomo。引擎退出时 Guard 继续沿原策略兜底；Guard 退出时 supervisor 以 100ms 起、5s 封顶的指数退避恢复它。重启只改善后续连接，不能重放已经观察到 Guard/engine 故障的连接；supervisor 自身还需要未来的 launchd/systemd/Windows service 管理。详见 ADR-0008。
 
 本地观测记录由独立的 `internal/observe` 边界负责，默认关闭。启用后目标与网络画像默认使用带本地随机盐的 HMAC，engine、Guard、supervisor 各写自己的容量/时间受限 JSONL；暂停、恢复、显式清空和脱敏导出由 `smartroute observations` 管理。运行期写失败只产生一次有界告警，不改变路由；该记录器不是 SQLite 学习策略库。详见 ADR-0009。
+
+`internal/trial` 把受控试用的分散门槛收敛为只读 JSON preflight：配置和显式风险确认、暂停的记录器、durable store 与匹配备份，以及带 schema/UTC 时间的 Test Lab 和锁定 Mihomo Lab 完整报告。它不运行实验、不更改控制文件、不打开监听器，也不读取活动 Clash。`ready` 只代表证据齐全，不能替代用户对具体写入/重载窗口的授权。详见 ADR-0020。
 
 进程内学习使用与 7.1 节一致的最小键，只接受 winner 达到 L2+ 且另一条路径先完成、达到 L1+ 的强成对证据。默认 `shadow` 只计算临时状态；`ephemeral-auto` 将活跃偏好用作候选启动顺序，但仍在 head-start 后启动另一条路径，首选提前失败时则立即启动另一条。矛盾强证据立即进入 `UNSTABLE` 并撤下偏好；TTL 到期或重启回到未知。内存表有硬容量上限，满载只停止接纳新学习，不影响连接。它不满足跨会话晋升，不能导出为永久规则。详见 ADR-0011。
 

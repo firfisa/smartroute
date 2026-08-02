@@ -1,6 +1,6 @@
 # Isolated Test Lab
 
-Version: v0.3
+Version: v0.4
 Status: in-process and pinned-Mihomo tiers implemented
 
 ## 1. Safety boundary
@@ -63,7 +63,7 @@ or:
 go run ./cmd/smartroute-testlab
 ```
 
-The command prints a machine-readable JSON report containing isolation claims, attempts, selected paths, reason codes, domain preservation, payload verification, and elapsed time.
+The command prints a machine-readable JSON report containing `report_version`, UTC `generated_at`, isolation claims, attempts, selected paths, reason codes, domain preservation, payload verification, and elapsed time. A later trial preflight validates the timestamp and every isolation/scenario field; it never trusts `passed` alone.
 
 ## 4. Implemented isolated Mihomo tier
 
@@ -108,6 +108,8 @@ flowchart LR
 | `guard_returns_to_adaptive_after_restart` | Lab rebinds the engine port; the next connection returns to adaptive TLS selection without restarting Mihomo or Guard |
 
 The negative L1 scenario and positive L3 recovery are both required. The two Guard scenarios additionally distinguish engine availability from Guard availability and assert that the original path does not recursively enter the adaptive engine.
+
+The Mihomo report uses the same version/time envelope and also records the exact version output. Trial preflight requires `v1.19.29` plus the `SmartRoute-isolated-lab` build marker, every topology/readiness/Guard boolean, every scenario, and all negative isolation assertions.
 
 Evidence status:
 

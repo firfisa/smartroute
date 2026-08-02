@@ -46,6 +46,10 @@ required_files=(
   "docs/adr/0014-durable-evidence-lifecycle.md"
   "docs/adr/0015-cross-session-shadow-assessment.md"
   "docs/adr/0016-privacy-safe-shadow-report.md"
+  "docs/adr/0017-freeze-learning-on-systemic-failure.md"
+  "docs/adr/0018-identity-free-observation-readiness-report.md"
+  "docs/adr/0019-random-shared-trial-session-scope.md"
+  "docs/adr/0020-read-only-evidence-based-trial-preflight.md"
   "configs/smartroute.example.json"
   "upstreams.lock"
 )
@@ -171,6 +175,13 @@ if ! matches 'learning report' "${project_root}/README.md" "${project_root}/docs
   ! matches 'target keys' "${project_root}/docs/adr/0016-privacy-safe-shadow-report.md" ||
   ! matches 'must never expose target keys' "${project_root}/AGENTS.md"; then
   echo "privacy-safe Shadow report contract is missing" >&2
+  exit 1
+fi
+
+if ! matches 'trial preflight' "${project_root}/README.md" "${project_root}/docs/04-component-catalog.md" ||
+  ! matches 'AuthorizesLiveActivation' "${project_root}/internal/trial/preflight.go" ||
+  ! matches 'never authorizes' "${project_root}/docs/adr/0020-read-only-evidence-based-trial-preflight.md"; then
+  echo "read-only trial preflight contract is missing" >&2
   exit 1
 fi
 

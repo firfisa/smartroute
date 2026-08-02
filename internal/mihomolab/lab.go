@@ -29,9 +29,16 @@ import (
 	"github.com/firfisa/smartroute/internal/transport"
 )
 
-const mappedHostname = "echo.test"
+const (
+	mappedHostname       = "echo.test"
+	CurrentReportVersion = 1
+	PinnedMihomoVersion  = "v1.19.29"
+	PinnedBuildMarker    = "SmartRoute-isolated-lab"
+)
 
 type Report struct {
+	ReportVersion           int                 `json:"report_version"`
+	GeneratedAt             time.Time           `json:"generated_at"`
 	MihomoVersion           string              `json:"mihomo_version"`
 	Isolation               IsolationResult     `json:"isolation"`
 	ConfigValidated         bool                `json:"config_validated"`
@@ -104,7 +111,7 @@ type portSet struct {
 // Run starts a separately supplied Mihomo binary. It never discovers an
 // installed Clash/Mihomo binary or reads the active application directory.
 func Run(parent context.Context, binaryPath string) (Report, error) {
-	report := Report{Isolation: IsolationResult{
+	report := Report{ReportVersion: CurrentReportVersion, GeneratedAt: time.Now().UTC(), Isolation: IsolationResult{
 		DedicatedChildProcess: true,
 		TemporaryHome:         true,
 		LoopbackOnly:          true,
@@ -383,11 +390,20 @@ func binaryVersion(ctx context.Context, binary string) (string, error) {
 		return "", fmt.Errorf("read Mihomo version: %w", err)
 	}
 	version := strings.TrimSpace(string(output))
-	if !strings.Contains(version, "Mihomo") || !strings.Contains(version, "v1.19.29") ||
-		!strings.Contains(version, "SmartRoute-isolated-lab") {
-		return "", fmt.Errorf("unexpected Mihomo binary version %q; want pinned v1.19.29 build", version)
+	if !containsVersionToken(version, "Mihomo") || !containsVersionToken(version, PinnedMihomoVersion) ||
+		!containsVersionToken(version, PinnedBuildMarker) {
+		return "", fmt.Errorf("unexpected Mihomo binary version %q; want pinned %s build", version, PinnedMihomoVersion)
 	}
 	return version, nil
+}
+
+func containsVersionToken(version, expected string) bool {
+	for _, token := range strings.Fields(version) {
+		if strings.Trim(token, ",;()[]") == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func renderConfig(ports portSet, adaptiveGatewayAddress, originalGatewayAddress, dnsAddress string) []byte {

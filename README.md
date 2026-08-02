@@ -2,7 +2,7 @@
 
 SmartRoute 是一个面向 Mihomo/Clash 生态的“自适应分流”实验项目。它不重新实现代理协议，而是在现有静态规则与代理内核之间加入一个可观测、可解释、可撤销的决策层：对规则无法确定的目标比较 `DIRECT` 与 `PROXY` 路径，按当前网络环境积累证据，并逐渐形成个人化路由策略。
 
-当前状态：Phase 0 架构与可行性验证。已经实现实验性的可用性 Guard、TLS-over-SOCKS sidecar、无 0-RTT 的 TLS readiness 竞争、进程内临时学习闭环、系统性故障学习冻结、可选的跨会话强证据写入与 Shadow 评估、受限本地观测记录器，以及锁定 Mihomo v1.19.29 的独立子进程测试；尚未实现跨会话自动策略、活动 Clash 配置接入或发布安装包。
+当前状态：Phase 0 架构与可行性验证。已经实现实验性的可用性 Guard、TLS-over-SOCKS sidecar、无 0-RTT 的 TLS readiness 竞争、进程内临时学习闭环、系统性故障学习冻结、可选的跨会话强证据写入与 Shadow 评估、受限本地观测记录器、只读试用 preflight，以及锁定 Mihomo v1.19.29 的独立子进程测试；尚未实现跨会话自动策略、活动 Clash 配置接入或发布安装包。
 
 ## 当前结论
 
@@ -65,6 +65,7 @@ flowchart LR
 | 隐私安全的 Shadow 汇总 | 已实现：按精确目标在库内分组，只输出不足/冲突/Direct/Proxy 数量与阈值，不输出目标 HMAC |
 | 连接级 readiness 汇总 | 已实现：暂停后只读汇总成功门槛、选路比例、Guard 回退和 p50/p95/p99；不输出目标 HMAC，不冒充应用成功率 |
 | 受控试用会话分组 | 已实现：supervisor 为 engine/Guard/自身生成并共享随机 ID，子进程重启不换组；报告只输出会话数 |
+| 受控试用只读 preflight | 已实现：验证隐私确认、Shadow/Auto 风险、暂停状态、SQLite/备份以及 24 小时内的 Test Lab/Mihomo Lab 完整证据；不读取 Clash，也不授权上线 |
 | 独立 Mihomo listener 拓扑 | v1.19.29 已验证强制 Direct/Proxy、域名保留和循环规避 |
 | Mihomo HTTPS/TLS 自适应路径 | macOS arm64 与 Linux amd64/v1.19.29 已验证 Direct 无 ServerHello 后由 Proxy 恢复并提交 L3 |
 | 活动 Clash Verge Rev 集成 | 尚未写入或重载；留待配合下的真实试用 |
@@ -173,6 +174,24 @@ make testlab
 bash scripts/prepare-upstreams.sh mihomo  # first Mihomo Lab run only
 make mihomo-lab
 ```
+
+真正进入用户配合的试用窗口前，先把两套实验结果保存为 JSON，并执行只读门槛检查：
+
+```bash
+go run ./cmd/smartroute-testlab > /tmp/smartroute-testlab-report.json
+go run ./cmd/smartroute-mihomo-lab \
+  -mihomo .cache/tools/mihomo-v1.19.29 \
+  > /tmp/smartroute-mihomo-lab-report.json
+go run ./cmd/smartroute observations pause \
+  -config /tmp/smartroute-trial.json
+go run ./cmd/smartroute trial preflight \
+  -config /tmp/smartroute-trial.json \
+  -testlab-report /tmp/smartroute-testlab-report.json \
+  -mihomo-lab-report /tmp/smartroute-mihomo-lab-report.json \
+  -acknowledge-direct-probes
+```
+
+其中 `/tmp/smartroute-trial.json` 是由示例复制到活动 Clash 目录之外、将 `observation.enabled` 显式设为 `true` 后验证过的候选试用配置。实验报告带 schema 版本和 UTC 生成时间；默认超过 24 小时、缺场景、隔离字段矛盾或 Mihomo 构建标记不匹配都会失败。若配置已存在 durable SQLite 状态，还必须先用 `learning backup` 创建快照并通过 `-learning-backup` 交给 preflight 匹配验证。`ready: true` 只说明前置证据齐全，不会读取或修改 Clash，更不代表已经获得真实配置写入、重载或启动试用的许可。
 
 进程内场景覆盖 TCP 候选竞争、分片 ClientHello、early-data 拒绝、TLS loser 取消、ServerHello 预读回放、隐私禁止 Direct 时的 Proxy-only L3，以及自适应引擎不可用时的同连接原策略回退。成功竞争会保留 winner 之前已经完成的另一条路径证据，但不会等待 loser，也不会把取消或未启动当失败。既有 Mihomo 运行结果验证了强制 Direct/Proxy、域名保留、无递归、L1 ACK 假阳性，以及 HTTPS/TLS 从不可达 Direct 自动恢复到 Proxy 的 L3 提交；新增的 Guard 停止/恢复场景已进入隔离实验代码，仍需在允许环回子进程的 macOS/Linux 环境复验。这里的 L3 只证明收到了结构合法的 ServerHello，不代表证书或完整握手成功。详见 [独立测试环境](docs/07-isolated-test-lab.md)、[ADR-0007](docs/adr/0007-enforce-direct-probe-privacy.md) 和 [ADR-0010](docs/adr/0010-preserve-only-completed-counterfactual-evidence.md)。
 

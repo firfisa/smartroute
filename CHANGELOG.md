@@ -67,6 +67,7 @@ All notable project changes are recorded here. The project has not published a r
 - Concurrent systemic-health gate with distinct-target failure windows, Proxy-specific recovery, expiry, immediate network/portal signals, ephemeral-policy clearing, durable-write suppression, and structured `learning_health` events under ADR-0017.
 - Paused, identity-free `observations report` with strict JSONL validation, readiness/path/Guard aggregates, p50/p95/p99 decision and candidate latency, explicit interpretation limits, and no target/profile hashes under ADR-0018.
 - Random `trial_session_id` scoping shared by supervisor, Guard, engine and child restarts, with legacy unscoped accounting and identity-free session counts under ADR-0019.
+- Versioned, UTC-timestamped Test Lab and Mihomo Lab evidence plus `smartroute trial preflight`, which fails closed on stale/incomplete isolation evidence, missing privacy/Auto acknowledgments, unpaused recording, or an unmatched durable backup without inspecting or authorizing active Clash, under ADR-0020.
 
 ### Known limitations
 

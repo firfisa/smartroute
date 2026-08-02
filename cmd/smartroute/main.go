@@ -31,6 +31,7 @@ import (
 	"github.com/firfisa/smartroute/internal/store"
 	"github.com/firfisa/smartroute/internal/supervisor"
 	"github.com/firfisa/smartroute/internal/transport"
+	"github.com/firfisa/smartroute/internal/trial"
 )
 
 var (
@@ -70,6 +71,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return runObservations(args[1:], stdout, stderr)
 	case "learning":
 		return runLearning(args[1:], stdout, stderr)
+	case "trial":
+		return runTrial(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return nil
@@ -77,6 +80,48 @@ func run(args []string, stdout, stderr io.Writer) error {
 		printUsage(stderr)
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+func runTrial(args []string, stdout, stderr io.Writer) error {
+	if len(args) == 0 || args[0] != "preflight" {
+		return errors.New("trial requires preflight")
+	}
+	flags := flag.NewFlagSet("trial preflight", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	path := flags.String("config", "configs/smartroute.example.json", "path to SmartRoute JSON config")
+	testLabReport := flags.String("testlab-report", "", "path to a fresh smartroute-testlab JSON report")
+	mihomoLabReport := flags.String("mihomo-lab-report", "", "path to a fresh smartroute-mihomo-lab JSON report")
+	learningBackup := flags.String("learning-backup", "", "verified backup directory for an existing durable store")
+	maxEvidenceAge := flags.Duration("max-evidence-age", trial.DefaultMaxEvidenceAge, "maximum accepted age for isolated-lab reports")
+	acknowledgeDirectProbes := flags.Bool("acknowledge-direct-probes", false, "acknowledge Direct candidates in explicit-opt-in privacy mode")
+	acknowledgeCleartext := flags.Bool("acknowledge-cleartext-hostnames", false, "acknowledge cleartext hostname observation")
+	acknowledgeEphemeralAuto := flags.Bool("acknowledge-ephemeral-auto", false, "acknowledge experimental ephemeral automatic routing")
+	if err := flags.Parse(args[1:]); err != nil {
+		return err
+	}
+	if *maxEvidenceAge <= 0 {
+		return errors.New("max-evidence-age must be positive")
+	}
+	cfg, err := config.Load(*path)
+	if err != nil {
+		return err
+	}
+	report := trial.Preflight(context.Background(), trial.Options{
+		Config: cfg, TestLabReportPath: *testLabReport, MihomoLabReportPath: *mihomoLabReport,
+		LearningBackupPath: *learningBackup, MaxEvidenceAge: *maxEvidenceAge,
+		AcknowledgeDirectProbes:      *acknowledgeDirectProbes,
+		AcknowledgeCleartextHostname: *acknowledgeCleartext,
+		AcknowledgeEphemeralAuto:     *acknowledgeEphemeralAuto,
+	})
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(report); err != nil {
+		return err
+	}
+	if !report.Ready {
+		return errors.New("trial preflight failed; inspect the JSON checks")
+	}
+	return nil
 }
 
 func runSupervise(args []string, stdout, stderr io.Writer) error {
@@ -1117,6 +1162,7 @@ Usage:
   smartroute learning backup -destination new-directory [-config path]
   smartroute learning verify-backup -source backup-directory
   smartroute learning restore -source backup-directory -destination new-database
+  smartroute trial preflight -testlab-report report.json -mihomo-lab-report report.json [-config path]
 
 The trace command evaluates one synthetic paired observation. The experimental
 serve command accepts TLS-over-SOCKS on the configured loopback listener and

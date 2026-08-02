@@ -56,6 +56,7 @@ These rules must not be weakened silently:
 13. Mihomo SOCKS CONNECT success is only `StageOutbound`; it must not be committed or learned as target TCP success without a stronger readiness gate.
 14. TLS first-flight racing may duplicate only a fully parsed ClientHello without `early_data`; every consumed winner byte must be replayed exactly, and a valid ServerHello is L3 evidence rather than full-handshake success.
 15. The availability Guard must choose the original-policy lane before forwarding client payload to either lane when the adaptive engine is unavailable; post-commit failures are never transparently replayed, and Guard-process failure remains a separate protection boundary.
+16. Trial readiness must be derived from fresh, content-validated isolated-lab evidence and explicit privacy/risk acknowledgments. A successful preflight is read-only and never authorizes an active Clash write, reload, or trial start.
 16. `privacy-first`, matching `never_direct_probe` entries, invalid targets, and missing runtime policy must open zero Direct candidates; privacy denial still requires the Proxy path to meet its protocol readiness gate.
 17. Guard and adaptive engine are supervised independently; restart shortens future failure windows but never justifies replaying the connection that observed a process failure, and supervisor failure requires an external service manager.
 18. Persistent observation is opt-in and capacity bounded; target/profile identity is pseudonymous by default, raw events are not duplicated to stdout while recording, and recorder failure never changes a routing outcome.
@@ -97,6 +98,7 @@ Keep this map current whenever a top-level component is added, removed, or renam
 | `internal/supervisor/` | Independent child lifecycle, bounded restart backoff, and structured service events |
 | `internal/testlab/` | Loopback targets, fake gateways, and fault scenarios |
 | `internal/mihomolab/` | Temporary Mihomo config, child lifecycle, synthetic DNS, and topology assertions |
+| `internal/trial/` | Read-only controlled-trial prerequisites and evidence validation |
 | `internal/tlsinspect/` | Bounded ClientHello/ServerHello record parsing and early-data rejection |
 | `internal/upstream/` | Mihomo integration boundaries and adapters |
 | `docs/` | Maintained product, architecture, interface, and validation documentation |

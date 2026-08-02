@@ -69,3 +69,15 @@ func TestValidateBinaryRequiresExplicitExecutable(t *testing.T) {
 		t.Fatal("validateBinary(non-executable) error = nil")
 	}
 }
+
+func TestContainsVersionTokenRequiresExactField(t *testing.T) {
+	version := "Mihomo Meta v1.19.29 darwin arm64 SmartRoute-isolated-lab"
+	for _, expected := range []string{"Mihomo", PinnedMihomoVersion, PinnedBuildMarker} {
+		if !containsVersionToken(version, expected) {
+			t.Fatalf("missing exact token %q", expected)
+		}
+	}
+	if containsVersionToken("Mihomo Meta v1.19.290 SmartRoute-isolated-lab-extra", PinnedMihomoVersion) {
+		t.Fatal("accepted a version prefix instead of an exact token")
+	}
+}

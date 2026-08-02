@@ -18,12 +18,17 @@ import (
 	"github.com/firfisa/smartroute/internal/transport"
 )
 
-const testHostname = "echo.test"
+const (
+	testHostname         = "echo.test"
+	CurrentReportVersion = 1
+)
 
 type Report struct {
-	Isolation IsolationResult  `json:"isolation"`
-	Scenarios []ScenarioResult `json:"scenarios"`
-	Passed    bool             `json:"passed"`
+	ReportVersion int              `json:"report_version"`
+	GeneratedAt   time.Time        `json:"generated_at"`
+	Isolation     IsolationResult  `json:"isolation"`
+	Scenarios     []ScenarioResult `json:"scenarios"`
+	Passed        bool             `json:"passed"`
 }
 
 type IsolationResult struct {
@@ -128,6 +133,8 @@ func RunAll(ctx context.Context) (Report, error) {
 	}
 
 	report := Report{
+		ReportVersion: CurrentReportVersion,
+		GeneratedAt:   time.Now().UTC(),
 		Isolation: IsolationResult{
 			LoopbackOnly: true, EphemeralPortsOnly: true, ExternalNetwork: false,
 			ClashFilesRead: false, ClashFilesWritten: false,
@@ -137,7 +144,8 @@ func RunAll(ctx context.Context) (Report, error) {
 	for _, spec := range specs {
 		result, err := runScenario(ctx, spec)
 		if err != nil {
-			return Report{}, fmt.Errorf("scenario %s: %w", spec.name, err)
+			report.Passed = false
+			return report, fmt.Errorf("scenario %s: %w", spec.name, err)
 		}
 		report.Scenarios = append(report.Scenarios, result)
 		report.Passed = report.Passed && result.Passed

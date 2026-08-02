@@ -1,6 +1,6 @@
 # SmartRoute Component and Interface Catalog
 
-Version: v0.11
+Version: v0.12
 Last updated: 2026-08-02
 
 This file is the maintained registry for components, interfaces, commands, configuration fields, and decision reason codes. Status is explicit: `implemented`, `experimental`, or `planned`.
@@ -30,6 +30,7 @@ flowchart TB
     MihomoLabCLI["cmd/smartroute-mihomo-lab\nIntegration runner"]
     Mihomo["internal/upstream\nFuture active adapter"]
     Store["internal/store\nSQLite strong evidence"]
+    Trial["internal/trial\nRead-only trial preflight"]
 
     CLI --> Config
     CLI --> Decision
@@ -41,6 +42,7 @@ flowchart TB
     CLI --> Supervisor
     CLI --> Observe
     CLI --> Store
+    CLI --> Trial
     Config --> Privacy
     Config --> Learning
     Decision --> Model
@@ -49,6 +51,11 @@ flowchart TB
     Health --> Model
     Store --> Learning
     Store --> Model
+    Trial --> Config
+    Trial --> Observe
+    Trial --> Store
+    Trial --> TestLab
+    Trial --> MihomoLab
     Transport --> Model
     Transport --> SOCKS
     Transport --> TLSInspect
@@ -97,6 +104,7 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `internal/observe` | Persistence | experimental | HMAC-pseudonymize typed events, stamp random trial scope, write bounded per-source JSONL, implement lifecycle controls, and aggregate identity-free readiness metrics | Learned policy, payload capture, static-baseline inference, application-success measurement, cloud upload, or active Clash access | Recorder/session/control/report tests; CLI sink/report tests |
 | `internal/testlab` | Test | implemented | Ephemeral loopback echo target, fake Direct/Proxy gateways, deterministic faults | External network and active Clash access | `internal/testlab/lab_test.go` |
 | `internal/mihomolab` | Test | implemented | Temporary config/home, child lifecycle, synthetic DNS, forced-listener and readiness assertions | Active Clash discovery, external traffic, TUN, system proxy | `internal/mihomolab/lab_test.go`; explicit runtime command |
+| `internal/trial` | Safety | experimental | Read-only validation of config, acknowledgments, recorder state, durable backup and fresh isolated-lab evidence | Running labs, changing controls, opening listeners, inspecting/authorizing active Clash, or starting a trial | `internal/trial/preflight_test.go`; CLI failure-contract test |
 | `internal/upstream` | Integration | planned | Mihomo config/API adapter and topology validation | Shipping Mihomo source | Planned integration tests |
 | `internal/store` | Persistence | experimental | HMAC target keys, sessions, evidence/status, migrations, integrity/retention, bounded async writing/callbacks, and verified snapshot lifecycle | Runtime policy application, overwrite restore, cleartext targets, raw analytics, or JSONL recording | SQLite, writer and lifecycle test suites |
 
@@ -163,6 +171,7 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `netrelay.Bidirectional(left, right)` | `internal/netrelay` | Two owned TCP-like connections | Relays both directions until completion | Best-effort half-close; relay errors are not routing evidence | experimental | Guard/Sidecar end-to-end tests |
 | `testlab.RunAll(ctx)` | `internal/testlab` | Context | Isolation and scenario JSON model | Fails if any scenario invariant fails | implemented | `internal/testlab/lab_test.go` |
 | `mihomolab.Run(ctx, binaryPath)` | `internal/mihomolab` | Context and explicit pinned binary path | Isolation, topology, readiness and scenario report | Rejects wrong version/config; owns and stops only its child | implemented | `internal/mihomolab/lab_test.go`; `make mihomo-lab` |
+| `trial.Preflight(ctx, options)` | `internal/trial` | Validated config, acknowledgments, report/backup paths, evidence age and optional clock | Stable pass/warn/fail checks and readiness result | Missing/stale/unknown/contradictory evidence fails closed; never mutates persistent state or inspects/authorizes active Clash | experimental | Privacy, freshness, isolation, cancellation and matching-backup tests |
 
 ## 4. CLI contract
 
@@ -182,6 +191,7 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `smartroute learning backup` | experimental | Snapshot configured evidence into a new private directory | None beyond local SQLite locks | Includes DB/key/manifest; never a redacted export |
 | `smartroute learning verify-backup` | experimental | Validate checksums and SQLite contents on a temporary copy | None | Leaves source snapshot unchanged |
 | `smartroute learning restore` | experimental | Restore a snapshot to a new database path | None | Refuses every existing DB/key/marker; never updates config or activates policy |
+| `smartroute trial preflight` | experimental | Evaluate controlled-trial prerequisites and emit stable JSON checks | None; does not run labs or inspect active Clash | Read-only except private temporary backup-verification copies; a ready report never authorizes activation |
 | `smartroute policy` | planned | Inspect, lock, revoke, or export policy | None by default | Policy store |
 | `smartroute-testlab` | implemented | Run isolated deterministic data-plane scenarios | Ephemeral loopback sockets only | None |
 | `smartroute-mihomo-lab -mihomo PATH` | implemented | Run isolated pinned-Mihomo contract scenarios | Child process, temporary home, local synthetic DNS and ephemeral loopback sockets only | Temporary files removed; JSON report only |
