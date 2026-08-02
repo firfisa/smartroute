@@ -64,6 +64,7 @@ func TestLoadAppliesGuardDefaultsToLegacyConfig(t *testing.T) {
 	}
 	delete(learningFields, "mode")
 	delete(learningFields, "max_entries")
+	delete(learningFields, "persistence")
 	fields["learning"], err = json.Marshal(learningFields)
 	if err != nil {
 		t.Fatal(err)
@@ -94,6 +95,47 @@ func TestLoadAppliesGuardDefaultsToLegacyConfig(t *testing.T) {
 	if cfg.Learning.MaxEntries != defaults.Learning.MaxEntries {
 		t.Fatalf("legacy learning capacity = %d", cfg.Learning.MaxEntries)
 	}
+	if cfg.Learning.Persistence != defaults.Learning.Persistence {
+		t.Fatalf("legacy learning persistence defaults = %+v", cfg.Learning.Persistence)
+	}
+}
+
+func TestLoadAppliesMissingLearningPersistenceDefaults(t *testing.T) {
+	encoded, err := json.Marshal(Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		t.Fatal(err)
+	}
+	var learningFields map[string]json.RawMessage
+	if err := json.Unmarshal(fields["learning"], &learningFields); err != nil {
+		t.Fatal(err)
+	}
+	learningFields["persistence"] = json.RawMessage(`{"enabled":true}`)
+	fields["learning"], err = json.Marshal(learningFields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err = json.Marshal(fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "partial.json")
+	if err := os.WriteFile(path, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaults := Default().Learning.Persistence
+	if !cfg.Learning.Persistence.Enabled || cfg.Learning.Persistence.DatabasePath != defaults.DatabasePath ||
+		cfg.Learning.Persistence.QueueSize != defaults.QueueSize || cfg.Learning.Persistence.RetentionHours != defaults.RetentionHours ||
+		cfg.Learning.Persistence.ShutdownTimeoutMS != defaults.ShutdownTimeoutMS {
+		t.Fatalf("partial persistence defaults = %+v", cfg.Learning.Persistence)
+	}
 }
 
 func TestValidateRejectsUnknownLearningMode(t *testing.T) {
@@ -109,6 +151,21 @@ func TestValidateRejectsLearningCapacityOutsideBounds(t *testing.T) {
 	cfg.Learning.MaxEntries = 0
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "learning.max_entries") {
 		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestValidateRejectsUnsafeLearningPersistence(t *testing.T) {
+	cfg := Default()
+	cfg.Learning.Persistence.DatabasePath = "."
+	cfg.Learning.Persistence.QueueSize = 0
+	cfg.Learning.Persistence.RetentionHours = 0
+	cfg.Learning.Persistence.ShutdownTimeoutMS = 50
+
+	err := cfg.Validate()
+	for _, field := range []string{"database_path", "queue_size", "retention_hours", "shutdown_timeout_ms"} {
+		if err == nil || !strings.Contains(err.Error(), field) {
+			t.Fatalf("Validate() error = %v, want %s error", err, field)
+		}
 	}
 }
 

@@ -57,8 +57,10 @@ All notable project changes are recorded here. The project has not published a r
 - CGo-free SQLite strong-evidence store using `modernc.org/sqlite v1.55.0`, with schema-v1 migrations, WAL, integrity checks, explicit pruning and checkpointing.
 - HMAC-pseudonymous durable target keys backed by a separate mode-0600 key; cleartext hostname/profile never enter SQLite.
 - Durable independent-session summaries, safe failure tokens, corruption/future-schema refusal, and ADR-0012.
+- Opt-in `serve` integration for strong evidence using a non-blocking bounded writer, startup retention pruning, random sessions, bounded drain/checkpoint shutdown, and safe queue/write metadata.
+- Learning persistence configuration with backward-compatible defaults; disabled mode creates no database or key, and stored evidence remains shadow-only under ADR-0013.
 
 ### Known limitations
 
-- TLS readiness is structural and experimental; certificate/Finished validation, learned-policy persistence, OS-level supervisor service integration, active configuration integration, and broad real-site compatibility are not implemented yet.
+- TLS readiness is structural and experimental; durable-policy application, persistence backup/deletion UI, OS-level supervisor service integration, active configuration integration, and broad real-site compatibility are not implemented yet.
 - No public release artifacts have been published yet.

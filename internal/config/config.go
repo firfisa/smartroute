@@ -40,11 +40,20 @@ type DecisionConfig struct {
 }
 
 type LearningConfig struct {
-	Mode                string `json:"mode"`
-	MaxEntries          int    `json:"max_entries"`
-	ProxyPromotionWins  int    `json:"proxy_promotion_wins"`
-	DirectPromotionWins int    `json:"direct_promotion_wins"`
-	PolicyTTLHours      int    `json:"policy_ttl_hours"`
+	Mode                string                    `json:"mode"`
+	MaxEntries          int                       `json:"max_entries"`
+	ProxyPromotionWins  int                       `json:"proxy_promotion_wins"`
+	DirectPromotionWins int                       `json:"direct_promotion_wins"`
+	PolicyTTLHours      int                       `json:"policy_ttl_hours"`
+	Persistence         LearningPersistenceConfig `json:"persistence"`
+}
+
+type LearningPersistenceConfig struct {
+	Enabled           bool   `json:"enabled"`
+	DatabasePath      string `json:"database_path"`
+	QueueSize         int    `json:"queue_size"`
+	RetentionHours    int    `json:"retention_hours"`
+	ShutdownTimeoutMS int    `json:"shutdown_timeout_ms"`
 }
 
 type PrivacyConfig struct {
@@ -82,6 +91,10 @@ func Default() Config {
 			ProxyPromotionWins:  3,
 			DirectPromotionWins: 5,
 			PolicyTTLHours:      72,
+			Persistence: LearningPersistenceConfig{
+				Enabled: false, DatabasePath: "data/learning.db", QueueSize: 256,
+				RetentionHours: 720, ShutdownTimeoutMS: 2000,
+			},
 		},
 		Privacy: PrivacyConfig{
 			Mode:             "explicit-opt-in",
@@ -132,6 +145,25 @@ func Load(path string) (Config, error) {
 			}
 			if _, capacityPresent := learningFields["max_entries"]; !capacityPresent {
 				cfg.Learning.MaxEntries = defaults.Learning.MaxEntries
+			}
+			if persistenceRaw, persistencePresent := learningFields["persistence"]; !persistencePresent {
+				cfg.Learning.Persistence = defaults.Learning.Persistence
+			} else {
+				var persistenceFields map[string]json.RawMessage
+				if err := json.Unmarshal(persistenceRaw, &persistenceFields); err == nil {
+					if _, present := persistenceFields["database_path"]; !present {
+						cfg.Learning.Persistence.DatabasePath = defaults.Learning.Persistence.DatabasePath
+					}
+					if _, present := persistenceFields["queue_size"]; !present {
+						cfg.Learning.Persistence.QueueSize = defaults.Learning.Persistence.QueueSize
+					}
+					if _, present := persistenceFields["retention_hours"]; !present {
+						cfg.Learning.Persistence.RetentionHours = defaults.Learning.Persistence.RetentionHours
+					}
+					if _, present := persistenceFields["shutdown_timeout_ms"]; !present {
+						cfg.Learning.Persistence.ShutdownTimeoutMS = defaults.Learning.Persistence.ShutdownTimeoutMS
+					}
+				}
 			}
 		}
 	}
@@ -198,6 +230,20 @@ func (c Config) Validate() error {
 	if c.Learning.PolicyTTLHours < 1 {
 		validationErrors = append(validationErrors, errors.New("policy_ttl_hours must be positive"))
 	}
+	if c.Learning.Persistence.DatabasePath == "" {
+		validationErrors = append(validationErrors, errors.New("learning.persistence.database_path must not be empty"))
+	} else if clean := filepath.Clean(c.Learning.Persistence.DatabasePath); clean == "." || clean == string(filepath.Separator) {
+		validationErrors = append(validationErrors, errors.New("learning.persistence.database_path must name a file"))
+	}
+	if c.Learning.Persistence.QueueSize < 1 || c.Learning.Persistence.QueueSize > 65536 {
+		validationErrors = append(validationErrors, errors.New("learning.persistence.queue_size must be between 1 and 65536"))
+	}
+	if c.Learning.Persistence.RetentionHours < 1 || c.Learning.Persistence.RetentionHours > 87600 {
+		validationErrors = append(validationErrors, errors.New("learning.persistence.retention_hours must be between 1 and 87600"))
+	}
+	if c.Learning.Persistence.ShutdownTimeoutMS < 100 || c.Learning.Persistence.ShutdownTimeoutMS > 30000 {
+		validationErrors = append(validationErrors, errors.New("learning.persistence.shutdown_timeout_ms must be between 100 and 30000"))
+	}
 	if _, err := privacy.New(c.Privacy.Mode, c.Privacy.NeverDirectProbe); err != nil {
 		validationErrors = append(validationErrors, fmt.Errorf("privacy: %w", err))
 	}
@@ -229,6 +275,14 @@ func (c Config) CandidateTimeout() time.Duration {
 
 func (c Config) GuardAdaptiveTimeout() time.Duration {
 	return time.Duration(c.GuardAdaptiveTimeoutMS) * time.Millisecond
+}
+
+func (c Config) LearningEvidenceRetention() time.Duration {
+	return time.Duration(c.Learning.Persistence.RetentionHours) * time.Hour
+}
+
+func (c Config) LearningShutdownTimeout() time.Duration {
+	return time.Duration(c.Learning.Persistence.ShutdownTimeoutMS) * time.Millisecond
 }
 
 func validateLoopbackAddress(address string) error {

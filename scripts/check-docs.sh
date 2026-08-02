@@ -42,6 +42,7 @@ required_files=(
   "docs/adr/0010-preserve-only-completed-counterfactual-evidence.md"
   "docs/adr/0011-ephemeral-learning-and-preferred-racing.md"
   "docs/adr/0012-sqlite-strong-evidence-store.md"
+  "docs/adr/0013-opt-in-async-durable-evidence-writer.md"
   "configs/smartroute.example.json"
   "upstreams.lock"
 )
@@ -139,6 +140,13 @@ fi
 if ! matches 'modernc.org/sqlite.*v1\.55\.0' "${project_root}/go.mod" "${project_root}/docs/05-upstreams.md" "${project_root}/docs/adr/0012-sqlite-strong-evidence-store.md" ||
   ! matches 'ErrCorrupt' "${project_root}/docs/04-component-catalog.md" "${project_root}/docs/adr/0012-sqlite-strong-evidence-store.md"; then
   echo "SQLite strong-evidence persistence contract is missing" >&2
+  exit 1
+fi
+
+if ! matches '"persistence"' "${project_root}/configs/smartroute.example.json" ||
+  ! matches 'durable_evidence_queue_full' "${project_root}/docs/04-component-catalog.md" "${project_root}/docs/adr/0013-opt-in-async-durable-evidence-writer.md" ||
+  ! matches 'defaults off and is shadow-only' "${project_root}/AGENTS.md"; then
+  echo "opt-in asynchronous durable writer contract is missing" >&2
   exit 1
 fi
 

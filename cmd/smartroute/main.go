@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -25,6 +27,7 @@ import (
 	"github.com/firfisa/smartroute/internal/observe"
 	"github.com/firfisa/smartroute/internal/privacy"
 	"github.com/firfisa/smartroute/internal/sidecar"
+	"github.com/firfisa/smartroute/internal/store"
 	"github.com/firfisa/smartroute/internal/supervisor"
 	"github.com/firfisa/smartroute/internal/transport"
 )
@@ -246,7 +249,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	if err := validateDirectProbeAcknowledgement(cfg.Privacy.Mode, *allowDirectProbes); err != nil {
 		return err
 	}
-	learner, err := learning.New(learning.Config{
+	ephemeralLearner, err := learning.New(learning.Config{
 		Mode:                cfg.Learning.Mode,
 		MaxEntries:          cfg.Learning.MaxEntries,
 		DirectPromotionWins: cfg.Learning.DirectPromotionWins,
@@ -255,6 +258,31 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	})
 	if err != nil {
 		return fmt.Errorf("initialize learning engine: %w", err)
+	}
+	var durableWarnOnce sync.Once
+	durable, err := openDurableLearning(context.Background(), cfg, func(error) {
+		durableWarnOnce.Do(func() {
+			fmt.Fprintln(stderr, "durable learning write failed; routing and process-local learning continue")
+		})
+	})
+	if err != nil {
+		return err
+	}
+	if durable != nil {
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.LearningShutdownTimeout())
+			defer cancel()
+			stats, closeErr := durable.Close(shutdownCtx)
+			fmt.Fprintf(stderr, "durable learning stopped: queued=%d written=%d skipped=%d dropped=%d errors=%d\n",
+				stats.Queued, stats.Written, stats.Skipped, stats.Dropped, stats.Errors)
+			if closeErr != nil {
+				fmt.Fprintln(stderr, "durable learning shutdown incomplete; process exit remains safe")
+			}
+		}()
+	}
+	learner := &runtimeLearningEngine{ephemeral: ephemeralLearner}
+	if durable != nil {
+		learner.writer = durable.writer
 	}
 	recorder, err := openObservationRecorder(cfg, observe.SourceEngine)
 	if err != nil {
@@ -294,7 +322,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 				EventType: event.EventType, Target: &event.Target, SelectedPath: event.SelectedPath,
 				ReasonCode: event.ReasonCode, PolicyReason: event.PolicyReason,
 				Observation: &observation, OtherObservation: event.OtherObservation, Committed: &committed,
-				LearningReason: event.LearningReason, PolicyState: event.PolicyState,
+				LearningReason: event.LearningReason, DurableReason: event.DurableReason, PolicyState: event.PolicyState,
 			})
 		},
 		OnDiagnostic: func(event sidecar.DiagnosticEvent) {
@@ -309,6 +337,95 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	}
 	fmt.Fprintf(stderr, "experimental TLS sidecar listening on %s; privacy=%s; no Clash files are read or modified\n", listener.Addr(), cfg.Privacy.Mode)
 	return server.Serve(ctx, listener)
+}
+
+type durableEvidenceWriter interface {
+	Enqueue(store.WriteRequest) (bool, string)
+}
+
+type runtimeLearningEngine struct {
+	ephemeral *learning.Engine
+	writer    durableEvidenceWriter
+	clock     func() time.Time
+}
+
+func (e *runtimeLearningEngine) PreferredPath(target model.Target) model.Path {
+	return e.ephemeral.PreferredPath(target)
+}
+
+func (e *runtimeLearningEngine) Observe(target model.Target, winner model.Observation, other *model.Observation) (learning.Update, error) {
+	update, err := e.ephemeral.Observe(target, winner, other)
+	if err != nil || e.writer == nil {
+		return update, err
+	}
+	direction, _, classifyErr := learning.ClassifyStrongPair(winner, other)
+	if classifyErr != nil || direction == "" {
+		return update, nil
+	}
+	now := time.Now
+	if e.clock != nil {
+		now = e.clock
+	}
+	_, update.DurableReason = e.writer.Enqueue(store.WriteRequest{
+		Target: target, Winner: winner, Other: other, ObservedAt: now().UTC(),
+	})
+	return update, nil
+}
+
+type durableLearningRuntime struct {
+	store  *store.Store
+	writer *store.AsyncWriter
+}
+
+func openDurableLearning(ctx context.Context, cfg config.Config, onError func(error)) (*durableLearningRuntime, error) {
+	if !cfg.Learning.Persistence.Enabled {
+		return nil, nil
+	}
+	evidenceStore, err := store.Open(ctx, store.Config{
+		Path: cfg.Learning.Persistence.DatabasePath, BusyTimeout: 5 * time.Second,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("initialize durable learning store: %w", err)
+	}
+	closeOnError := func(resultErr error) (*durableLearningRuntime, error) {
+		return nil, errors.Join(resultErr, evidenceStore.Close())
+	}
+	sessionID, err := newLearningSessionID()
+	if err != nil {
+		return closeOnError(err)
+	}
+	now := time.Now().UTC()
+	if err := evidenceStore.StartSession(ctx, sessionID, now); err != nil {
+		return closeOnError(fmt.Errorf("start durable learning session: %w", err))
+	}
+	if _, err := evidenceStore.PruneEvidence(ctx, now.Add(-cfg.LearningEvidenceRetention())); err != nil {
+		return closeOnError(fmt.Errorf("prune durable learning evidence: %w", err))
+	}
+	writer, err := store.NewAsyncWriter(evidenceStore, sessionID, cfg.Learning.Persistence.QueueSize, onError)
+	if err != nil {
+		return closeOnError(fmt.Errorf("initialize durable learning writer: %w", err))
+	}
+	return &durableLearningRuntime{store: evidenceStore, writer: writer}, nil
+}
+
+func (r *durableLearningRuntime) Close(ctx context.Context) (store.WriterStats, error) {
+	if r == nil {
+		return store.WriterStats{}, nil
+	}
+	if err := r.writer.Close(ctx); err != nil {
+		return r.writer.Stats(), err
+	}
+	checkpointErr := r.store.Checkpoint(ctx)
+	closeErr := r.store.Close()
+	return r.writer.Stats(), errors.Join(checkpointErr, closeErr)
+}
+
+func newLearningSessionID() (string, error) {
+	value := make([]byte, 16)
+	if _, err := rand.Read(value); err != nil {
+		return "", fmt.Errorf("generate durable learning session ID: %w", err)
+	}
+	return "session-" + hex.EncodeToString(value), nil
 }
 
 type runtimeEventSink struct {

@@ -88,7 +88,9 @@ ADR-0010 adds optional `other_observation` to successful runtime decisions and J
 
 ADR-0011 adds optional `learning_reason` and `policy_state` to the same decision row. The default `shadow` mode records state changes without changing candidate order. `ephemeral-auto` may apply a process-local preferred order, but it still races/falls back to the opposite path and loses all preference state on restart. These fields are diagnostic evidence, not durable exported rules.
 
-ADR-0012 adds a separate SQLite schema for cross-session strong evidence. It stores an HMAC target key, safe session ID, direction, readiness stages, bounded failure class and timestamp—never cleartext hostname/profile. The schema is implemented and tested but not opened by the runtime yet, so no live-trial claim may rely on durable evidence until the explicit configuration, backup/restore and non-disruptive writer path are complete.
+ADR-0012 adds a separate SQLite schema for cross-session strong evidence. It stores an HMAC target key, safe session ID, direction, readiness stages, bounded failure class and timestamp—never cleartext hostname/profile.
+
+ADR-0013 connects that schema to `serve` only when `learning.persistence.enabled` is explicitly true. Strong pairs enter a non-blocking bounded queue; `durable_reason` reports queued/full/closed status, and write errors never change the connection. Startup integrity/pruning failures are explicit before the listener opens. This is evidence collection only: the runtime never loads a route from SQLite. Before a live trial enables it, backup/restore and deletion controls for the database, WAL/SHM files, and `.key` must be rehearsed as one unit.
 
 Operational commands:
 

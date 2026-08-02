@@ -87,3 +87,7 @@ Negative:
 Tests cover initial/idempotent migration, file modes, reopen, concurrent writes, HMAC scope matching, raw-file cleartext scans, distinct-session summaries, weak evidence rejection, safe failure classes, pruning, cancellation, missing keys, corrupt databases, corrupt rows, and future schema rejection.
 
 Rollback removes runtime use of `internal/store` while retaining the database for later inspection. Database deletion is always a separate explicit user action.
+
+## Follow-up
+
+ADR-0013 later authorized default-off asynchronous runtime collection into this schema. It did not authorize stored evidence to select routes; the durable-policy and user-control limitations in this ADR remain in force.

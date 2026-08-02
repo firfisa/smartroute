@@ -2,7 +2,7 @@
 
 SmartRoute 是一个面向 Mihomo/Clash 生态的“自适应分流”实验项目。它不重新实现代理协议，而是在现有静态规则与代理内核之间加入一个可观测、可解释、可撤销的决策层：对规则无法确定的目标比较 `DIRECT` 与 `PROXY` 路径，按当前网络环境积累证据，并逐渐形成个人化路由策略。
 
-当前状态：Phase 0 架构与可行性验证。已经实现实验性的可用性 Guard、TLS-over-SOCKS sidecar、无 0-RTT 的 TLS readiness 竞争、进程内临时学习闭环、受限本地观测记录器，以及锁定 Mihomo v1.19.29 的独立子进程测试；尚未实现跨会话学习持久化、活动 Clash 配置接入或发布安装包。
+当前状态：Phase 0 架构与可行性验证。已经实现实验性的可用性 Guard、TLS-over-SOCKS sidecar、无 0-RTT 的 TLS readiness 竞争、进程内临时学习闭环、可选的跨会话强证据写入、受限本地观测记录器，以及锁定 Mihomo v1.19.29 的独立子进程测试；尚未实现跨会话自动策略、活动 Clash 配置接入或发布安装包。
 
 ## 当前结论
 
@@ -57,7 +57,7 @@ flowchart LR
 | TLS readiness gate | 已实现：结构化 ServerHello 达到 L3，预读字节无损回放 |
 | TLS ClientHello/0-RTT 安全处理 | 已实现分片重组；检测到 `early_data` 时在拨号前拒绝 |
 | Direct 探测隐私策略 | 已实现：`privacy-first`、精确/后缀 deny、缺失策略 fail-closed；禁直连时只启 Proxy 且仍要求 L3 |
-| SQLite 强证据存储基础 | 已实现：HMAC 目标键、独立会话、迁移/校验/裁剪；尚未接入运行时或持久策略 |
+| SQLite 强证据存储与运行时写入 | 已实现：默认关闭、HMAC 目标键、独立会话、异步有界队列、迁移/校验/裁剪；仅存证据，不应用持久策略 |
 | 独立 Mihomo listener 拓扑 | v1.19.29 已验证强制 Direct/Proxy、域名保留和循环规避 |
 | Mihomo HTTPS/TLS 自适应路径 | macOS arm64 与 Linux amd64/v1.19.29 已验证 Direct 无 ServerHello 后由 Proxy 恢复并提交 L3 |
 | 活动 Clash Verge Rev 集成 | 尚未写入或重载；留待配合下的真实试用 |
@@ -110,7 +110,19 @@ go run ./cmd/smartroute observations clear -config configs/smartroute.example.js
 
 这不是永久规则：策略按 `network profile + hostname + port + transport` 隔离，矛盾强证据会立即撤下偏好，TTL 到期或进程重启都会回到 Direct-first；内存表达到容量时停止接纳新目标，而不影响路由。
 
-跨会话 SQLite 基础已经实现但尚未由 `serve` 打开。数据库只保存目标 HMAC 和结构化强证据，独立密钥位于 `<database>.key`；当前不会从数据库加载自动策略，也没有授权它改变路由。
+跨会话 SQLite 强证据写入默认关闭。要在隔离实验中启用，可在 `learning` 内设置：
+
+```json
+"persistence": {
+  "enabled": true,
+  "database_path": "data/learning.db",
+  "queue_size": 256,
+  "retention_hours": 720,
+  "shutdown_timeout_ms": 2000
+}
+```
+
+它只保存目标 HMAC 和通过共享门控的结构化强证据，独立密钥位于 `<database>.key`。写入使用非阻塞有界队列；队列满或运行期数据库错误不会改变当前连接。当前不会从数据库加载自动策略、生成 Clash 规则或授权持久证据改变路由。备份、移动或删除时必须把数据库、`-wal`/`-shm`（如存在）和 `.key` 视为一个单元。
 
 ## 独立测试环境
 

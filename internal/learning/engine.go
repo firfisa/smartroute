@@ -53,6 +53,7 @@ type Update struct {
 	PreviousState model.PolicyState `json:"previous_state"`
 	Policy        Policy            `json:"policy"`
 	ReasonCode    string            `json:"reason_code"`
+	DurableReason string            `json:"durable_reason,omitempty"`
 }
 
 type targetKey struct {

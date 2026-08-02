@@ -338,6 +338,8 @@ strong_evidence
 
 `target_key_hmac` 由独立 0600 本地密钥对 `network profile + normalized hostname + port + transport` 的无歧义编码计算。数据库不保存明文 hostname/profile；数据库存在而密钥缺失时拒绝生成替代密钥。打开时执行完整性检查和事务迁移，损坏或未来 schema 不自动覆盖。详见 ADR-0012。
 
+ADR-0013 已把它作为显式 opt-in 的 shadow 证据路径接入 `serve`：启动时创建独立 session 并按保留期裁剪，强配对证据通过非阻塞有界队列异步落库，关闭时限时排空并 checkpoint。队列满、writer 已关闭或单条写失败只形成 `durable_reason`/统计，不进入路由结果。数据库仍不在启动时加载策略，也不生成或应用规则。
+
 未来持久策略、网络画像与人工规则可能扩展为：
 
 ```text

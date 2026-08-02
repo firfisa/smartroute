@@ -21,7 +21,7 @@ Current scope:
 - Direct-probe privacy policy is enforced before candidate creation; denied TLS targets use Proxy-only L3 validation.
 - DNS as a separate diagnostic path.
 - UDP/QUIC use static or historical policy until protocol-specific validators exist.
-- SQLite strong-evidence persistence is experimental; durable policy application waits for cross-session evaluation, backup/restore, health gates, and explicit configuration.
+- Opt-in SQLite strong-evidence collection uses a bounded asynchronous writer; durable policy application waits for cross-session evaluation, backup/restore, health gates, and user controls.
 
 Out of scope until an ADR changes it:
 
@@ -59,6 +59,7 @@ These rules must not be weakened silently:
 21. Ephemeral learning accepts only a ready winner paired with an opposite failure that reached outbound admission; incomplete, canceled, not-started, privacy-forced, and pre-outbound failures never update preference counters.
 22. The in-memory learning table is capacity bounded; reaching the bound may suppress new learning but must never reject, delay, or reroute the current connection.
 23. Durable target identity is HMAC-pseudonymous with a separate local key; a missing key, corrupt database, corrupt record, or future schema must be reported without automatic deletion, replacement, or routing impact.
+24. Durable evidence collection defaults off and is shadow-only; enqueue and runtime write failure must never delay, reject, replay, or reroute the current connection, and stored evidence cannot select a route until a later ADR authorizes it.
 
 ## 4. Repository map
 
@@ -80,7 +81,7 @@ Keep this map current whenever a top-level component is added, removed, or renam
 | `internal/netrelay/` | Shared bidirectional TCP relay primitive |
 | `internal/privacy/` | Local Direct-probe policy compilation, normalization, and reason codes |
 | `internal/observe/` | Bounded local JSONL recording, pseudonymization, rotation, and lifecycle controls |
-| `internal/store/` | Pseudonymous SQLite sessions/strong evidence, schema migration, integrity checks, and retention |
+| `internal/store/` | Pseudonymous SQLite sessions/strong evidence, schema migration, integrity checks, retention, and bounded asynchronous writing |
 | `internal/supervisor/` | Independent child lifecycle, bounded restart backoff, and structured service events |
 | `internal/testlab/` | Loopback targets, fake gateways, and fault scenarios |
 | `internal/mihomolab/` | Temporary Mihomo config, child lifecycle, synthetic DNS, and topology assertions |

@@ -219,7 +219,8 @@ func TestServerTLSUsesLearnedProxyPreferenceWithoutDisablingFallback(t *testing.
 		preferred: model.PathProxy,
 		update: learning.Update{
 			Applied: true, ReasonCode: learning.ReasonPreferenceRefreshed,
-			Policy: learning.Policy{State: model.StateProxyPreferred, PreferredPath: model.PathProxy},
+			DurableReason: "durable_evidence_queued",
+			Policy:        learning.Policy{State: model.StateProxyPreferred, PreferredPath: model.PathProxy},
 		},
 	}
 	events := make(chan DecisionEvent, 1)
@@ -245,7 +246,8 @@ func TestServerTLSUsesLearnedProxyPreferenceWithoutDisablingFallback(t *testing.
 	if direct.attempts.Load() != 0 || proxy.attempts.Load() != 1 || learner.observed.Load() != 1 {
 		t.Fatalf("attempts direct=%d proxy=%d observed=%d", direct.attempts.Load(), proxy.attempts.Load(), learner.observed.Load())
 	}
-	if event.ReasonCode != transport.ReasonProxyCandidateBeforeHeadStart || event.LearningReason != learning.ReasonPreferenceRefreshed || event.PolicyState != model.StateProxyPreferred {
+	if event.ReasonCode != transport.ReasonProxyCandidateBeforeHeadStart || event.LearningReason != learning.ReasonPreferenceRefreshed ||
+		event.DurableReason != "durable_evidence_queued" || event.PolicyState != model.StateProxyPreferred {
 		t.Fatalf("event = %+v", event)
 	}
 	_ = clientConn.Close()

@@ -1,6 +1,6 @@
 # SmartRoute Component and Interface Catalog
 
-Version: v0.4
+Version: v0.5
 Last updated: 2026-08-02
 
 This file is the maintained registry for components, interfaces, commands, configuration fields, and decision reason codes. Status is explicit: `implemented`, `experimental`, or `planned`.
@@ -38,6 +38,7 @@ flowchart TB
     CLI --> Privacy
     CLI --> Supervisor
     CLI --> Observe
+    CLI --> Store
     Config --> Privacy
     Config --> Learning
     Decision --> Model
@@ -63,7 +64,7 @@ flowchart TB
     MihomoLab --> Guard
     MihomoLab --> TestLab
     Transport -. "planned" .-> Mihomo
-    Decision -. "planned" .-> Store
+    Store -. "future durable policy" .-> Learning
 ```
 
 Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relationships.
@@ -72,7 +73,7 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 
 | Component | Owner | Status | Responsibility | Explicit non-responsibility | Primary tests |
 | --- | --- | --- | --- | --- | --- |
-| `cmd/smartroute` | CLI | experimental | Command parsing, config validation, synthetic decision trace, Guard/engine lifecycles, and observation controls | Learned-policy persistence and active Clash configuration | `cmd/smartroute/main_test.go`; data plane exercised by Test Labs |
+| `cmd/smartroute` | CLI | experimental | Command parsing, config validation, synthetic decision trace, Guard/engine lifecycles, observation controls, and opt-in durable shadow-writer lifecycle | Durable policy application and active Clash configuration | `cmd/smartroute/main_test.go`; data plane exercised by Test Labs |
 | `cmd/smartroute-testlab` | Test | implemented | Run deterministic loopback scenarios and print JSON report | Real destinations or Clash integration | `internal/testlab/lab_test.go` plus CI named step |
 | `cmd/smartroute-mihomo-lab` | Test | implemented | Run the exact pinned Mihomo binary in an isolated topology and print JSON | Discovering or operating the active Clash instance | `internal/mihomolab/lab_test.go`; `make mihomo-lab` |
 | `internal/config` | Core | implemented | Strict JSON schema, safe loopback defaults, validation | Mihomo YAML generation | `internal/config/config_test.go` |
@@ -82,7 +83,7 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `internal/socks5` | Data plane | experimental | No-auth SOCKS5 CONNECT parsing/client handshake and domain preservation | Authentication, UDP ASSOCIATE, BIND | `internal/socks5/protocol_test.go`; Test Lab |
 | `internal/transport` | Data plane | experimental | SOCKS5 candidate dialing, TCP and TLS racing, ServerHello gate, cancellation, exact prefetched-byte replay | Certificate/Finished/application validation | Racer and TLS readiness tests; Mihomo Lab |
 | `internal/tlsinspect` | Data plane | experimental | Bounded TLS record reassembly, ClientHello/ServerHello structure checks, early-data rejection | TLS decryption, certificate validation, payload logging | `internal/tlsinspect/tlsinspect_test.go` |
-| `internal/sidecar` | Data plane | experimental | SOCKS admission, TLS first-flight orchestration, stage enforcement, relay, decision and diagnostic events | Learning persistence or active Clash modification | Sidecar net.Pipe tests, Test Lab and Mihomo Lab |
+| `internal/sidecar` | Data plane | experimental | SOCKS admission, TLS first-flight orchestration, stage enforcement, relay, decision and diagnostic events | SQLite I/O, durable policy evaluation, or active Clash modification | Sidecar net.Pipe tests, Test Lab and Mihomo Lab |
 | `internal/guard` | Data plane | experimental | Before forwarding payload to either lane, select the adaptive engine or fall back to the original-policy SOCKS listener | Direct/Proxy evidence, learning, post-commit replay, Guard-process supervision | `internal/guard/server_test.go`; Mihomo Lab fault scenarios |
 | `internal/netrelay` | Data plane | experimental | Shared bidirectional TCP copying and half-close handling | Routing decisions or payload inspection | Consumer tests in Guard, Sidecar and Test Lab |
 | `internal/privacy` | Policy | experimental | Validate/normalize exact and suffix deny rules; decide whether a target may open Direct | Network I/O, hostname persistence, or route learning | `internal/privacy/policy_test.go`; Sidecar privacy tests |
@@ -91,7 +92,7 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `internal/testlab` | Test | implemented | Ephemeral loopback echo target, fake Direct/Proxy gateways, deterministic faults | External network and active Clash access | `internal/testlab/lab_test.go` |
 | `internal/mihomolab` | Test | implemented | Temporary config/home, child lifecycle, synthetic DNS, forced-listener and readiness assertions | Active Clash discovery, external traffic, TUN, system proxy | `internal/mihomolab/lab_test.go`; explicit runtime command |
 | `internal/upstream` | Integration | planned | Mihomo config/API adapter and topology validation | Shipping Mihomo source | Planned integration tests |
-| `internal/store` | Persistence | experimental | HMAC target keys, sessions, strong evidence, schema migration, integrity checks, summaries, and pruning | Runtime policy application, cleartext targets, raw analytics, or JSONL recording | `internal/store/sqlite_test.go` migration/privacy/recovery/concurrency suite |
+| `internal/store` | Persistence | experimental | HMAC target keys, sessions, strong evidence, schema migration, integrity checks, summaries, pruning, and a bounded asynchronous writer | Runtime policy application, cleartext targets, raw analytics, or JSONL recording | `internal/store/sqlite_test.go`; `internal/store/writer_test.go` |
 
 ## 3. Implemented function and interface registry
 
@@ -130,6 +131,10 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `Store.AppendStrongEvidence(...)` | `internal/store` | Target, known session, winner/opposite pair, timestamp | Whether a schema-v1 row was written | Shared learning gate skips weak/incomplete pairs; unsafe failure tokens and DB errors are explicit | experimental | Strong/weak/privacy/concurrent-write tests |
 | `Store.ListEvidence/Summarize` | `internal/store` | Target and lower timestamp bound | Ordered rows or wins/distinct-session counts | Invalid stored stages/directions fail visibly | experimental | Scope, summary and corrupt-row tests |
 | `Store.PruneEvidence/Checkpoint` | `internal/store` | Retention cutoff or context | Deleted count or compact WAL boundary | Errors never imply automatic deletion/replacement | experimental | Prune and privacy-file tests |
+| `store.NewAsyncWriter(...)` | `internal/store` | Store, session, queue capacity, optional error callback | Background strong-evidence writer | Rejects unsafe construction; individual append errors are counted and later writes continue | experimental | Queue bounds, errors, skips and close tests |
+| `AsyncWriter.Enqueue(request)` | `internal/store` | Target, completed pair and timestamp | Immediate accepted flag plus safe durable reason | Never blocks; full/closed queues drop only durable evidence | experimental | Backpressure and close/enqueue race tests |
+| `AsyncWriter.Close(ctx)` | `internal/store` | Shutdown context | Drained completion or context error | Stops admission, drains accepted work, never force-closes its store | experimental | Drain and timeout tests |
+| `runtimeLearningEngine.Observe(...)` | `cmd/smartroute` | Sidecar target and completed candidate evidence | Ephemeral update plus optional durable enqueue reason | Weak pairs do not enqueue; writer result never becomes a route error | experimental | Runtime learner and Sidecar metadata tests |
 | `sidecar.Server.Serve(ctx, listener)` | `internal/sidecar` | Context, listener, plain Racer or TLSRacer | Serves until cancellation/error; TLS mode requires L3 | Rejects unsafe ClientHello before dialing; never reads Clash config | experimental | Sidecar, Test Lab and Mihomo Lab |
 | `guard.Server.Serve(ctx, listener)` | `internal/guard` | Context, listener, adaptive/original dialers and bounded timeouts | Serves SOCKS targets; commits one availability lane before payload | Falls back on adaptive handshake failure; refuses when both lanes fail; never replays post-commit data | experimental | Adaptive, unavailable, wedged and dual-failure unit tests; Mihomo Lab scenarios |
 | `netrelay.Bidirectional(left, right)` | `internal/netrelay` | Two owned TCP-like connections | Relays both directions until completion | Best-effort half-close; relay errors are not routing evidence | experimental | Guard/Sidecar end-to-end tests |
@@ -143,7 +148,7 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `smartroute version` | implemented | Print version, commit, build date | None | None |
 | `smartroute validate -config PATH` | implemented | Strictly parse and validate local JSON config | None | None |
 | `smartroute trace -direct SPEC -proxy SPEC` | implemented | Evaluate one synthetic paired observation and print JSON | None | None |
-| `smartroute serve [-acknowledge-direct-probes]` | experimental | Run TLS-over-SOCKS sidecar with runtime privacy policy | Privacy-first/deny targets open Proxy only; acknowledged explicit-opt-in targets may race Direct/Proxy | Optional bounded engine JSONL; otherwise debug stdout |
+| `smartroute serve [-acknowledge-direct-probes]` | experimental | Run TLS-over-SOCKS sidecar with runtime privacy policy | Privacy-first/deny targets open Proxy only; acknowledged explicit-opt-in targets may race Direct/Proxy | Optional bounded engine JSONL and separately opt-in SQLite strong evidence; SQLite never supplies routes |
 | `smartroute guard` | experimental | Run the separate availability boundary in front of the adaptive engine | Configured loopback Guard, engine and original-policy SOCKS endpoints | Optional bounded Guard JSONL; otherwise debug stdout |
 | `smartroute supervise` | experimental | Run Guard and adaptive engine as independently restartable children | Same loopback effects as the two child commands; does not operate Mihomo | Optional bounded per-source JSONL; otherwise debug stdout |
 | `smartroute observations status\|pause\|resume\|clear\|export` | experimental | Operate the configured local recorder directory | None | Status/control, confirmed deletion, or redacted file export |
@@ -186,6 +191,11 @@ go run ./cmd/smartroute trace \
 | `learning.proxy_promotion_wins` | integer | `3` | At least 2 | Consecutive strong Proxy pairs for ephemeral promotion |
 | `learning.direct_promotion_wins` | integer | `5` | At least 2 | Consecutive strong Direct pairs for ephemeral promotion |
 | `learning.policy_ttl_hours` | integer | `72` | Positive | Ephemeral preference expiry; restart clears earlier |
+| `learning.persistence.enabled` | boolean | `false` | Boolean | Explicitly opens the SQLite strong-evidence shadow writer; false creates no DB/key |
+| `learning.persistence.database_path` | path | `data/learning.db` | Non-empty file path; not `.` or filesystem root | SQLite file; sibling `.key` and any WAL/SHM files share its lifecycle |
+| `learning.persistence.queue_size` | integer | `256` | 1–65536 | Bounds pending non-blocking durable writes; full queues drop evidence only |
+| `learning.persistence.retention_hours` | integer | `720` | 1–87600 | Evidence older than this is pruned at enabled runtime startup |
+| `learning.persistence.shutdown_timeout_ms` | integer | `2000` | 100–30000 | Bounds writer drain plus WAL checkpoint during shutdown |
 | `privacy.mode` | enum | `explicit-opt-in` | `explicit-opt-in` or `privacy-first` | `privacy-first` opens zero Direct candidates; explicit mode also requires CLI acknowledgment |
 | `privacy.never_direct_probe` | string list | empty | Plain exact; leading `.` or `*.` suffix; normalized ASCII hostname/IP; invalid entries reject config | Matching entries override acknowledgment and use Proxy-only L3 |
 | `observation.enabled` | boolean | `false` | Boolean | Enables local persistence and suppresses duplicate raw runtime stdout events |
@@ -247,6 +257,14 @@ Ephemeral learning reasons:
 | `learning_skipped_by_policy` | No | Privacy policy allowed only a single path |
 | `learning_update_error` | No | Bounded metadata only; selected connection still commits |
 
+Durable evidence reasons:
+
+| Reason code | Durable effect | Route effect |
+| --- | --- | --- |
+| `durable_evidence_queued` | Strong pair accepted into the bounded writer queue | None |
+| `durable_evidence_queue_full` | Strong pair dropped because the queue is full | None; current connection continues |
+| `durable_evidence_writer_closed` | Strong pair arrived after shutdown admission closed | None; current connection continues |
+
 Guard availability reasons:
 
 | Reason code | Selected lane | Meaning |
@@ -263,7 +281,7 @@ Guard availability reasons:
 | `candidate.ready` | Readiness gate | path, stage, latency | Decision engine | planned |
 | `candidate.failed` | Dialer/gate | path, stage, failure class | Decision engine | planned |
 | `candidate.canceled` | Racer | path, cancellation reason | Metrics | planned |
-| `decision` | Sidecar/decision engine | `event_type`, target, selected path, reason, optional privacy/learning reasons and ephemeral policy state, winner `observation`, optional completed `other_observation`, `committed` | CLI/recorder/UI | experimental `DecisionEvent`; JSONL schema v1 implemented |
+| `decision` | Sidecar/decision engine | `event_type`, target, selected path, reason, optional privacy/learning/durable reasons and ephemeral policy state, winner `observation`, optional completed `other_observation`, `committed` | CLI/recorder/UI | experimental `DecisionEvent`; JSONL schema v1 additive optional metadata |
 | `diagnostic` | Sidecar | `event_type`, target, reason, failure class, optional Direct/Proxy failures and `policy_reason` | CLI/debug | experimental `DiagnosticEvent`; no payload bytes |
 | `guard_decision` | Guard | `event_type`, target, selected lane, reason, bounded failure classes, `committed` | CLI/recorder/UI | experimental; JSONL schema v1 implemented, no payload bytes |
 | `supervisor` | Supervisor | `event_type`, service, state, attempt, bounded failure class, optional `backoff_ms` | CLI/recorder/operator | experimental; states include `started`, `start_failed`, `exited`, `restart_scheduled`, `stopped` |

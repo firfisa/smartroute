@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -10,9 +11,104 @@ import (
 	"time"
 
 	"github.com/firfisa/smartroute/internal/config"
+	"github.com/firfisa/smartroute/internal/learning"
 	"github.com/firfisa/smartroute/internal/model"
 	"github.com/firfisa/smartroute/internal/observe"
+	"github.com/firfisa/smartroute/internal/store"
 )
+
+type recordingDurableWriter struct {
+	requests []store.WriteRequest
+	reason   string
+}
+
+func (w *recordingDurableWriter) Enqueue(request store.WriteRequest) (bool, string) {
+	w.requests = append(w.requests, request)
+	return true, w.reason
+}
+
+func testRuntimeLearner(t *testing.T, writer durableEvidenceWriter) *runtimeLearningEngine {
+	t.Helper()
+	engine, err := learning.New(learning.Config{
+		Mode: learning.ModeShadow, DirectPromotionWins: 2, ProxyPromotionWins: 2,
+		TTL: time.Hour, MaxEntries: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &runtimeLearningEngine{ephemeral: engine, writer: writer, clock: func() time.Time {
+		return time.Unix(123, 0).UTC()
+	}}
+}
+
+func TestRuntimeLearningQueuesOnlyStrongEvidence(t *testing.T) {
+	writer := &recordingDurableWriter{reason: store.ReasonDurableQueued}
+	learner := testRuntimeLearner(t, writer)
+	target := model.Target{NetworkProfileID: "profile", Hostname: "example.com", Port: 443, Transport: model.TransportTCP}
+	winner := model.Observation{Path: model.PathProxy, Success: true, StageReached: model.StageTLS}
+	failed := model.Observation{Path: model.PathDirect, StageReached: model.StageTCP, FailureClass: "timeout"}
+
+	update, err := learner.Observe(target, winner, &failed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if update.DurableReason != store.ReasonDurableQueued || len(writer.requests) != 1 || !writer.requests[0].ObservedAt.Equal(time.Unix(123, 0).UTC()) {
+		t.Fatalf("update=%+v requests=%+v", update, writer.requests)
+	}
+	if _, err := learner.Observe(target, winner, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(writer.requests) != 1 {
+		t.Fatalf("weak evidence queued: %+v", writer.requests)
+	}
+}
+
+func TestDurableLearningIsOptInAndDrains(t *testing.T) {
+	cfg := config.Default()
+	cfg.Learning.Persistence.DatabasePath = filepath.Join(t.TempDir(), "learning.db")
+	runtime, err := openDurableLearning(context.Background(), cfg, nil)
+	if err != nil || runtime != nil {
+		t.Fatalf("disabled runtime=%v error=%v", runtime, err)
+	}
+	if _, err := os.Stat(cfg.Learning.Persistence.DatabasePath); !os.IsNotExist(err) {
+		t.Fatalf("disabled persistence created database: %v", err)
+	}
+
+	cfg.Learning.Persistence.Enabled = true
+	runtime, err = openDurableLearning(context.Background(), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := model.Target{NetworkProfileID: "profile", Hostname: "secret.example", Port: 443, Transport: model.TransportTCP}
+	winner := model.Observation{Path: model.PathProxy, Success: true, StageReached: model.StageTLS}
+	failed := model.Observation{Path: model.PathDirect, StageReached: model.StageTCP, FailureClass: "timeout"}
+	if accepted, reason := runtime.writer.Enqueue(store.WriteRequest{Target: target, Winner: winner, Other: &failed, ObservedAt: time.Now()}); !accepted || reason != store.ReasonDurableQueued {
+		t.Fatalf("enqueue accepted=%v reason=%q", accepted, reason)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	stats, err := runtime.Close(ctx)
+	if err != nil || stats.Written != 1 {
+		t.Fatalf("close stats=%+v error=%v", stats, err)
+	}
+	if _, err := os.Stat(cfg.Learning.Persistence.DatabasePath); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLearningSessionIDsAreSafeAndDistinct(t *testing.T) {
+	first, err := newLearningSessionID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := newLearningSessionID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second || !strings.HasPrefix(first, "session-") || len(first) != len("session-")+32 {
+		t.Fatalf("session IDs first=%q second=%q", first, second)
+	}
+}
 
 func TestParseObservation(t *testing.T) {
 	got, err := parseObservation(model.PathDirect, "failure:tcp:250:timeout")

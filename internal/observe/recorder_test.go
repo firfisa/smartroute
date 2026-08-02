@@ -32,7 +32,8 @@ func TestRecorderHashesSensitiveTargetFields(t *testing.T) {
 	err = recorder.Record(Event{
 		EventType: "decision", Target: &model.Target{NetworkProfileID: "home-wifi", Hostname: "Secret.Example.", Port: 443, Transport: model.TransportTCP},
 		SelectedPath: model.PathProxy, ReasonCode: "proxy_candidate_won", OtherObservation: &other, Committed: &committed,
-		LearningReason: "ephemeral_proxy_preference_promoted", PolicyState: model.StateProxyPreferred,
+		LearningReason: "ephemeral_proxy_preference_promoted", DurableReason: "durable_evidence_queued",
+		PolicyState: model.StateProxyPreferred,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -58,7 +59,7 @@ func TestRecorderHashesSensitiveTargetFields(t *testing.T) {
 	if event.OtherObservation == nil || event.OtherObservation.Path != model.PathDirect || event.OtherObservation.FailureClass != "direct_reset" {
 		t.Fatalf("stored other observation = %+v", event.OtherObservation)
 	}
-	if event.LearningReason != "ephemeral_proxy_preference_promoted" || event.PolicyState != model.StateProxyPreferred {
+	if event.LearningReason != "ephemeral_proxy_preference_promoted" || event.DurableReason != "durable_evidence_queued" || event.PolicyState != model.StateProxyPreferred {
 		t.Fatalf("stored learning metadata = %+v", event)
 	}
 }

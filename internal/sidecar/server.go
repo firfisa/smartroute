@@ -30,6 +30,7 @@ type DecisionEvent struct {
 	OtherObservation *model.Observation `json:"other_observation,omitempty"`
 	Committed        bool               `json:"committed"`
 	LearningReason   string             `json:"learning_reason,omitempty"`
+	DurableReason    string             `json:"durable_reason,omitempty"`
 	PolicyState      model.PolicyState  `json:"policy_state,omitempty"`
 }
 
@@ -180,6 +181,7 @@ func (s Server) handleTLS(ctx context.Context, inbound net.Conn, target model.Ta
 	}
 	var result transport.RaceResult
 	learningReason := ""
+	durableReason := ""
 	policyState := model.PolicyState("")
 	if privacyDecision.AllowDirect {
 		preferred := model.PathDirect
@@ -236,6 +238,7 @@ func (s Server) handleTLS(ctx context.Context, inbound net.Conn, target model.Ta
 			learningReason = ReasonLearningUpdateError
 		} else {
 			learningReason = update.ReasonCode
+			durableReason = update.DurableReason
 			if update.Applied {
 				policyState = update.Policy.State
 			}
@@ -251,6 +254,7 @@ func (s Server) handleTLS(ctx context.Context, inbound net.Conn, target model.Ta
 			OtherObservation: result.OtherObservation,
 			Committed:        true,
 			LearningReason:   learningReason,
+			DurableReason:    durableReason,
 			PolicyState:      policyState,
 		})
 	}
