@@ -58,6 +58,8 @@ MVP 不是为了证明“能够自动写 YAML”，而是回答五个可证伪�
 | 最小 SOCKS5 server/client relay | 实验性完成 | `go test -race ./...` 与 Test Lab 字节回显 |
 | Direct-first 错峰候选竞争 | 实验性完成 | Direct 快速、Proxy 恢复、双失败场景 |
 | 已完成的反事实路径证据 | 实验性完成 | Direct/Proxy 先失败后另一条成功会保留成对证据；取消与未启动明确为空 |
+| 进程内学习状态机 | 实验性完成 | 最小路由键、连续强证据阈值、TTL、矛盾转不稳定、网络/端口/传输隔离 |
+| 偏好候选顺序 | 实验性完成 | 默认 shadow；auto 下 Proxy-first/Direct-first，首选提前失败立即启动另一条 |
 | 域名形式目标保留 | 实验性完成 | `echo.test` 经 sidecar 和 fake gateway 断言 |
 | 隔离故障目标 | 第一批完成 | `go run ./cmd/smartroute-testlab` |
 | 独立 Mihomo listener 拓扑 | macOS arm64、Linux amd64/v1.19.29 已完成 | `make mihomo-lab`；临时目录、随机端口、独立子进程 |
@@ -91,7 +93,7 @@ MVP 不是为了证明“能够自动写 YAML”，而是回答五个可证伪�
 - 未知 TCP 目标进入 sidecar。
 - Direct 先发，Proxy 错峰启动。
 - 实现 TLS ClientHello 完整缓冲和安全握手竞争。
-- 实现策略状态机、缓存、TTL 和网络画像。
+- 实现策略状态机、缓存、TTL 和网络画像。进程内最小路由键、TTL 与候选顺序切片已完成；跨会话画像生成、持久化和健康冻结仍待实现。
 - 支持 Suggest 与 Auto 模式。
 - 加入故障冻结、速率限制和回滚。
 

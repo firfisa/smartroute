@@ -86,6 +86,8 @@ ADR-0009 implements the recorder. When enabled, raw runtime events are not dupli
 
 ADR-0010 adds optional `other_observation` to successful runtime decisions and JSONL v1. It is present only when the opposite path completed before the winner was selected. An absent value means the candidate was still running, never started, or unavailable under single-path policy; absence must never be converted into a failure counter.
 
+ADR-0011 adds optional `learning_reason` and `policy_state` to the same decision row. The default `shadow` mode records state changes without changing candidate order. `ephemeral-auto` may apply a process-local preferred order, but it still races/falls back to the opposite path and loses all preference state on restart. These fields are diagnostic evidence, not durable exported rules.
+
 Operational commands:
 
 ```bash
@@ -98,7 +100,7 @@ smartroute observations clear -config PATH -confirm-clear
 
 ## 5. Coordinated replacement procedure
 
-The isolated Mihomo listener topology and minimal L3 TLS readiness recovery have passed on macOS/v1.19.29. Runtime Direct-probe privacy enforcement, independent Guard/engine supervision, and recorder privacy/lifecycle controls are implemented and tested locally. The new Mihomo stop/restart scenarios still need a permitted platform run, and supervisor failure itself still requires an OS service boundary. Configuration replacement will begin only after those availability checks, rollback tests, and a broader real-TLS compatibility matrix pass.
+The isolated Mihomo listener topology and minimal L3 TLS readiness recovery have passed on macOS/v1.19.29. Runtime Direct-probe privacy enforcement, shadow/ephemeral learning, preferred-order recovery, independent Guard/engine supervision, and recorder privacy/lifecycle controls are implemented and tested locally. The new Mihomo stop/restart scenarios still need a permitted platform run, and supervisor failure itself still requires an OS service boundary. Configuration replacement will begin only after those availability checks, rollback tests, and a broader real-TLS compatibility matrix pass.
 
 1. Agree on the trial network, time window, target traffic, and stop conditions.
 2. Resolve the active profile plus merge/script layers read-only.

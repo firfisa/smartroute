@@ -58,6 +58,16 @@ func TestLoadAppliesGuardDefaultsToLegacyConfig(t *testing.T) {
 	delete(fields, "original_endpoint")
 	delete(fields, "guard_adaptive_timeout_ms")
 	delete(fields, "observation")
+	var learningFields map[string]json.RawMessage
+	if err := json.Unmarshal(fields["learning"], &learningFields); err != nil {
+		t.Fatal(err)
+	}
+	delete(learningFields, "mode")
+	delete(learningFields, "max_entries")
+	fields["learning"], err = json.Marshal(learningFields)
+	if err != nil {
+		t.Fatal(err)
+	}
 	encoded, err = json.Marshal(fields)
 	if err != nil {
 		t.Fatal(err)
@@ -77,6 +87,28 @@ func TestLoadAppliesGuardDefaultsToLegacyConfig(t *testing.T) {
 	}
 	if cfg.Observation != defaults.Observation {
 		t.Fatalf("legacy observation defaults = %+v", cfg.Observation)
+	}
+	if cfg.Learning.Mode != defaults.Learning.Mode {
+		t.Fatalf("legacy learning mode = %q", cfg.Learning.Mode)
+	}
+	if cfg.Learning.MaxEntries != defaults.Learning.MaxEntries {
+		t.Fatalf("legacy learning capacity = %d", cfg.Learning.MaxEntries)
+	}
+}
+
+func TestValidateRejectsUnknownLearningMode(t *testing.T) {
+	cfg := Default()
+	cfg.Learning.Mode = "automatic"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "learning.mode") {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestValidateRejectsLearningCapacityOutsideBounds(t *testing.T) {
+	cfg := Default()
+	cfg.Learning.MaxEntries = 0
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "learning.max_entries") {
+		t.Fatalf("Validate() error = %v", err)
 	}
 }
 

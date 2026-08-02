@@ -14,7 +14,7 @@ The repository is in Phase 0: architecture and feasibility spike.
 
 Current scope:
 
-- Go-based process supervisor, TCP/SOCKS5 availability Guard, adaptive sidecar, staggered candidate racer, decision engine, and bounded local observation recorder.
+- Go-based process supervisor, TCP/SOCKS5 availability Guard, adaptive sidecar, preferred-order candidate racer, ephemeral learning engine, decision engine, and bounded local observation recorder.
 - Deterministic loopback Test Lab plus a pinned, isolated Mihomo child-process contract lab before any active Clash integration.
 - macOS-first development while keeping platform boundaries explicit.
 - TCP and TLS observability first.
@@ -55,6 +55,9 @@ These rules must not be weakened silently:
 17. Guard and adaptive engine are supervised independently; restart shortens future failure windows but never justifies replaying the connection that observed a process failure, and supervisor failure requires an external service manager.
 18. Persistent observation is opt-in and capacity bounded; target/profile identity is pseudonymous by default, raw events are not duplicated to stdout while recording, and recorder failure never changes a routing outcome.
 19. A successful race may expose the other path only when that path completed before selection; canceled, still-running, and unstarted candidates are never learning evidence, and the winner is never delayed to manufacture a pair.
+20. Runtime learning defaults to `shadow`; `ephemeral-auto` changes launch order only, never removes the opposite candidate, and every in-memory preference expires or disappears on restart.
+21. Ephemeral learning accepts only a ready winner paired with an opposite failure that reached outbound admission; incomplete, canceled, not-started, privacy-forced, and pre-outbound failures never update preference counters.
+22. The in-memory learning table is capacity bounded; reaching the bound may suppress new learning but must never reject, delay, or reroute the current connection.
 
 ## 4. Repository map
 
@@ -67,6 +70,7 @@ Keep this map current whenever a top-level component is added, removed, or renam
 | `cmd/smartroute-mihomo-lab/` | Isolated pinned-Mihomo topology and contract probe |
 | `internal/config/` | Configuration schema, defaults, validation |
 | `internal/decision/` | Policy state machine and route decisions |
+| `internal/learning/` | Process-local strong-evidence counters, TTL, contradiction handling, and ephemeral preferences |
 | `internal/model/` | Stable domain types shared by internal components |
 | `internal/transport/` | Candidate dialers and protocol-aware readiness gates |
 | `internal/socks5/` | Minimal no-authentication SOCKS5 client/server protocol |
@@ -167,6 +171,7 @@ Minimum tests by layer:
 | --- | --- |
 | Config | Defaults, invalid combinations, safe fallback |
 | Decision engine | All outcome-matrix transitions, TTL, decay, manual precedence |
+| Ephemeral learning | Strong-pair gate, shadow/auto behavior, scope isolation, thresholds, TTL, contradiction, capacity, and no route impact on rejection |
 | Transport | Cancellation, stagger timing, loser cleanup, no unsafe replay |
 | TLS readiness | Fragmented ClientHello, malformed input, TLS 1.3 early-data rejection |
 | Mihomo adapter | Loop prevention, forced outbound mapping, unavailable sidecar fallback |

@@ -57,6 +57,8 @@ type Event struct {
 	AdaptiveFailure  string
 	OriginalFailure  string
 	Committed        *bool
+	LearningReason   string
+	PolicyState      model.PolicyState
 	Service          string
 	State            string
 	Attempt          int
@@ -99,6 +101,8 @@ type storedEvent struct {
 	AdaptiveFailure  string             `json:"adaptive_failure,omitempty"`
 	OriginalFailure  string             `json:"original_failure,omitempty"`
 	Committed        *bool              `json:"committed,omitempty"`
+	LearningReason   string             `json:"learning_reason,omitempty"`
+	PolicyState      model.PolicyState  `json:"policy_state,omitempty"`
 	Service          string             `json:"service,omitempty"`
 	State            string             `json:"state,omitempty"`
 	Attempt          int                `json:"attempt,omitempty"`
@@ -167,6 +171,7 @@ func (r *Recorder) Record(event Event) error {
 		FailureClass: event.FailureClass, DirectFailure: event.DirectFailure,
 		ProxyFailure: event.ProxyFailure, AdaptiveFailure: event.AdaptiveFailure,
 		OriginalFailure: event.OriginalFailure, Committed: event.Committed,
+		LearningReason: event.LearningReason, PolicyState: event.PolicyState,
 		Service: event.Service, State: event.State, Attempt: event.Attempt, BackoffMS: event.BackoffMS,
 	}
 	if event.Target != nil {

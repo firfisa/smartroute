@@ -49,6 +49,11 @@ All notable project changes are recorded here. The project has not published a r
 - Raw runtime event suppression while persistent recording is enabled; later recorder write failures warn once without interrupting routing.
 - Optional `other_observation` evidence when the opposite candidate completed before route selection; canceled, running, and unstarted losers remain excluded.
 - Symmetric validated JSON marshal/unmarshal for observation stage and millisecond latency fields, plus ADR-0010.
+- Process-local strong-pair learning keyed by network profile, normalized target, port, and transport, with consecutive thresholds, TTL, and immediate contradiction handling.
+- Safe-default `shadow` and explicit `ephemeral-auto` learning modes, including backward-compatible shadow defaults for legacy configs.
+- Preferred-order Direct/Proxy racing where an early preferred-path failure starts the opposite path immediately; learned policy never becomes a single-path lock.
+- Capacity-bounded ephemeral policy table with expired-entry reclamation and non-disruptive refusal of new learning when full.
+- Decision/JSONL learning reason and ephemeral policy-state metadata, plus ADR-0011.
 
 ### Known limitations
 

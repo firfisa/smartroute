@@ -20,6 +20,7 @@ import (
 	"github.com/firfisa/smartroute/internal/config"
 	"github.com/firfisa/smartroute/internal/decision"
 	"github.com/firfisa/smartroute/internal/guard"
+	"github.com/firfisa/smartroute/internal/learning"
 	"github.com/firfisa/smartroute/internal/model"
 	"github.com/firfisa/smartroute/internal/observe"
 	"github.com/firfisa/smartroute/internal/privacy"
@@ -245,6 +246,16 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	if err := validateDirectProbeAcknowledgement(cfg.Privacy.Mode, *allowDirectProbes); err != nil {
 		return err
 	}
+	learner, err := learning.New(learning.Config{
+		Mode:                cfg.Learning.Mode,
+		MaxEntries:          cfg.Learning.MaxEntries,
+		DirectPromotionWins: cfg.Learning.DirectPromotionWins,
+		ProxyPromotionWins:  cfg.Learning.ProxyPromotionWins,
+		TTL:                 time.Duration(cfg.Learning.PolicyTTLHours) * time.Hour,
+	})
+	if err != nil {
+		return fmt.Errorf("initialize learning engine: %w", err)
+	}
 	recorder, err := openObservationRecorder(cfg, observe.SourceEngine)
 	if err != nil {
 		return err
@@ -265,6 +276,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	server := sidecar.Server{
 		NetworkProfileID:  *profileID,
 		DirectProbePolicy: privacyPolicy,
+		Learning:          learner,
 		HandshakeTimeout:  cfg.CandidateTimeout(),
 		TLSRacer: &transport.TLSRacer{
 			Direct:    transport.SOCKS5Dialer{Path: model.PathDirect, Endpoint: cfg.DirectEndpoint},
@@ -282,6 +294,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 				EventType: event.EventType, Target: &event.Target, SelectedPath: event.SelectedPath,
 				ReasonCode: event.ReasonCode, PolicyReason: event.PolicyReason,
 				Observation: &observation, OtherObservation: event.OtherObservation, Committed: &committed,
+				LearningReason: event.LearningReason, PolicyState: event.PolicyState,
 			})
 		},
 		OnDiagnostic: func(event sidecar.DiagnosticEvent) {

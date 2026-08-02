@@ -39,7 +39,7 @@ flowchart TB
     S --> P["Mihomo 专用入口: 强制代理组"]
     D --> Net["目标网络"]
     P --> Net
-    S <--> E["Decision Engine"]
+    S <--> E["Decision + Ephemeral Learning"]
     S --> Obs
     G --> Obs
     E <--> DB["SQLite 学习库"]
@@ -50,6 +50,8 @@ flowchart TB
 `smartroute supervise` 只拥有 SmartRoute 的 Guard 与 adaptive engine 子进程，不接管 Mihomo。引擎退出时 Guard 继续沿原策略兜底；Guard 退出时 supervisor 以 100ms 起、5s 封顶的指数退避恢复它。重启只改善后续连接，不能重放已经观察到 Guard/engine 故障的连接；supervisor 自身还需要未来的 launchd/systemd/Windows service 管理。详见 ADR-0008。
 
 本地观测记录由独立的 `internal/observe` 边界负责，默认关闭。启用后目标与网络画像默认使用带本地随机盐的 HMAC，engine、Guard、supervisor 各写自己的容量/时间受限 JSONL；暂停、恢复、显式清空和脱敏导出由 `smartroute observations` 管理。运行期写失败只产生一次有界告警，不改变路由；该记录器不是 SQLite 学习策略库。详见 ADR-0009。
+
+进程内学习使用与 7.1 节一致的最小键，只接受 winner 达到 L2+ 且另一条路径先完成、达到 L1+ 的强成对证据。默认 `shadow` 只计算临时状态；`ephemeral-auto` 将活跃偏好用作候选启动顺序，但仍在 head-start 后启动另一条路径，首选提前失败时则立即启动另一条。矛盾强证据立即进入 `UNSTABLE` 并撤下偏好；TTL 到期或重启回到未知。内存表有硬容量上限，满载只停止接纳新学习，不影响连接。它不满足跨会话晋升，不能导出为永久规则。详见 ADR-0011。
 
 为什么不是先做外挂探测器：
 
@@ -270,7 +272,7 @@ stateDiagram-v2
     PROXY_PREFERRED --> UNKNOWN: TTL 到期或网络画像改变
 ```
 
-`DIRECT_LOCKED`、`PROXY_LOCKED` 和 `REJECT_LOCKED` 仅由用户或管理员生成，不由算法自动生成。
+`DIRECT_LOCKED`、`PROXY_LOCKED` 和 `REJECT_LOCKED` 仅由用户或管理员生成，不由算法自动生成。当前实现是进程内的 `UNKNOWN / DIRECT_PREFERRED / PROXY_PREFERRED / UNSTABLE` 子集；跨会话、SQLite 和锁定策略仍未实现。
 
 ### 7.3 MVP 晋升规则
 

@@ -13,6 +13,7 @@ flowchart TB
     Config["internal/config\nSchema and validation"]
     Model["internal/model\nDomain types"]
     Decision["internal/decision\nPaired observation evaluator"]
+    Learning["internal/learning\nEphemeral preference state"]
     SOCKS["internal/socks5\nSOCKS5 wire protocol"]
     Transport["internal/transport\nSOCKS dialers and racer"]
     TLSInspect["internal/tlsinspect\nbounded TLS first-flight parser"]
@@ -31,13 +32,16 @@ flowchart TB
 
     CLI --> Config
     CLI --> Decision
+    CLI --> Learning
     CLI --> Sidecar
     CLI --> Guard
     CLI --> Privacy
     CLI --> Supervisor
     CLI --> Observe
     Config --> Privacy
+    Config --> Learning
     Decision --> Model
+    Learning --> Model
     Transport --> Model
     Transport --> SOCKS
     Transport --> TLSInspect
@@ -46,6 +50,7 @@ flowchart TB
     Sidecar --> Transport
     Sidecar --> NetRelay
     Sidecar --> Privacy
+    Sidecar --> Learning
     Guard --> SOCKS
     Guard --> NetRelay
     TestLab --> Sidecar
@@ -71,6 +76,7 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `internal/config` | Core | implemented | Strict JSON schema, safe loopback defaults, validation | Mihomo YAML generation | `internal/config/config_test.go` |
 | `internal/model` | Core | implemented | Path, target, readiness, observation, decision types and readable JSON evidence | State persistence | `internal/model/model_test.go` plus consumer tests |
 | `internal/decision` | Core | experimental | Evaluate one paired Direct/Proxy observation | Multi-session promotion and decay | `internal/decision/evaluator_test.go` |
+| `internal/learning` | Policy | experimental | Consume strong completed pairs; maintain scoped consecutive counters, TTL, unstable state, and optional ephemeral preference | Cross-session evidence, durable policy, user locks, or health-control persistence | `internal/learning/engine_test.go`; Sidecar learning-loop tests |
 | `internal/socks5` | Data plane | experimental | No-auth SOCKS5 CONNECT parsing/client handshake and domain preservation | Authentication, UDP ASSOCIATE, BIND | `internal/socks5/protocol_test.go`; Test Lab |
 | `internal/transport` | Data plane | experimental | SOCKS5 candidate dialing, TCP and TLS racing, ServerHello gate, cancellation, exact prefetched-byte replay | Certificate/Finished/application validation | Racer and TLS readiness tests; Mihomo Lab |
 | `internal/tlsinspect` | Data plane | experimental | Bounded TLS record reassembly, ClientHello/ServerHello structure checks, early-data rejection | TLS decryption, certificate validation, payload logging | `internal/tlsinspect/tlsinspect_test.go` |
@@ -100,14 +106,18 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `socks5.DialContext(ctx, endpoint, target)` | `internal/socks5` | Context, SOCKS endpoint, target | Connected tunnel | Closes on cancellation; returns handshake/reply errors | experimental | Test Lab |
 | `CandidateDialer.Dial(ctx, target)` | `internal/transport` | Context and target | Connection and observation | Implementer classifies cancellation/path error | experimental contract | Racer tests |
 | `SOCKS5Dialer.Dial(ctx, target)` | `internal/transport` | TCP target, fixed endpoint, declared `ReadinessStage` | SOCKS tunnel plus observation at the declared stage; default L1 | Classifies timeout, cancellation, SOCKS failure; rejects invalid stages | experimental | Test Lab and Mihomo Lab |
-| `Racer.Race(ctx, target)` | `internal/transport` | Two dialers, head-start, timeout, target | Winner plus optional already-completed `OtherObservation` | Never waits for loser; cancels/drains running loser; returns `RaceError` when both fail | experimental | Winner, prior-failure, canceled-loser and dual-failure tests |
+| `Racer.Race(ctx, target)` | `internal/transport` | Two dialers, preferred path, head-start, timeout, target | Winner plus optional already-completed `OtherObservation` | Defaults Direct-first; preferred failure starts opposite immediately; never waits for loser | experimental | Both preference orders, fallback, prior-failure, cancellation and dual-failure tests |
 | `tlsinspect.ReadClientHello(reader, max)` | `internal/tlsinspect` | TLS byte stream and byte limit | Opaque validated ClientHello with exact record bytes | Rejects malformed, oversized, trailing first-flight data and `early_data` | experimental | Fragmentation/rejection table |
 | `tlsinspect.ReadServerHello(reader, max)` | `internal/tlsinspect` | TLS byte stream and byte limit | Structurally valid ServerHello plus exact consumed records | Classifies alerts, truncation, malformed and unexpected messages | experimental | Fragmentation/alert tests |
 | `ReadinessGate.Await(ctx, conn, target)` | `internal/transport` | Context, candidate connection, target | Stage, failure class and prefetched bytes | Must not lose or unsafely replay consumed bytes | experimental contract | TLS gate tests |
 | `TLSRacer.Race(ctx, target, hello)` | `internal/transport` | Two candidates, validated no-early-data ClientHello, gate and timing | L3 winner connection with replay prefix | Cancels loser; returns paired classified failures | experimental | `internal/transport/tls_readiness_test.go` |
+| `TLSRacer.RacePreferred(ctx, target, hello, path)` | `internal/transport` | Same TLS contract plus Direct/Proxy first preference | L3 winner with preferred launch order | Invalid preference fails before dialing; opposite path remains available | experimental | Proxy-first and fallback tests |
 | `TLSRacer.ConnectPath(ctx, target, hello, path)` | `internal/transport` | One policy-selected candidate and validated no-early-data ClientHello | L3 connection with replay prefix | Rejects invalid/missing path; returns `TLSPathError` with classified observation | experimental | Proxy-only success/replay and failure tests |
 | `privacy.New(mode, patterns)` | `internal/privacy` | Mode and exact/suffix deny patterns | Immutable compiled local policy | Rejects unknown mode, whitespace, URL-like/invalid host syntax and suffix IP rules | experimental | Policy validation table |
 | `Policy.Evaluate(target)` | `internal/privacy` | Target hostname/IP | Allow/deny plus stable reason code | Missing policy and invalid target fail closed to Proxy-only | experimental | Exact/suffix/boundary/privacy-first tests |
+| `learning.New(config)` | `internal/learning` | Mode, Direct/Proxy thresholds, TTL, optional clock | Concurrent process-local engine | Rejects unknown mode, low thresholds, and non-positive TTL | experimental | Config validation and engine tests |
+| `Engine.Observe(target, winner, other)` | `internal/learning` | Scoped target, ready winner, optional completed opposite observation | Explainable update and ephemeral policy | Rejects invalid pairs; incomplete/canceled/pre-outbound evidence returns non-applied reason | experimental | Promotion, contradiction and weak-evidence tests |
+| `Engine.PreferredPath(target)` | `internal/learning` | Scoped target | Live Direct/Proxy preference or empty | Returns empty in shadow/unknown/unstable/expired/invalid cases | experimental | Shadow, scope and TTL tests |
 | `Supervisor.Run(ctx)` | `internal/supervisor` | Context, service specs, starter, restart policy | Runs independent monitors until cancellation | Rejects invalid/duplicate services; runtime failures trigger capped restart rather than stopping siblings | experimental | Restart, start-error, independence, cancellation tests |
 | `CommandStarter.Start(ctx, service)` | `internal/supervisor` | Executable/args and synchronized stdout/stderr | Started child implementing `Wait()` | Parent cancellation interrupts child; `WaitDelay` kills after grace period | experimental | Supervisor consumers; platform process integration pending |
 | `observe.New(options)` | `internal/observe` | Local directory, source and capacity/privacy limits | Source-specific recorder | Rejects unsafe paths/limits and invalid salt; initialization errors are explicit | experimental | Recorder validation/privacy tests |
@@ -164,9 +174,11 @@ go run ./cmd/smartroute trace \
 | `decision.direct_head_start_ms` | integer | `200` | 10–2000 | Delay before starting Proxy for an unknown target |
 | `decision.max_direct_penalty_ms` | integer | `150` | 0–5000 | Direct may be this much slower and still win when both succeed |
 | `decision.candidate_timeout_ms` | integer | `5000` | Must exceed head start | Overall candidate deadline |
-| `learning.proxy_promotion_wins` | integer | `3` | At least 2 | Planned paired wins before Proxy promotion |
-| `learning.direct_promotion_wins` | integer | `5` | At least 2 | Planned paired wins before Direct promotion |
-| `learning.policy_ttl_hours` | integer | `72` | Positive | Planned learned-policy expiry |
+| `learning.mode` | enum | `shadow` | `shadow` or `ephemeral-auto`; missing legacy value becomes shadow | Shadow computes only; auto applies live process-local preference to launch order |
+| `learning.max_entries` | integer | `10000` | 1–1000000; missing legacy value becomes default | Bounds process memory; full table rejects new learning after expired-entry pruning |
+| `learning.proxy_promotion_wins` | integer | `3` | At least 2 | Consecutive strong Proxy pairs for ephemeral promotion |
+| `learning.direct_promotion_wins` | integer | `5` | At least 2 | Consecutive strong Direct pairs for ephemeral promotion |
+| `learning.policy_ttl_hours` | integer | `72` | Positive | Ephemeral preference expiry; restart clears earlier |
 | `privacy.mode` | enum | `explicit-opt-in` | `explicit-opt-in` or `privacy-first` | `privacy-first` opens zero Direct candidates; explicit mode also requires CLI acknowledgment |
 | `privacy.never_direct_probe` | string list | empty | Plain exact; leading `.` or `*.` suffix; normalized ASCII hostname/IP; invalid entries reject config | Matching entries override acknowledgment and use Proxy-only L3 |
 | `observation.enabled` | boolean | `false` | Boolean | Enables local persistence and suppresses duplicate raw runtime stdout events |
@@ -195,6 +207,7 @@ Runtime race/commit reasons:
 | `direct_candidate_before_head_start` | Direct candidate was admitted before Proxy launch | Commit only if observation reaches configured minimum stage |
 | `direct_candidate_won` | Direct candidate won after both candidates could run | Same stage gate applies |
 | `proxy_candidate_won` | Proxy candidate won | Same stage gate applies |
+| `proxy_candidate_before_head_start` | Learned Proxy-first candidate became ready before Direct launch | Commit at the same stage gate; absence of Direct is not failure evidence |
 | `candidate_below_commit_stage` | Winning transport candidate did not prove target readiness | Close candidate, return SOCKS failure, `committed=false`, never learn |
 | `client_hello_rejected` | Client first flight was unsafe or invalid | Close after local SOCKS admission; open zero candidates |
 | `tls_candidates_failed` | Neither candidate returned a valid ServerHello | Close connection; report both classified path failures; never learn success |
@@ -210,6 +223,22 @@ Direct-probe privacy reasons:
 | `never_direct_probe_suffix` | Forbidden | Apex or label-boundary suffix entry matched |
 | `invalid_target_proxy_only` | Forbidden | Runtime target cannot be safely normalized |
 | `missing_privacy_policy_proxy_only` | Forbidden | Sidecar was constructed without a compiled policy; fail closed |
+
+Ephemeral learning reasons:
+
+| Reason code | Counter update | Effect |
+| --- | ---: | --- |
+| `incomplete_paired_evidence_no_update` | No | Winner had no completed opposite observation |
+| `weak_path_failure_no_update` | No | Opposite path was canceled/not-started or failed below outbound admission |
+| `learning_capacity_reached_no_update` | No | Bounded table remained full after expired-entry pruning; routing continues |
+| `strong_direct_evidence_recorded` | Direct +1 | Below threshold; no preference yet |
+| `strong_proxy_evidence_recorded` | Proxy +1 | Below threshold; no preference yet |
+| `ephemeral_direct_preference_promoted` | Direct threshold | Direct-first ephemeral preference becomes live only in auto mode |
+| `ephemeral_proxy_preference_promoted` | Proxy threshold | Proxy-first ephemeral preference becomes live only in auto mode |
+| `ephemeral_preference_refreshed` | Same direction +1 | Matching strong pair refreshes TTL |
+| `ephemeral_preference_contradicted` | Opposite starts at 1 | Remove live preference and enter unstable |
+| `learning_skipped_by_policy` | No | Privacy policy allowed only a single path |
+| `learning_update_error` | No | Bounded metadata only; selected connection still commits |
 
 Guard availability reasons:
 
@@ -227,7 +256,7 @@ Guard availability reasons:
 | `candidate.ready` | Readiness gate | path, stage, latency | Decision engine | planned |
 | `candidate.failed` | Dialer/gate | path, stage, failure class | Decision engine | planned |
 | `candidate.canceled` | Racer | path, cancellation reason | Metrics | planned |
-| `decision` | Sidecar/decision engine | `event_type`, target, selected path, reason, optional `policy_reason`, winner `observation`, optional completed `other_observation`, `committed` | CLI/recorder/UI | experimental `DecisionEvent`; JSONL schema v1 implemented |
+| `decision` | Sidecar/decision engine | `event_type`, target, selected path, reason, optional privacy/learning reasons and ephemeral policy state, winner `observation`, optional completed `other_observation`, `committed` | CLI/recorder/UI | experimental `DecisionEvent`; JSONL schema v1 implemented |
 | `diagnostic` | Sidecar | `event_type`, target, reason, failure class, optional Direct/Proxy failures and `policy_reason` | CLI/debug | experimental `DiagnosticEvent`; no payload bytes |
 | `guard_decision` | Guard | `event_type`, target, selected lane, reason, bounded failure classes, `committed` | CLI/recorder/UI | experimental; JSONL schema v1 implemented, no payload bytes |
 | `supervisor` | Supervisor | `event_type`, service, state, attempt, bounded failure class, optional `backoff_ms` | CLI/recorder/operator | experimental; states include `started`, `start_failed`, `exited`, `restart_scheduled`, `stopped` |

@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"io"
 	"math/big"
 	"net"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/firfisa/smartroute/internal/learning"
 	"github.com/firfisa/smartroute/internal/model"
 	"github.com/firfisa/smartroute/internal/privacy"
 	"github.com/firfisa/smartroute/internal/socks5"
@@ -113,6 +115,20 @@ type sidecarTLSCandidate struct {
 	attempts atomic.Int32
 }
 
+type stubLearningEngine struct {
+	preferred model.Path
+	update    learning.Update
+	err       error
+	observed  atomic.Int32
+}
+
+func (s *stubLearningEngine) PreferredPath(model.Target) model.Path { return s.preferred }
+
+func (s *stubLearningEngine) Observe(model.Target, model.Observation, *model.Observation) (learning.Update, error) {
+	s.observed.Add(1)
+	return s.update, s.err
+}
+
 func (d *sidecarTLSCandidate) Dial(_ context.Context, _ model.Target) (net.Conn, model.Observation, error) {
 	d.attempts.Add(1)
 	client, server := net.Pipe()
@@ -185,6 +201,146 @@ func TestServerTLSModeCommitsProxyAfterServerHello(t *testing.T) {
 	case <-handled:
 	case <-ctx.Done():
 		t.Fatal("TLS handler did not stop")
+	}
+}
+
+func TestServerTLSUsesLearnedProxyPreferenceWithoutDisablingFallback(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	serverConn, clientConn := net.Pipe()
+	helloWire := fragmentedClientHello(false)
+	serverWire := validServerHelloRecord()
+	direct := &sidecarTLSCandidate{path: model.PathDirect, handler: func(net.Conn) {}}
+	proxy := &sidecarTLSCandidate{path: model.PathProxy, handler: func(conn net.Conn) {
+		_, _ = io.CopyN(io.Discard, conn, int64(len(helloWire)))
+		_, _ = conn.Write(serverWire)
+	}}
+	learner := &stubLearningEngine{
+		preferred: model.PathProxy,
+		update: learning.Update{
+			Applied: true, ReasonCode: learning.ReasonPreferenceRefreshed,
+			Policy: learning.Policy{State: model.StateProxyPreferred, PreferredPath: model.PathProxy},
+		},
+	}
+	events := make(chan DecisionEvent, 1)
+	server := Server{
+		HandshakeTimeout: time.Second, Learning: learner,
+		DirectProbePolicy: mustPrivacyPolicy(t, privacy.ModeExplicitOptIn, nil),
+		TLSRacer: &transport.TLSRacer{
+			Direct: direct, Proxy: proxy, Gate: transport.TLSServerHelloGate{},
+			HeadStart: 100 * time.Millisecond, Timeout: time.Second,
+		},
+		OnDecision: func(event DecisionEvent) { events <- event },
+	}
+	go server.handle(ctx, serverConn)
+	performSOCKSRequest(t, clientConn)
+	if _, err := clientConn.Write(helloWire); err != nil {
+		t.Fatal(err)
+	}
+	replayed := make([]byte, len(serverWire))
+	if _, err := io.ReadFull(clientConn, replayed); err != nil {
+		t.Fatal(err)
+	}
+	event := <-events
+	if direct.attempts.Load() != 0 || proxy.attempts.Load() != 1 || learner.observed.Load() != 1 {
+		t.Fatalf("attempts direct=%d proxy=%d observed=%d", direct.attempts.Load(), proxy.attempts.Load(), learner.observed.Load())
+	}
+	if event.ReasonCode != transport.ReasonProxyCandidateBeforeHeadStart || event.LearningReason != learning.ReasonPreferenceRefreshed || event.PolicyState != model.StateProxyPreferred {
+		t.Fatalf("event = %+v", event)
+	}
+	_ = clientConn.Close()
+}
+
+func TestServerLearningFailureDoesNotRejectWinner(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	serverConn, clientConn := net.Pipe()
+	helloWire := fragmentedClientHello(false)
+	serverWire := validServerHelloRecord()
+	direct := &sidecarTLSCandidate{path: model.PathDirect, handler: func(conn net.Conn) {
+		_, _ = io.CopyN(io.Discard, conn, int64(len(helloWire)))
+		_, _ = conn.Write(serverWire)
+	}}
+	learner := &stubLearningEngine{err: errors.New("synthetic learning failure")}
+	events := make(chan DecisionEvent, 1)
+	server := Server{
+		HandshakeTimeout: time.Second, Learning: learner,
+		DirectProbePolicy: mustPrivacyPolicy(t, privacy.ModeExplicitOptIn, nil),
+		TLSRacer: &transport.TLSRacer{
+			Direct: direct, Proxy: &sidecarTLSCandidate{path: model.PathProxy, handler: func(net.Conn) {}},
+			Gate: transport.TLSServerHelloGate{}, HeadStart: 100 * time.Millisecond, Timeout: time.Second,
+		},
+		OnDecision: func(event DecisionEvent) { events <- event },
+	}
+	go server.handle(ctx, serverConn)
+	performSOCKSRequest(t, clientConn)
+	if _, err := clientConn.Write(helloWire); err != nil {
+		t.Fatal(err)
+	}
+	replayed := make([]byte, len(serverWire))
+	if _, err := io.ReadFull(clientConn, replayed); err != nil {
+		t.Fatalf("winner was rejected after learning error: %v", err)
+	}
+	if event := <-events; !event.Committed || event.LearningReason != ReasonLearningUpdateError {
+		t.Fatalf("event = %+v", event)
+	}
+	_ = clientConn.Close()
+}
+
+func TestServerStrongPairsPromoteEphemeralProxyFirst(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	helloWire := fragmentedClientHello(false)
+	serverWire := validServerHelloRecord()
+	direct := &sidecarTLSCandidate{path: model.PathDirect, handler: func(conn net.Conn) {
+		_, _ = io.CopyN(io.Discard, conn, int64(len(helloWire)))
+	}}
+	proxy := &sidecarTLSCandidate{path: model.PathProxy, handler: func(conn net.Conn) {
+		_, _ = io.CopyN(io.Discard, conn, int64(len(helloWire)))
+		_, _ = conn.Write(serverWire)
+	}}
+	learner, err := learning.New(learning.Config{
+		Mode: learning.ModeEphemeralAuto, DirectPromotionWins: 3, ProxyPromotionWins: 2, TTL: time.Hour, MaxEntries: 32,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := make(chan DecisionEvent, 3)
+	server := Server{
+		NetworkProfileID: "home", HandshakeTimeout: time.Second, Learning: learner,
+		DirectProbePolicy: mustPrivacyPolicy(t, privacy.ModeExplicitOptIn, nil),
+		TLSRacer: &transport.TLSRacer{
+			Direct: direct, Proxy: proxy, Gate: transport.TLSServerHelloGate{},
+			HeadStart: 100 * time.Millisecond, Timeout: time.Second,
+		},
+		OnDecision: func(event DecisionEvent) { events <- event },
+	}
+
+	var decisions []DecisionEvent
+	for attempt := 0; attempt < 3; attempt++ {
+		serverConn, clientConn := net.Pipe()
+		go server.handle(ctx, serverConn)
+		performSOCKSRequest(t, clientConn)
+		if _, err := clientConn.Write(helloWire); err != nil {
+			t.Fatal(err)
+		}
+		replayed := make([]byte, len(serverWire))
+		if _, err := io.ReadFull(clientConn, replayed); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case event := <-events:
+			decisions = append(decisions, event)
+		case <-ctx.Done():
+			t.Fatal("missing decision")
+		}
+		_ = clientConn.Close()
+	}
+	if decisions[1].PolicyState != model.StateProxyPreferred || decisions[1].LearningReason != learning.ReasonProxyPromoted {
+		t.Fatalf("promotion decision = %+v", decisions[1])
+	}
+	if decisions[2].ReasonCode != transport.ReasonProxyCandidateBeforeHeadStart || direct.attempts.Load() != 2 || proxy.attempts.Load() != 3 {
+		t.Fatalf("third decision=%+v attempts direct=%d proxy=%d", decisions[2], direct.attempts.Load(), proxy.attempts.Load())
 	}
 }
 

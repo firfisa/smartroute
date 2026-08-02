@@ -9,6 +9,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/firfisa/smartroute/internal/learning"
 	"github.com/firfisa/smartroute/internal/model"
 	"github.com/firfisa/smartroute/internal/netrelay"
 	"github.com/firfisa/smartroute/internal/privacy"
@@ -28,6 +29,8 @@ type DecisionEvent struct {
 	Observation      model.Observation  `json:"observation"`
 	OtherObservation *model.Observation `json:"other_observation,omitempty"`
 	Committed        bool               `json:"committed"`
+	LearningReason   string             `json:"learning_reason,omitempty"`
+	PolicyState      model.PolicyState  `json:"policy_state,omitempty"`
 }
 
 type DiagnosticEvent struct {
@@ -47,10 +50,17 @@ const (
 	ReasonClientHelloRejected       = "client_hello_rejected"
 	ReasonTLSCandidatesFailed       = "tls_candidates_failed"
 	ReasonPrivacyProxyPathFailed    = "privacy_proxy_path_failed"
+	ReasonLearningUpdateError       = "learning_update_error"
+	ReasonLearningSkippedByPolicy   = "learning_skipped_by_policy"
 )
 
 type DirectProbePolicy interface {
 	Evaluate(target model.Target) privacy.Decision
+}
+
+type LearningEngine interface {
+	PreferredPath(target model.Target) model.Path
+	Observe(target model.Target, winner model.Observation, other *model.Observation) (learning.Update, error)
 }
 
 type Server struct {
@@ -61,6 +71,7 @@ type Server struct {
 	MaxClientHelloBytes int
 	MinimumCommitStage  model.Stage
 	DirectProbePolicy   DirectProbePolicy
+	Learning            LearningEngine
 	OnDecision          func(DecisionEvent)
 	OnDiagnostic        func(DiagnosticEvent)
 }
@@ -168,9 +179,18 @@ func (s Server) handleTLS(ctx context.Context, inbound net.Conn, target model.Ta
 		privacyDecision = s.DirectProbePolicy.Evaluate(target)
 	}
 	var result transport.RaceResult
+	learningReason := ""
+	policyState := model.PolicyState("")
 	if privacyDecision.AllowDirect {
-		result, err = s.TLSRacer.Race(ctx, target, hello)
+		preferred := model.PathDirect
+		if s.Learning != nil {
+			if learned := s.Learning.PreferredPath(target); learned == model.PathDirect || learned == model.PathProxy {
+				preferred = learned
+			}
+		}
+		result, err = s.TLSRacer.RacePreferred(ctx, target, hello, preferred)
 	} else {
+		learningReason = ReasonLearningSkippedByPolicy
 		result, err = s.TLSRacer.ConnectPath(ctx, target, hello, model.PathProxy)
 		if err == nil {
 			result.ReasonCode = privacyDecision.ReasonCode
@@ -210,6 +230,17 @@ func (s Server) handleTLS(ctx context.Context, inbound net.Conn, target model.Ta
 		})
 		return
 	}
+	if privacyDecision.AllowDirect && s.Learning != nil {
+		update, learningErr := s.Learning.Observe(target, result.Observation, result.OtherObservation)
+		if learningErr != nil {
+			learningReason = ReasonLearningUpdateError
+		} else {
+			learningReason = update.ReasonCode
+			if update.Applied {
+				policyState = update.Policy.State
+			}
+		}
+	}
 	_ = inbound.SetDeadline(time.Time{})
 	if s.OnDecision != nil {
 		s.OnDecision(DecisionEvent{
@@ -219,6 +250,8 @@ func (s Server) handleTLS(ctx context.Context, inbound net.Conn, target model.Ta
 			Observation:      result.Observation,
 			OtherObservation: result.OtherObservation,
 			Committed:        true,
+			LearningReason:   learningReason,
+			PolicyState:      policyState,
 		})
 	}
 	netrelay.Bidirectional(inbound, result.Conn)

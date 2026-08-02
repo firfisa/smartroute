@@ -2,7 +2,7 @@
 
 SmartRoute 是一个面向 Mihomo/Clash 生态的“自适应分流”实验项目。它不重新实现代理协议，而是在现有静态规则与代理内核之间加入一个可观测、可解释、可撤销的决策层：对规则无法确定的目标比较 `DIRECT` 与 `PROXY` 路径，按当前网络环境积累证据，并逐渐形成个人化路由策略。
 
-当前状态：Phase 0 架构与可行性验证。已经实现实验性的可用性 Guard、TLS-over-SOCKS sidecar、分片 ClientHello 检查、无 0-RTT 的 Direct/Proxy TLS readiness 竞争、受限本地观测记录器，以及锁定 Mihomo v1.19.29 的独立子进程测试；尚未实现学习策略持久化、活动 Clash 配置接入或发布安装包。
+当前状态：Phase 0 架构与可行性验证。已经实现实验性的可用性 Guard、TLS-over-SOCKS sidecar、无 0-RTT 的 TLS readiness 竞争、进程内临时学习闭环、受限本地观测记录器，以及锁定 Mihomo v1.19.29 的独立子进程测试；尚未实现跨会话学习持久化、活动 Clash 配置接入或发布安装包。
 
 ## 当前结论
 
@@ -44,6 +44,8 @@ flowchart LR
 | 严格 JSON 配置与 loopback 安全校验 | 已实现 |
 | Direct/Proxy 成对观测决策矩阵 | 实验性实现 |
 | 运行时已完成反事实证据 | 已实现：只保留 winner 前已经终止的另一条路径；取消/未启动不算失败 |
+| 进程内学习与 TTL | 已实现：默认 `shadow`；`ephemeral-auto` 才应用偏好；重启清空 |
+| 学习后的候选启动顺序 | 已实现：Direct/Proxy 均可先启动，首选失败时另一条立即接替，不变成单路锁定 |
 | 结构化理由、置信度和证据输出 | 实验性实现 |
 | SOCKS5 client/server、域名目标保留 | 实验性实现 |
 | Direct/Proxy 错峰竞争、取消 loser | 实验性实现 |
@@ -93,6 +95,20 @@ go run ./cmd/smartroute observations clear -config configs/smartroute.example.js
 ```
 
 `clear` 必须先 `pause`。默认记录不含明文 hostname，导出不包含本地 HMAC 盐值；记录器不是学习策略库。
+
+学习默认处于 `shadow`：会计算临时建议，但始终保持 Direct-first。要在独立测试或后续受控试用中应用进程内偏好，需要显式修改本地配置：
+
+```json
+"learning": {
+  "mode": "ephemeral-auto",
+  "max_entries": 10000,
+  "proxy_promotion_wins": 3,
+  "direct_promotion_wins": 5,
+  "policy_ttl_hours": 72
+}
+```
+
+这不是永久规则：策略按 `network profile + hostname + port + transport` 隔离，矛盾强证据会立即撤下偏好，TTL 到期或进程重启都会回到 Direct-first；内存表达到容量时停止接纳新目标，而不影响路由。
 
 ## 独立测试环境
 

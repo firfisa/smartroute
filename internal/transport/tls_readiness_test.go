@@ -94,6 +94,27 @@ func TestTLSRacerDirectServerHelloAvoidsProxy(t *testing.T) {
 	}
 }
 
+func TestTLSRacerProxyPreferenceAvoidsDirectWhenProxyReady(t *testing.T) {
+	hello, wire := parsedClientHello(t)
+	serverWire := syntheticServerHelloRecord()
+	direct := &pipeCandidateDialer{path: model.PathDirect, handler: func(net.Conn) {}}
+	proxy := &pipeCandidateDialer{path: model.PathProxy, handler: func(conn net.Conn) {
+		_, _ = io.CopyN(io.Discard, conn, int64(len(wire)))
+		_, _ = conn.Write(serverWire)
+	}}
+	result, err := (TLSRacer{
+		Direct: direct, Proxy: proxy, Gate: TLSServerHelloGate{},
+		HeadStart: 100 * time.Millisecond, Timeout: time.Second,
+	}).RacePreferred(context.Background(), testTarget(), hello, model.PathProxy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Conn.Close()
+	if result.Observation.Path != model.PathProxy || result.ReasonCode != ReasonProxyCandidateBeforeHeadStart || direct.attempts.Load() != 0 {
+		t.Fatalf("direct=%d result=%+v", direct.attempts.Load(), result)
+	}
+}
+
 func TestTLSRacerBothPathsCloseBeforeServerHello(t *testing.T) {
 	hello, wire := parsedClientHello(t)
 	closedHandler := func(conn net.Conn) { _, _ = io.CopyN(io.Discard, conn, int64(len(wire))) }

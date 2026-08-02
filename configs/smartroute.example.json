@@ -13,6 +13,8 @@
     "candidate_timeout_ms": 5000
   },
   "learning": {
+    "mode": "shadow",
+    "max_entries": 10000,
     "proxy_promotion_wins": 3,
     "direct_promotion_wins": 5,
     "policy_ttl_hours": 72

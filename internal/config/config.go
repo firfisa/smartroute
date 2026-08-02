@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/firfisa/smartroute/internal/learning"
 	"github.com/firfisa/smartroute/internal/model"
 	"github.com/firfisa/smartroute/internal/privacy"
 )
@@ -39,9 +40,11 @@ type DecisionConfig struct {
 }
 
 type LearningConfig struct {
-	ProxyPromotionWins  int `json:"proxy_promotion_wins"`
-	DirectPromotionWins int `json:"direct_promotion_wins"`
-	PolicyTTLHours      int `json:"policy_ttl_hours"`
+	Mode                string `json:"mode"`
+	MaxEntries          int    `json:"max_entries"`
+	ProxyPromotionWins  int    `json:"proxy_promotion_wins"`
+	DirectPromotionWins int    `json:"direct_promotion_wins"`
+	PolicyTTLHours      int    `json:"policy_ttl_hours"`
 }
 
 type PrivacyConfig struct {
@@ -74,6 +77,8 @@ func Default() Config {
 			CandidateTimeoutMS: 5000,
 		},
 		Learning: LearningConfig{
+			Mode:                learning.ModeShadow,
+			MaxEntries:          10000,
 			ProxyPromotionWins:  3,
 			DirectPromotionWins: 5,
 			PolicyTTLHours:      72,
@@ -118,6 +123,17 @@ func Load(path string) (Config, error) {
 	}
 	if _, present := fields["observation"]; !present {
 		cfg.Observation = defaults.Observation
+	}
+	if raw, present := fields["learning"]; present {
+		var learningFields map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &learningFields); err == nil {
+			if _, modePresent := learningFields["mode"]; !modePresent {
+				cfg.Learning.Mode = defaults.Learning.Mode
+			}
+			if _, capacityPresent := learningFields["max_entries"]; !capacityPresent {
+				cfg.Learning.MaxEntries = defaults.Learning.MaxEntries
+			}
+		}
 	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -172,6 +188,12 @@ func (c Config) Validate() error {
 	}
 	if c.Learning.ProxyPromotionWins < 2 || c.Learning.DirectPromotionWins < 2 {
 		validationErrors = append(validationErrors, errors.New("promotion thresholds must be at least 2"))
+	}
+	if c.Learning.Mode != learning.ModeShadow && c.Learning.Mode != learning.ModeEphemeralAuto {
+		validationErrors = append(validationErrors, errors.New("learning.mode must be shadow or ephemeral-auto"))
+	}
+	if c.Learning.MaxEntries < 1 || c.Learning.MaxEntries > 1000000 {
+		validationErrors = append(validationErrors, errors.New("learning.max_entries must be between 1 and 1000000"))
 	}
 	if c.Learning.PolicyTTLHours < 1 {
 		validationErrors = append(validationErrors, errors.New("policy_ttl_hours must be positive"))

@@ -129,6 +129,57 @@ func TestRacerDirectSuccessPreservesPriorProxyFailure(t *testing.T) {
 	}
 }
 
+func TestRacerProxyPreferenceCanWinBeforeDirectStarts(t *testing.T) {
+	direct := &controlledDialer{path: model.PathDirect}
+	proxy := &controlledDialer{path: model.PathProxy}
+	racer := Racer{
+		Direct: direct, Proxy: proxy, HeadStart: 50 * time.Millisecond,
+		Timeout: time.Second, PreferredPath: model.PathProxy,
+	}
+	result, err := racer.Race(context.Background(), testTarget())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Conn.Close()
+	if result.Observation.Path != model.PathProxy || result.ReasonCode != ReasonProxyCandidateBeforeHeadStart {
+		t.Fatalf("Race() = %+v", result)
+	}
+	if direct.attempts.Load() != 0 {
+		t.Fatalf("direct attempts = %d", direct.attempts.Load())
+	}
+}
+
+func TestRacerProxyPreferenceFailureStartsDirectImmediately(t *testing.T) {
+	direct := &controlledDialer{path: model.PathDirect, delay: time.Millisecond}
+	proxy := &controlledDialer{path: model.PathProxy, failure: "proxy_unavailable"}
+	racer := Racer{
+		Direct: direct, Proxy: proxy, HeadStart: time.Second,
+		Timeout: 2 * time.Second, PreferredPath: model.PathProxy,
+	}
+	started := time.Now()
+	result, err := racer.Race(context.Background(), testTarget())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Conn.Close()
+	if elapsed := time.Since(started); elapsed >= 500*time.Millisecond {
+		t.Fatalf("fallback waited for head start: %s", elapsed)
+	}
+	if result.Observation.Path != model.PathDirect || result.OtherObservation == nil || result.OtherObservation.Path != model.PathProxy {
+		t.Fatalf("Race() = %+v", result)
+	}
+}
+
+func TestRacerRejectsInvalidPreferredPath(t *testing.T) {
+	racer := Racer{
+		Direct: &controlledDialer{path: model.PathDirect}, Proxy: &controlledDialer{path: model.PathProxy},
+		HeadStart: time.Millisecond, Timeout: time.Second, PreferredPath: model.PathOriginal,
+	}
+	if _, err := racer.Race(context.Background(), testTarget()); err == nil {
+		t.Fatal("invalid preferred path error = nil")
+	}
+}
+
 func TestRacerBothFailuresPreserveClassification(t *testing.T) {
 	direct := &controlledDialer{path: model.PathDirect, failure: "direct_reset"}
 	proxy := &controlledDialer{path: model.PathProxy, failure: "proxy_unavailable"}

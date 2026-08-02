@@ -12,6 +12,7 @@ import (
 
 const (
 	ReasonDirectCandidateBeforeHeadStart = "direct_candidate_before_head_start"
+	ReasonProxyCandidateBeforeHeadStart  = "proxy_candidate_before_head_start"
 	ReasonDirectCandidateWon             = "direct_candidate_won"
 	ReasonProxyCandidateWon              = "proxy_candidate_won"
 )
@@ -35,15 +36,17 @@ func (e *RaceError) Error() string {
 	return fmt.Sprintf("both candidates failed: direct=%s proxy=%s", e.Direct.FailureClass, e.Proxy.FailureClass)
 }
 
-// Racer starts Direct first and starts Proxy after HeadStart, or immediately
-// after an early Direct failure. It returns the first candidate admitted by its
+// Racer starts PreferredPath first (Direct by default) and starts the opposite
+// path after HeadStart, or immediately after an early preferred-path failure.
+// It returns the first candidate admitted by its
 // dialer and closes every losing connection. Observation.StageReached records
 // whether admission means only an outbound handshake or stronger readiness.
 type Racer struct {
-	Direct    CandidateDialer
-	Proxy     CandidateDialer
-	HeadStart time.Duration
-	Timeout   time.Duration
+	Direct        CandidateDialer
+	Proxy         CandidateDialer
+	HeadStart     time.Duration
+	Timeout       time.Duration
+	PreferredPath model.Path
 }
 
 type candidateResult struct {
@@ -62,6 +65,17 @@ func (r Racer) Race(ctx context.Context, target model.Target) (RaceResult, error
 	if r.Timeout <= r.HeadStart {
 		return RaceResult{}, errors.New("timeout must exceed head start")
 	}
+	preferred := r.PreferredPath
+	if preferred == "" {
+		preferred = model.PathDirect
+	}
+	if preferred != model.PathDirect && preferred != model.PathProxy {
+		return RaceResult{}, fmt.Errorf("preferred path must be direct or proxy, got %q", preferred)
+	}
+	first, second := r.Direct, r.Proxy
+	if preferred == model.PathProxy {
+		first, second = r.Proxy, r.Direct
+	}
 
 	raceCtx, cancel := context.WithTimeout(ctx, r.Timeout)
 	results := make(chan candidateResult, 2)
@@ -73,11 +87,11 @@ func (r Racer) Race(ctx context.Context, target model.Target) (RaceResult, error
 			results <- candidateResult{conn: conn, observation: observation, err: err}
 		}()
 	}
-	startCandidate(r.Direct)
+	startCandidate(first)
 
 	timer := time.NewTimer(r.HeadStart)
 	defer timer.Stop()
-	proxyStarted := false
+	secondStarted := false
 	observations := map[model.Path]model.Observation{}
 
 	for {
@@ -87,9 +101,9 @@ func (r Racer) Race(ctx context.Context, target model.Target) (RaceResult, error
 			drainLosers(results, started-received)
 			return RaceResult{}, fmt.Errorf("candidate race: %w", raceCtx.Err())
 		case <-timer.C:
-			if !proxyStarted {
-				startCandidate(r.Proxy)
-				proxyStarted = true
+			if !secondStarted {
+				startCandidate(second)
+				secondStarted = true
 				started++
 			}
 		case result := <-results:
@@ -99,9 +113,11 @@ func (r Racer) Race(ctx context.Context, target model.Target) (RaceResult, error
 				reason := ReasonProxyCandidateWon
 				if result.observation.Path == model.PathDirect {
 					reason = ReasonDirectCandidateWon
-					if !proxyStarted {
+					if !secondStarted {
 						reason = ReasonDirectCandidateBeforeHeadStart
 					}
+				} else if !secondStarted {
+					reason = ReasonProxyCandidateBeforeHeadStart
 				}
 				cancel()
 				drainLosers(results, started-received)
@@ -112,18 +128,18 @@ func (r Racer) Race(ctx context.Context, target model.Target) (RaceResult, error
 				}, nil
 			}
 
-			if result.observation.Path == model.PathDirect && !proxyStarted {
+			if result.observation.Path == preferred && !secondStarted {
 				if !timer.Stop() {
 					select {
 					case <-timer.C:
 					default:
 					}
 				}
-				startCandidate(r.Proxy)
-				proxyStarted = true
+				startCandidate(second)
+				secondStarted = true
 				started++
 			}
-			if received == started && proxyStarted {
+			if received == started && secondStarted {
 				cancel()
 				return RaceResult{}, &RaceError{
 					Direct: observationOrFailure(observations, model.PathDirect),

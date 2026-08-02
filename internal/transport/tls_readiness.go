@@ -66,6 +66,12 @@ type TLSRacer struct {
 }
 
 func (r TLSRacer) Race(ctx context.Context, target model.Target, hello tlsinspect.ClientHello) (RaceResult, error) {
+	return r.RacePreferred(ctx, target, hello, model.PathDirect)
+}
+
+// RacePreferred changes only candidate launch order. The opposite path still
+// starts after HeadStart or immediately after an early preferred-path failure.
+func (r TLSRacer) RacePreferred(ctx context.Context, target model.Target, hello tlsinspect.ClientHello, preferred model.Path) (RaceResult, error) {
 	if hello.Len() == 0 {
 		return RaceResult{}, errors.New("validated ClientHello is required")
 	}
@@ -77,10 +83,11 @@ func (r TLSRacer) Race(ctx context.Context, target model.Target, hello tlsinspec
 	}
 	wire := hello.WireBytes()
 	return (Racer{
-		Direct:    tlsReadyDialer{base: r.Direct, gate: r.Gate, clientHello: wire},
-		Proxy:     tlsReadyDialer{base: r.Proxy, gate: r.Gate, clientHello: wire},
-		HeadStart: r.HeadStart,
-		Timeout:   r.Timeout,
+		Direct:        tlsReadyDialer{base: r.Direct, gate: r.Gate, clientHello: wire},
+		Proxy:         tlsReadyDialer{base: r.Proxy, gate: r.Gate, clientHello: wire},
+		HeadStart:     r.HeadStart,
+		Timeout:       r.Timeout,
+		PreferredPath: preferred,
 	}).Race(ctx, target)
 }
 
