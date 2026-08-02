@@ -160,9 +160,11 @@ func TestValidateRejectsUnsafeLearningPersistence(t *testing.T) {
 	cfg.Learning.Persistence.QueueSize = 0
 	cfg.Learning.Persistence.RetentionHours = 0
 	cfg.Learning.Persistence.ShutdownTimeoutMS = 50
+	cfg.Learning.Persistence.DirectSuggestionSessions = 1
+	cfg.Learning.Persistence.ProxySuggestionSessions = 1001
 
 	err := cfg.Validate()
-	for _, field := range []string{"database_path", "queue_size", "retention_hours", "shutdown_timeout_ms"} {
+	for _, field := range []string{"database_path", "queue_size", "retention_hours", "shutdown_timeout_ms", "direct_suggestion_sessions", "proxy_suggestion_sessions"} {
 		if err == nil || !strings.Contains(err.Error(), field) {
 			t.Fatalf("Validate() error = %v, want %s error", err, field)
 		}

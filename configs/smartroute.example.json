@@ -23,7 +23,9 @@
       "database_path": "data/learning.db",
       "queue_size": 256,
       "retention_hours": 720,
-      "shutdown_timeout_ms": 2000
+      "shutdown_timeout_ms": 2000,
+      "direct_suggestion_sessions": 3,
+      "proxy_suggestion_sessions": 2
     }
   },
   "privacy": {

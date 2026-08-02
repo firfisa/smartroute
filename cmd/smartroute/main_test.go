@@ -66,7 +66,7 @@ func TestRuntimeLearningQueuesOnlyStrongEvidence(t *testing.T) {
 func TestDurableLearningIsOptInAndDrains(t *testing.T) {
 	cfg := config.Default()
 	cfg.Learning.Persistence.DatabasePath = filepath.Join(t.TempDir(), "learning.db")
-	runtime, err := openDurableLearning(context.Background(), cfg, nil)
+	runtime, err := openDurableLearning(context.Background(), cfg, nil, nil)
 	if err != nil || runtime != nil {
 		t.Fatalf("disabled runtime=%v error=%v", runtime, err)
 	}
@@ -75,7 +75,7 @@ func TestDurableLearningIsOptInAndDrains(t *testing.T) {
 	}
 
 	cfg.Learning.Persistence.Enabled = true
-	runtime, err = openDurableLearning(context.Background(), cfg, nil)
+	runtime, err = openDurableLearning(context.Background(), cfg, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,6 +93,58 @@ func TestDurableLearningIsOptInAndDrains(t *testing.T) {
 	}
 	if _, err := os.Stat(cfg.Learning.Persistence.DatabasePath); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDurableLearningEmitsCrossSessionShadowAssessment(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "learning.db")
+	historical, err := store.Open(context.Background(), store.Config{Path: databasePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := historical.StartSession(context.Background(), "historical", now); err != nil {
+		t.Fatal(err)
+	}
+	target := model.Target{NetworkProfileID: "profile", Hostname: "example.com", Port: 443, Transport: model.TransportTCP}
+	winner := model.Observation{Path: model.PathProxy, Success: true, StageReached: model.StageTLS}
+	failed := model.Observation{Path: model.PathDirect, StageReached: model.StageOutbound, FailureClass: "timeout"}
+	for index := range 2 {
+		if written, err := historical.AppendStrongEvidence(context.Background(), target, "historical", winner, &failed, now.Add(time.Duration(index)*time.Millisecond)); err != nil || !written {
+			t.Fatalf("historical append written=%v error=%v", written, err)
+		}
+	}
+	if err := historical.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Learning.Persistence.Enabled = true
+	cfg.Learning.Persistence.DatabasePath = databasePath
+	events := make(chan learning.DurableAssessmentEvent, 1)
+	runtime, err := openDurableLearning(context.Background(), cfg, nil, func(event learning.DurableAssessmentEvent) {
+		events <- event
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accepted, reason := runtime.writer.Enqueue(store.WriteRequest{
+		Target: target, Winner: winner, Other: &failed, ObservedAt: now.Add(time.Second),
+	}); !accepted || reason != store.ReasonDurableQueued {
+		t.Fatalf("enqueue accepted=%v reason=%q", accepted, reason)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := runtime.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case event := <-events:
+		if event.EventType != learning.EventTypeDurableAssessment || event.Assessment.State != learning.DurableStateProxySuggested ||
+			event.Assessment.SuggestedPath != model.PathProxy || event.Assessment.Evidence.ProxyWins != 3 || event.Assessment.Evidence.ProxySessions != 2 {
+			t.Fatalf("assessment event = %+v", event)
+		}
+	default:
+		t.Fatal("durable assessment event was not emitted")
 	}
 }
 
@@ -238,6 +290,20 @@ func TestRunLearningStatusAndBackupExistingStore(t *testing.T) {
 	if status.Health != "ok" || status.Store == nil || status.Store.EvidenceCount != 1 || status.Store.ProxyEvidence != 1 {
 		t.Fatalf("status = %+v", status)
 	}
+	var evaluateOutput bytes.Buffer
+	if err := run([]string{
+		"learning", "evaluate", "-config", configPath,
+		"-network-profile", target.NetworkProfileID, "-hostname", target.Hostname, "-port", "443",
+	}, &evaluateOutput, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	var assessment learning.DurableAssessment
+	if err := json.Unmarshal(evaluateOutput.Bytes(), &assessment); err != nil {
+		t.Fatal(err)
+	}
+	if assessment.ReasonCode != learning.ReasonDurableProxyIncomplete || assessment.Evidence.ProxyWins != 1 || strings.Contains(evaluateOutput.String(), target.Hostname) {
+		t.Fatalf("assessment = %+v output=%s", assessment, evaluateOutput.String())
+	}
 
 	destination := filepath.Join(t.TempDir(), "backup")
 	var backupOutput bytes.Buffer
@@ -297,6 +363,13 @@ func TestRunLearningVerifyAndRestoreRequireExplicitPaths(t *testing.T) {
 	}
 	if err := run([]string{"learning", "restore", "-source", "/tmp/backup"}, &stdout, &stderr); err == nil || !strings.Contains(err.Error(), "-destination") {
 		t.Fatalf("restore error = %v", err)
+	}
+}
+
+func TestRunLearningEvaluateRequiresExactTarget(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"learning", "evaluate"}, &stdout, &stderr); err == nil || !strings.Contains(err.Error(), "network-profile") {
+		t.Fatalf("evaluate error = %v", err)
 	}
 }
 

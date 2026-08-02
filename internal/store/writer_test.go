@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -111,6 +112,94 @@ func TestAsyncWriterCountsSkippedEvidence(t *testing.T) {
 	}
 	if stats := writer.Stats(); stats.Skipped != 1 {
 		t.Fatalf("stats = %+v", stats)
+	}
+}
+
+func TestAsyncWriterCallsOnWrittenOnlyForPersistedEvidence(t *testing.T) {
+	appender := &sequenceAppender{results: []appendResult{{written: true}, {written: false}, {err: errors.New("failed")}}}
+	var written []WriteRequest
+	var mu sync.Mutex
+	writer, err := NewAsyncWriterWithOptions(appender, "session", WriterOptions{
+		Capacity: 3,
+		OnWritten: func(request WriteRequest) error {
+			mu.Lock()
+			written = append(written, request)
+			mu.Unlock()
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		writer.Enqueue(writerRequest())
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := writer.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(written) != 1 {
+		t.Fatalf("written callbacks = %d", len(written))
+	}
+}
+
+func TestAsyncWriterAssessmentErrorDoesNotUndoWriteOrStopWorker(t *testing.T) {
+	appender := &fakeAppender{written: true}
+	var callbacks atomic.Int32
+	var reported atomic.Int32
+	writer, err := NewAsyncWriterWithOptions(appender, "session", WriterOptions{
+		Capacity: 2,
+		OnWritten: func(WriteRequest) error {
+			if callbacks.Add(1) == 1 {
+				return errors.New("assessment failed")
+			}
+			return nil
+		},
+		OnError: func(error) { reported.Add(1) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer.Enqueue(writerRequest())
+	writer.Enqueue(writerRequest())
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := writer.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	stats := writer.Stats()
+	if stats.Written != 2 || stats.Errors != 1 || callbacks.Load() != 2 || reported.Load() != 1 {
+		t.Fatalf("stats=%+v callbacks=%d reported=%d", stats, callbacks.Load(), reported.Load())
+	}
+}
+
+func TestAsyncWriterRecoversAssessmentPanicAndContinues(t *testing.T) {
+	appender := &fakeAppender{written: true}
+	var callbacks atomic.Int32
+	writer, err := NewAsyncWriterWithOptions(appender, "session", WriterOptions{
+		Capacity: 2,
+		OnWritten: func(WriteRequest) error {
+			if callbacks.Add(1) == 1 {
+				panic("synthetic panic")
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer.Enqueue(writerRequest())
+	writer.Enqueue(writerRequest())
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := writer.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if stats := writer.Stats(); stats.Written != 2 || stats.Errors != 1 || callbacks.Load() != 2 {
+		t.Fatalf("stats=%+v callbacks=%d", stats, callbacks.Load())
 	}
 }
 

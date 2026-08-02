@@ -44,6 +44,7 @@ required_files=(
   "docs/adr/0012-sqlite-strong-evidence-store.md"
   "docs/adr/0013-opt-in-async-durable-evidence-writer.md"
   "docs/adr/0014-durable-evidence-lifecycle.md"
+  "docs/adr/0015-cross-session-shadow-assessment.md"
   "configs/smartroute.example.json"
   "upstreams.lock"
 )
@@ -155,6 +156,13 @@ if ! matches 'learning status' "${project_root}/README.md" "${project_root}/docs
   ! matches 'verify-backup' "${project_root}/README.md" "${project_root}/docs/adr/0014-durable-evidence-lifecycle.md" ||
   ! matches 'must never overwrite or automatically activate' "${project_root}/AGENTS.md"; then
   echo "durable evidence lifecycle contract is missing" >&2
+  exit 1
+fi
+
+if ! matches 'direct_suggestion_sessions' "${project_root}/configs/smartroute.example.json" "${project_root}/docs/04-component-catalog.md" ||
+  ! matches 'durable_learning_assessment' "${project_root}/docs/08-observation-and-live-trial.md" "${project_root}/docs/adr/0015-cross-session-shadow-assessment.md" ||
+  ! matches 'must never feed.*PreferredPath' "${project_root}/AGENTS.md"; then
+  echo "cross-session shadow assessment contract is missing" >&2
   exit 1
 fi
 

@@ -61,8 +61,10 @@ All notable project changes are recorded here. The project has not published a r
 - Learning persistence configuration with backward-compatible defaults; disabled mode creates no database or key, and stored evidence remains shadow-only under ADR-0013.
 - `smartroute learning status|backup|verify-backup|restore` with no-create read-only inspection, SQLite online snapshots, SHA-256 manifests, private-copy verification, new-path-only restore, and explicit incomplete markers under ADR-0014.
 - Transactional retention now removes empty historical sessions, with runtime startup reordered to prune before creating the current session.
+- Deterministic cross-session Shadow assessment requiring both strong-win and distinct-session thresholds, with conservative any-opposite-direction conflict handling under ADR-0015.
+- Asynchronous `durable_learning_assessment` events after successful writes plus read-only exact-target `smartroute learning evaluate`; neither feeds route selection.
 
 ### Known limitations
 
-- TLS readiness is structural and experimental; durable-policy application, destructive persistence cleanup/redacted export UI, OS-level supervisor service integration, active configuration integration, and broad real-site compatibility are not implemented yet.
+- TLS readiness is structural and experimental; durable suggestions are not applied, and health freezing, destructive persistence cleanup/redacted export UI, OS-level supervisor service integration, active configuration integration, and broad real-site compatibility are not implemented yet.
 - No public release artifacts have been published yet.

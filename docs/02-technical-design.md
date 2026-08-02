@@ -342,6 +342,8 @@ ADR-0013 已把它作为显式 opt-in 的 shadow 证据路径接入 `serve`：�
 
 ADR-0014 增加独立运维面：`learning status` 只读打开且拒绝迁移；`backup` 使用 SQLite online-backup 生成包含数据库、HMAC key、聚合状态和 SHA-256 清单的新目录；`verify-backup` 在私有临时副本上复核；`restore` 只写入全新的数据库路径。备份因为包含 key 与在线库同等敏感，恢复结果不会自动写入配置或启用。
 
+ADR-0015 在强证据异步写入成功后生成跨会话 Shadow assessment：Direct/Proxy 分别同时满足 win 阈值与 distinct-session 阈值才产生 exact-target 建议；保留期内双向证据一律 `conflicting`。评估查询位于 writer goroutine，不进入连接关键路径，结果只进入事件/受限记录器和只读 `learning evaluate`，不进入 `PreferredPath` 或规则生成。
+
 未来持久策略、网络画像与人工规则可能扩展为：
 
 ```text

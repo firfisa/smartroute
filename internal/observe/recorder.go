@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/firfisa/smartroute/internal/learning"
 	"github.com/firfisa/smartroute/internal/model"
 )
 
@@ -43,27 +44,28 @@ type Options struct {
 // Event contains only the bounded routing metadata approved for persistence.
 // Target is transformed before encoding and is never marshaled directly.
 type Event struct {
-	EventType        string
-	Target           *model.Target
-	SelectedPath     model.Path
-	SelectedLane     string
-	ReasonCode       string
-	PolicyReason     string
-	Observation      *model.Observation
-	OtherObservation *model.Observation
-	FailureClass     string
-	DirectFailure    string
-	ProxyFailure     string
-	AdaptiveFailure  string
-	OriginalFailure  string
-	Committed        *bool
-	LearningReason   string
-	DurableReason    string
-	PolicyState      model.PolicyState
-	Service          string
-	State            string
-	Attempt          int
-	BackoffMS        int64
+	EventType         string
+	Target            *model.Target
+	SelectedPath      model.Path
+	SelectedLane      string
+	ReasonCode        string
+	PolicyReason      string
+	Observation       *model.Observation
+	OtherObservation  *model.Observation
+	FailureClass      string
+	DirectFailure     string
+	ProxyFailure      string
+	AdaptiveFailure   string
+	OriginalFailure   string
+	Committed         *bool
+	LearningReason    string
+	DurableReason     string
+	DurableAssessment *learning.DurableAssessment
+	PolicyState       model.PolicyState
+	Service           string
+	State             string
+	Attempt           int
+	BackoffMS         int64
 }
 
 type Recorder struct {
@@ -85,30 +87,31 @@ type storedTarget struct {
 }
 
 type storedEvent struct {
-	SchemaVersion    int                `json:"schema_version"`
-	RecordedAt       time.Time          `json:"recorded_at"`
-	Source           string             `json:"source"`
-	EventType        string             `json:"event_type"`
-	Target           *storedTarget      `json:"target,omitempty"`
-	SelectedPath     model.Path         `json:"selected_path,omitempty"`
-	SelectedLane     string             `json:"selected_lane,omitempty"`
-	ReasonCode       string             `json:"reason_code,omitempty"`
-	PolicyReason     string             `json:"policy_reason,omitempty"`
-	Observation      *model.Observation `json:"observation,omitempty"`
-	OtherObservation *model.Observation `json:"other_observation,omitempty"`
-	FailureClass     string             `json:"failure_class,omitempty"`
-	DirectFailure    string             `json:"direct_failure,omitempty"`
-	ProxyFailure     string             `json:"proxy_failure,omitempty"`
-	AdaptiveFailure  string             `json:"adaptive_failure,omitempty"`
-	OriginalFailure  string             `json:"original_failure,omitempty"`
-	Committed        *bool              `json:"committed,omitempty"`
-	LearningReason   string             `json:"learning_reason,omitempty"`
-	DurableReason    string             `json:"durable_reason,omitempty"`
-	PolicyState      model.PolicyState  `json:"policy_state,omitempty"`
-	Service          string             `json:"service,omitempty"`
-	State            string             `json:"state,omitempty"`
-	Attempt          int                `json:"attempt,omitempty"`
-	BackoffMS        int64              `json:"backoff_ms,omitempty"`
+	SchemaVersion     int                         `json:"schema_version"`
+	RecordedAt        time.Time                   `json:"recorded_at"`
+	Source            string                      `json:"source"`
+	EventType         string                      `json:"event_type"`
+	Target            *storedTarget               `json:"target,omitempty"`
+	SelectedPath      model.Path                  `json:"selected_path,omitempty"`
+	SelectedLane      string                      `json:"selected_lane,omitempty"`
+	ReasonCode        string                      `json:"reason_code,omitempty"`
+	PolicyReason      string                      `json:"policy_reason,omitempty"`
+	Observation       *model.Observation          `json:"observation,omitempty"`
+	OtherObservation  *model.Observation          `json:"other_observation,omitempty"`
+	FailureClass      string                      `json:"failure_class,omitempty"`
+	DirectFailure     string                      `json:"direct_failure,omitempty"`
+	ProxyFailure      string                      `json:"proxy_failure,omitempty"`
+	AdaptiveFailure   string                      `json:"adaptive_failure,omitempty"`
+	OriginalFailure   string                      `json:"original_failure,omitempty"`
+	Committed         *bool                       `json:"committed,omitempty"`
+	LearningReason    string                      `json:"learning_reason,omitempty"`
+	DurableReason     string                      `json:"durable_reason,omitempty"`
+	DurableAssessment *learning.DurableAssessment `json:"durable_assessment,omitempty"`
+	PolicyState       model.PolicyState           `json:"policy_state,omitempty"`
+	Service           string                      `json:"service,omitempty"`
+	State             string                      `json:"state,omitempty"`
+	Attempt           int                         `json:"attempt,omitempty"`
+	BackoffMS         int64                       `json:"backoff_ms,omitempty"`
 }
 
 func New(opts Options) (*Recorder, error) {
@@ -173,7 +176,8 @@ func (r *Recorder) Record(event Event) error {
 		FailureClass: event.FailureClass, DirectFailure: event.DirectFailure,
 		ProxyFailure: event.ProxyFailure, AdaptiveFailure: event.AdaptiveFailure,
 		OriginalFailure: event.OriginalFailure, Committed: event.Committed,
-		LearningReason: event.LearningReason, DurableReason: event.DurableReason, PolicyState: event.PolicyState,
+		LearningReason: event.LearningReason, DurableReason: event.DurableReason,
+		DurableAssessment: event.DurableAssessment, PolicyState: event.PolicyState,
 		Service: event.Service, State: event.State, Attempt: event.Attempt, BackoffMS: event.BackoffMS,
 	}
 	if event.Target != nil {

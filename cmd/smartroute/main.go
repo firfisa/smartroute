@@ -261,10 +261,29 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("initialize learning engine: %w", err)
 	}
+	recorder, err := openObservationRecorder(cfg, observe.SourceEngine)
+	if err != nil {
+		return err
+	}
+	if recorder != nil {
+		defer recorder.Close()
+	}
+	var outputMu sync.Mutex
+	stdoutWriter := &synchronizedWriter{writer: stdout}
+	stderrWriter := &synchronizedWriter{writer: stderr}
+	events := newRuntimeEventSink(stdoutWriter, stderrWriter, recorder)
 	var durableWarnOnce sync.Once
 	durable, err := openDurableLearning(context.Background(), cfg, func(error) {
 		durableWarnOnce.Do(func() {
-			fmt.Fprintln(stderr, "durable learning write failed; routing and process-local learning continue")
+			fmt.Fprintln(stderrWriter, "durable learning write or assessment failed; routing and process-local learning continue")
+		})
+	}, func(event learning.DurableAssessmentEvent) {
+		outputMu.Lock()
+		defer outputMu.Unlock()
+		assessment := event.Assessment
+		events.Emit(event, observe.Event{
+			EventType: event.EventType, Target: &event.Target,
+			ReasonCode: assessment.ReasonCode, DurableAssessment: &assessment,
 		})
 	})
 	if err != nil {
@@ -275,23 +294,16 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.LearningShutdownTimeout())
 			defer cancel()
 			stats, closeErr := durable.Close(shutdownCtx)
-			fmt.Fprintf(stderr, "durable learning stopped: queued=%d written=%d skipped=%d dropped=%d errors=%d\n",
+			fmt.Fprintf(stderrWriter, "durable learning stopped: queued=%d written=%d skipped=%d dropped=%d errors=%d\n",
 				stats.Queued, stats.Written, stats.Skipped, stats.Dropped, stats.Errors)
 			if closeErr != nil {
-				fmt.Fprintln(stderr, "durable learning shutdown incomplete; process exit remains safe")
+				fmt.Fprintln(stderrWriter, "durable learning shutdown incomplete; process exit remains safe")
 			}
 		}()
 	}
 	learner := &runtimeLearningEngine{ephemeral: ephemeralLearner}
 	if durable != nil {
 		learner.writer = durable.writer
-	}
-	recorder, err := openObservationRecorder(cfg, observe.SourceEngine)
-	if err != nil {
-		return err
-	}
-	if recorder != nil {
-		defer recorder.Close()
 	}
 	listener, err := net.Listen("tcp", cfg.ListenAddress)
 	if err != nil {
@@ -301,8 +313,6 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	var outputMu sync.Mutex
-	events := newRuntimeEventSink(&synchronizedWriter{writer: stdout}, &synchronizedWriter{writer: stderr}, recorder)
 	server := sidecar.Server{
 		NetworkProfileID:  *profileID,
 		DirectProbePolicy: privacyPolicy,
@@ -379,9 +389,13 @@ type durableLearningRuntime struct {
 	writer *store.AsyncWriter
 }
 
-func openDurableLearning(ctx context.Context, cfg config.Config, onError func(error)) (*durableLearningRuntime, error) {
+func openDurableLearning(ctx context.Context, cfg config.Config, onError func(error), onAssessment func(learning.DurableAssessmentEvent)) (*durableLearningRuntime, error) {
 	if !cfg.Learning.Persistence.Enabled {
 		return nil, nil
+	}
+	evaluator, err := durableEvaluatorFromConfig(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("initialize durable learning evaluator: %w", err)
 	}
 	evidenceStore, err := store.Open(ctx, store.Config{
 		Path: cfg.Learning.Persistence.DatabasePath, BusyTimeout: 5 * time.Second,
@@ -403,7 +417,28 @@ func openDurableLearning(ctx context.Context, cfg config.Config, onError func(er
 	if err := evidenceStore.StartSession(ctx, sessionID, now); err != nil {
 		return closeOnError(fmt.Errorf("start durable learning session: %w", err))
 	}
-	writer, err := store.NewAsyncWriter(evidenceStore, sessionID, cfg.Learning.Persistence.QueueSize, onError)
+	writerOptions := store.WriterOptions{Capacity: cfg.Learning.Persistence.QueueSize, OnError: onError}
+	if onAssessment != nil {
+		writerOptions.OnWritten = func(request store.WriteRequest) error {
+			summary, err := evidenceStore.Summarize(
+				context.Background(), request.Target,
+				request.ObservedAt.Add(-cfg.LearningEvidenceRetention()),
+			)
+			if err != nil {
+				return fmt.Errorf("summarize durable learning evidence: %w", err)
+			}
+			assessment, err := evaluator.Evaluate(durableSummary(summary))
+			if err != nil {
+				return fmt.Errorf("evaluate durable learning evidence: %w", err)
+			}
+			onAssessment(learning.DurableAssessmentEvent{
+				EventType: learning.EventTypeDurableAssessment,
+				Target:    request.Target, Assessment: assessment,
+			})
+			return nil
+		}
+	}
+	writer, err := store.NewAsyncWriterWithOptions(evidenceStore, sessionID, writerOptions)
 	if err != nil {
 		return closeOnError(fmt.Errorf("initialize durable learning writer: %w", err))
 	}
@@ -530,7 +565,7 @@ type learningBackupResult struct {
 
 func runLearning(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("learning requires status, backup, verify-backup, or restore")
+		return errors.New("learning requires status, evaluate, backup, verify-backup, or restore")
 	}
 	action := args[0]
 	flags := flag.NewFlagSet("learning "+action, flag.ContinueOnError)
@@ -538,6 +573,10 @@ func runLearning(args []string, stdout, stderr io.Writer) error {
 	configPath := flags.String("config", "configs/smartroute.example.json", "path to SmartRoute JSON config")
 	source := flags.String("source", "", "completed SmartRoute backup directory")
 	destination := flags.String("destination", "", "new backup directory or restored database path")
+	networkProfile := flags.String("network-profile", "", "exact local network profile label to evaluate")
+	hostname := flags.String("hostname", "", "exact target hostname to evaluate locally")
+	port := flags.Uint("port", 0, "exact target port to evaluate")
+	transportName := flags.String("transport", string(model.TransportTCP), "target transport: tcp or udp")
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -578,6 +617,41 @@ func runLearning(args []string, stdout, stderr io.Writer) error {
 		encoder := json.NewEncoder(stdout)
 		encoder.SetIndent("", "  ")
 		return encoder.Encode(learningBackupResult{Destination: absoluteDestination, Manifest: manifest})
+	case "evaluate":
+		if *networkProfile == "" || *hostname == "" || *port == 0 || *port > 65535 {
+			return errors.New("learning evaluate requires -network-profile, -hostname, and -port 1..65535")
+		}
+		transport := model.Transport(*transportName)
+		if !transport.Valid() {
+			return errors.New("learning evaluate transport must be tcp or udp")
+		}
+		cfg, err := config.Load(*configPath)
+		if err != nil {
+			return err
+		}
+		evidenceStore, err := openExistingLearningStore(context.Background(), cfg.Learning.Persistence.DatabasePath)
+		if err != nil {
+			return err
+		}
+		defer evidenceStore.Close()
+		summary, err := evidenceStore.Summarize(context.Background(), model.Target{
+			NetworkProfileID: *networkProfile, Hostname: *hostname,
+			Port: uint16(*port), Transport: transport,
+		}, time.Now().UTC().Add(-cfg.LearningEvidenceRetention()))
+		if err != nil {
+			return err
+		}
+		evaluator, err := durableEvaluatorFromConfig(cfg)
+		if err != nil {
+			return err
+		}
+		assessment, err := evaluator.Evaluate(durableSummary(summary))
+		if err != nil {
+			return err
+		}
+		encoder := json.NewEncoder(stdout)
+		encoder.SetIndent("", "  ")
+		return encoder.Encode(assessment)
 	case "verify-backup":
 		if *source == "" {
 			return errors.New("learning verify-backup requires -source")
@@ -672,6 +746,21 @@ func openExistingLearningStore(ctx context.Context, path string) (*store.Store, 
 		return nil, fmt.Errorf("open durable learning database: %w", err)
 	}
 	return evidenceStore, nil
+}
+
+func durableEvaluatorFromConfig(cfg config.Config) (*learning.DurableEvaluator, error) {
+	return learning.NewDurableEvaluator(learning.DurableEvaluatorConfig{
+		DirectWins: cfg.Learning.DirectPromotionWins, ProxyWins: cfg.Learning.ProxyPromotionWins,
+		DirectSessions: cfg.Learning.Persistence.DirectSuggestionSessions,
+		ProxySessions:  cfg.Learning.Persistence.ProxySuggestionSessions,
+	})
+}
+
+func durableSummary(summary store.Summary) learning.DurableEvidenceSummary {
+	return learning.DurableEvidenceSummary{
+		DirectWins: summary.DirectWins, ProxyWins: summary.ProxyWins,
+		DirectSessions: summary.DirectSessions, ProxySessions: summary.ProxySessions,
+	}
 }
 
 func validateDirectProbeAcknowledgement(mode string, acknowledged bool) error {
@@ -780,6 +869,7 @@ Usage:
   smartroute supervise [-acknowledge-direct-probes] [-config path] [-network-profile label]
   smartroute observations status|pause|resume|clear|export [-config path]
   smartroute learning status [-config path]
+  smartroute learning evaluate -network-profile label -hostname host -port port [-transport tcp|udp] [-config path]
   smartroute learning backup -destination new-directory [-config path]
   smartroute learning verify-backup -source backup-directory
   smartroute learning restore -source backup-directory -destination new-database

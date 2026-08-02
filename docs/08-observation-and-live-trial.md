@@ -94,6 +94,8 @@ ADR-0013 connects that schema to `serve` only when `learning.persistence.enabled
 
 ADR-0014 implements read-only status plus a verified snapshot lifecycle. `learning backup` uses SQLite online backup and includes the HMAC key; the result is recoverable but not redacted and must be protected like the live store. `verify-backup` checks the manifest/checksums and SQLite contents without modifying the source. `restore` writes only to a new database path and never changes configuration. Before a live trial, run status, create and verify a fresh backup, restore it to a disposable new path, validate that restored status matches, then remove the disposable copy through a separately approved cleanup action. Destructive clear remains intentionally unimplemented.
 
+ADR-0015 adds `durable_learning_assessment` after a strong row is written. Its target follows the recorder's HMAC/optional-cleartext policy; its body contains only aggregate wins, distinct sessions, thresholds, state, reason, and optional suggested path. Both-direction evidence is always conflicting. Trial analysis may measure suggestion coverage and contradiction rate, but must not label a suggestion as an applied route or claim latency improvement from it. `learning evaluate` accepts an exact hostname locally and does not echo it, but command-line history/process-list exposure must be considered.
+
 Operational commands:
 
 ```bash

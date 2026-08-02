@@ -18,5 +18,6 @@ ADRs are append-only decision records. Supersede an old decision with a new ADR 
 | [0012](0012-sqlite-strong-evidence-store.md) | Persist strong evidence in a pseudonymous SQLite store | Accepted | 2026-08-02 |
 | [0013](0013-opt-in-async-durable-evidence-writer.md) | Wire durable shadow evidence through an opt-in asynchronous writer | Accepted | 2026-08-02 |
 | [0014](0014-durable-evidence-lifecycle.md) | Manage durable evidence with read-only status and verified snapshots | Accepted | 2026-08-02 |
+| [0015](0015-cross-session-shadow-assessment.md) | Evaluate cross-session evidence as shadow suggestions only | Accepted | 2026-08-02 |
 
 Status values: `Proposed`, `Accepted`, `Superseded`, `Rejected`.

@@ -1,6 +1,6 @@
 # SmartRoute Component and Interface Catalog
 
-Version: v0.6
+Version: v0.7
 Last updated: 2026-08-02
 
 This file is the maintained registry for components, interfaces, commands, configuration fields, and decision reason codes. Status is explicit: `implemented`, `experimental`, or `planned`.
@@ -79,7 +79,7 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `internal/config` | Core | implemented | Strict JSON schema, safe loopback defaults, validation | Mihomo YAML generation | `internal/config/config_test.go` |
 | `internal/model` | Core | implemented | Path, target, readiness, observation, decision types and readable JSON evidence | State persistence | `internal/model/model_test.go` plus consumer tests |
 | `internal/decision` | Core | experimental | Evaluate one paired Direct/Proxy observation | Multi-session promotion and decay | `internal/decision/evaluator_test.go` |
-| `internal/learning` | Policy | experimental | Consume strong completed pairs; maintain scoped consecutive counters, TTL, unstable state, and optional ephemeral preference | Cross-session evidence, durable policy, user locks, or health-control persistence | `internal/learning/engine_test.go`; Sidecar learning-loop tests |
+| `internal/learning` | Policy | experimental | Maintain process-local preferences and deterministically assess cross-session aggregate evidence in Shadow | Durable policy application, user locks, health freezing, or storage I/O | Engine, durable-evaluator and Sidecar learning-loop tests |
 | `internal/socks5` | Data plane | experimental | No-auth SOCKS5 CONNECT parsing/client handshake and domain preservation | Authentication, UDP ASSOCIATE, BIND | `internal/socks5/protocol_test.go`; Test Lab |
 | `internal/transport` | Data plane | experimental | SOCKS5 candidate dialing, TCP and TLS racing, ServerHello gate, cancellation, exact prefetched-byte replay | Certificate/Finished/application validation | Racer and TLS readiness tests; Mihomo Lab |
 | `internal/tlsinspect` | Data plane | experimental | Bounded TLS record reassembly, ClientHello/ServerHello structure checks, early-data rejection | TLS decryption, certificate validation, payload logging | `internal/tlsinspect/tlsinspect_test.go` |
@@ -92,7 +92,7 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `internal/testlab` | Test | implemented | Ephemeral loopback echo target, fake Direct/Proxy gateways, deterministic faults | External network and active Clash access | `internal/testlab/lab_test.go` |
 | `internal/mihomolab` | Test | implemented | Temporary config/home, child lifecycle, synthetic DNS, forced-listener and readiness assertions | Active Clash discovery, external traffic, TUN, system proxy | `internal/mihomolab/lab_test.go`; explicit runtime command |
 | `internal/upstream` | Integration | planned | Mihomo config/API adapter and topology validation | Shipping Mihomo source | Planned integration tests |
-| `internal/store` | Persistence | experimental | HMAC target keys, sessions, evidence/status, migrations, integrity/retention, bounded async writing, and verified snapshot lifecycle | Runtime policy application, overwrite restore, cleartext targets, raw analytics, or JSONL recording | SQLite, writer and lifecycle test suites |
+| `internal/store` | Persistence | experimental | HMAC target keys, sessions, evidence/status, migrations, integrity/retention, bounded async writing/callbacks, and verified snapshot lifecycle | Runtime policy application, overwrite restore, cleartext targets, raw analytics, or JSONL recording | SQLite, writer and lifecycle test suites |
 
 ## 3. Implemented function and interface registry
 
@@ -121,6 +121,8 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `learning.New(config)` | `internal/learning` | Mode, Direct/Proxy thresholds, TTL, optional clock | Concurrent process-local engine | Rejects unknown mode, low thresholds, and non-positive TTL | experimental | Config validation and engine tests |
 | `Engine.Observe(target, winner, other)` | `internal/learning` | Scoped target, ready winner, optional completed opposite observation | Explainable update and ephemeral policy | Rejects invalid pairs; incomplete/canceled/pre-outbound evidence returns non-applied reason | experimental | Promotion, contradiction and weak-evidence tests |
 | `Engine.PreferredPath(target)` | `internal/learning` | Scoped target | Live Direct/Proxy preference or empty | Returns empty in shadow/unknown/unstable/expired/invalid cases | experimental | Shadow, scope and TTL tests |
+| `learning.NewDurableEvaluator(config)` | `internal/learning` | Direct/Proxy win and distinct-session thresholds | Pure deterministic Shadow evaluator | Rejects thresholds below 2 | experimental | Durable configuration and matrix tests |
+| `DurableEvaluator.Evaluate(summary)` | `internal/learning` | Directional wins and distinct sessions | Insufficient, conflicting, or exact-path suggestion with evidence/reason | Rejects negative/impossible summaries; any evidence in both directions conflicts | experimental | Full outcome matrix and invalid-evidence tests |
 | `Supervisor.Run(ctx)` | `internal/supervisor` | Context, service specs, starter, restart policy | Runs independent monitors until cancellation | Rejects invalid/duplicate services; runtime failures trigger capped restart rather than stopping siblings | experimental | Restart, start-error, independence, cancellation tests |
 | `CommandStarter.Start(ctx, service)` | `internal/supervisor` | Executable/args and synchronized stdout/stderr | Started child implementing `Wait()` | Parent cancellation interrupts child; `WaitDelay` kills after grace period | experimental | Supervisor consumers; platform process integration pending |
 | `observe.New(options)` | `internal/observe` | Local directory, source and capacity/privacy limits | Source-specific recorder | Rejects unsafe paths/limits and invalid salt; initialization errors are explicit | experimental | Recorder validation/privacy tests |
@@ -133,6 +135,7 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `Store.ListEvidence/Summarize` | `internal/store` | Target and lower timestamp bound | Ordered rows or wins/distinct-session counts | Invalid stored stages/directions fail visibly | experimental | Scope, summary and corrupt-row tests |
 | `Store.PruneEvidence/Checkpoint` | `internal/store` | Retention cutoff or context | Deleted evidence count or compact WAL boundary | Transactionally removes empty sessions; errors never imply automatic replacement | experimental | Evidence/session pruning and privacy-file tests |
 | `store.NewAsyncWriter(...)` | `internal/store` | Store, session, queue capacity, optional error callback | Background strong-evidence writer | Rejects unsafe construction; individual append errors are counted and later writes continue | experimental | Queue bounds, errors, skips and close tests |
+| `store.NewAsyncWriterWithOptions(...)` | `internal/store` | Store, session, queue/error/written callbacks | Background writer with post-write assessment hook | Hook runs only after persisted rows; hook errors/panics are counted without undoing writes or stopping later work | experimental | Callback selection and error/panic-isolation tests |
 | `AsyncWriter.Enqueue(request)` | `internal/store` | Target, completed pair and timestamp | Immediate accepted flag plus safe durable reason | Never blocks; full/closed queues drop only durable evidence | experimental | Backpressure and close/enqueue race tests |
 | `AsyncWriter.Close(ctx)` | `internal/store` | Shutdown context | Drained completion or context error | Stops admission, drains accepted work, never force-closes its store | experimental | Drain and timeout tests |
 | `runtimeLearningEngine.Observe(...)` | `cmd/smartroute` | Sidecar target and completed candidate evidence | Ephemeral update plus optional durable enqueue reason | Weak pairs do not enqueue; writer result never becomes a route error | experimental | Runtime learner and Sidecar metadata tests |
@@ -158,6 +161,7 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `smartroute supervise` | experimental | Run Guard and adaptive engine as independently restartable children | Same loopback effects as the two child commands; does not operate Mihomo | Optional bounded per-source JSONL; otherwise debug stdout |
 | `smartroute observations status\|pause\|resume\|clear\|export` | experimental | Operate the configured local recorder directory | None | Status/control, confirmed deletion, or redacted file export |
 | `smartroute learning status` | experimental | Inspect configured durable evidence health and aggregates | None | Missing state is not created; existing current schema is opened read-only |
+| `smartroute learning evaluate` | experimental | Evaluate one exact target against retained cross-session evidence | None | Opens store read-only; omits target from output; never applies suggestion |
 | `smartroute learning backup` | experimental | Snapshot configured evidence into a new private directory | None beyond local SQLite locks | Includes DB/key/manifest; never a redacted export |
 | `smartroute learning verify-backup` | experimental | Validate checksums and SQLite contents on a temporary copy | None | Leaves source snapshot unchanged |
 | `smartroute learning restore` | experimental | Restore a snapshot to a new database path | None | Refuses every existing DB/key/marker; never updates config or activates policy |
@@ -205,6 +209,8 @@ go run ./cmd/smartroute trace \
 | `learning.persistence.queue_size` | integer | `256` | 1–65536 | Bounds pending non-blocking durable writes; full queues drop evidence only |
 | `learning.persistence.retention_hours` | integer | `720` | 1–87600 | Evidence older than this is pruned at enabled runtime startup |
 | `learning.persistence.shutdown_timeout_ms` | integer | `2000` | 100–30000 | Bounds writer drain plus WAL checkpoint during shutdown |
+| `learning.persistence.direct_suggestion_sessions` | integer | `3` | 2–1000 | Independent sessions required in addition to Direct win threshold for a Shadow suggestion |
+| `learning.persistence.proxy_suggestion_sessions` | integer | `2` | 2–1000 | Independent sessions required in addition to Proxy win threshold for a Shadow suggestion |
 | `privacy.mode` | enum | `explicit-opt-in` | `explicit-opt-in` or `privacy-first` | `privacy-first` opens zero Direct candidates; explicit mode also requires CLI acknowledgment |
 | `privacy.never_direct_probe` | string list | empty | Plain exact; leading `.` or `*.` suffix; normalized ASCII hostname/IP; invalid entries reject config | Matching entries override acknowledgment and use Proxy-only L3 |
 | `observation.enabled` | boolean | `false` | Boolean | Enables local persistence and suppresses duplicate raw runtime stdout events |
@@ -274,6 +280,17 @@ Durable evidence reasons:
 | `durable_evidence_queue_full` | Strong pair dropped because the queue is full | None; current connection continues |
 | `durable_evidence_writer_closed` | Strong pair arrived after shutdown admission closed | None; current connection continues |
 
+Cross-session Shadow-assessment reasons:
+
+| Reason code | State | Meaning | Route effect |
+| --- | --- | --- | --- |
+| `durable_no_evidence` | `insufficient` | No retained strong pair for this exact target scope | None |
+| `durable_direct_evidence_insufficient` | `insufficient` | Direct-only evidence misses win or session threshold | None |
+| `durable_proxy_evidence_insufficient` | `insufficient` | Proxy-only evidence misses win or session threshold | None |
+| `durable_conflicting_evidence` | `conflicting` | Both directions have retained strong evidence | None; no suggestion |
+| `durable_direct_route_suggested` | `direct_suggested` | Direct-only wins and sessions meet both thresholds | None; diagnostic only |
+| `durable_proxy_route_suggested` | `proxy_suggested` | Proxy-only wins and sessions meet both thresholds | None; diagnostic only |
+
 Guard availability reasons:
 
 | Reason code | Selected lane | Meaning |
@@ -291,6 +308,7 @@ Guard availability reasons:
 | `candidate.failed` | Dialer/gate | path, stage, failure class | Decision engine | planned |
 | `candidate.canceled` | Racer | path, cancellation reason | Metrics | planned |
 | `decision` | Sidecar/decision engine | `event_type`, target, selected path, reason, optional privacy/learning/durable reasons and ephemeral policy state, winner `observation`, optional completed `other_observation`, `committed` | CLI/recorder/UI | experimental `DecisionEvent`; JSONL schema v1 additive optional metadata |
+| `durable_learning_assessment` | Async writer/evaluator | HMAC-transformed target in recorder, state, reason, aggregate wins/sessions, thresholds, optional suggestion | Trial analysis/UI | experimental Shadow event; never a route input |
 | `diagnostic` | Sidecar | `event_type`, target, reason, failure class, optional Direct/Proxy failures and `policy_reason` | CLI/debug | experimental `DiagnosticEvent`; no payload bytes |
 | `guard_decision` | Guard | `event_type`, target, selected lane, reason, bounded failure classes, `committed` | CLI/recorder/UI | experimental; JSONL schema v1 implemented, no payload bytes |
 | `supervisor` | Supervisor | `event_type`, service, state, attempt, bounded failure class, optional `backoff_ms` | CLI/recorder/operator | experimental; states include `started`, `start_failed`, `exited`, `restart_scheduled`, `stopped` |

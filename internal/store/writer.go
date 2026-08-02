@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -35,12 +36,19 @@ type WriterStats struct {
 	Errors  uint64 `json:"errors"`
 }
 
+type WriterOptions struct {
+	Capacity  int
+	OnError   func(error)
+	OnWritten func(WriteRequest) error
+}
+
 type AsyncWriter struct {
 	store     EvidenceAppender
 	sessionID string
 	queue     chan WriteRequest
 	done      chan struct{}
 	onError   func(error)
+	onWritten func(WriteRequest) error
 
 	mu      sync.RWMutex
 	closed  bool
@@ -52,18 +60,22 @@ type AsyncWriter struct {
 }
 
 func NewAsyncWriter(store EvidenceAppender, sessionID string, capacity int, onError func(error)) (*AsyncWriter, error) {
+	return NewAsyncWriterWithOptions(store, sessionID, WriterOptions{Capacity: capacity, OnError: onError})
+}
+
+func NewAsyncWriterWithOptions(store EvidenceAppender, sessionID string, options WriterOptions) (*AsyncWriter, error) {
 	if store == nil {
 		return nil, errors.New("durable evidence store is required")
 	}
 	if err := validateSessionID(sessionID); err != nil {
 		return nil, err
 	}
-	if capacity < 1 || capacity > 65536 {
+	if options.Capacity < 1 || options.Capacity > 65536 {
 		return nil, errors.New("durable evidence queue capacity must be between 1 and 65536")
 	}
 	writer := &AsyncWriter{
-		store: store, sessionID: sessionID, queue: make(chan WriteRequest, capacity),
-		done: make(chan struct{}), onError: onError,
+		store: store, sessionID: sessionID, queue: make(chan WriteRequest, options.Capacity),
+		done: make(chan struct{}), onError: options.OnError, onWritten: options.OnWritten,
 	}
 	go writer.run()
 	return writer, nil
@@ -125,8 +137,25 @@ func (w *AsyncWriter) run() {
 		}
 		if written {
 			w.written.Add(1)
+			if w.onWritten != nil {
+				if err := invokeOnWritten(w.onWritten, request); err != nil {
+					w.errors.Add(1)
+					if w.onError != nil {
+						w.onError(err)
+					}
+				}
+			}
 		} else {
 			w.skipped.Add(1)
 		}
 	}
+}
+
+func invokeOnWritten(callback func(WriteRequest) error, request WriteRequest) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("durable post-write callback panicked")
+		}
+	}()
+	return callback(request)
 }

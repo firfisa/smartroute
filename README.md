@@ -2,7 +2,7 @@
 
 SmartRoute 是一个面向 Mihomo/Clash 生态的“自适应分流”实验项目。它不重新实现代理协议，而是在现有静态规则与代理内核之间加入一个可观测、可解释、可撤销的决策层：对规则无法确定的目标比较 `DIRECT` 与 `PROXY` 路径，按当前网络环境积累证据，并逐渐形成个人化路由策略。
 
-当前状态：Phase 0 架构与可行性验证。已经实现实验性的可用性 Guard、TLS-over-SOCKS sidecar、无 0-RTT 的 TLS readiness 竞争、进程内临时学习闭环、可选的跨会话强证据写入、受限本地观测记录器，以及锁定 Mihomo v1.19.29 的独立子进程测试；尚未实现跨会话自动策略、活动 Clash 配置接入或发布安装包。
+当前状态：Phase 0 架构与可行性验证。已经实现实验性的可用性 Guard、TLS-over-SOCKS sidecar、无 0-RTT 的 TLS readiness 竞争、进程内临时学习闭环、可选的跨会话强证据写入与 Shadow 评估、受限本地观测记录器，以及锁定 Mihomo v1.19.29 的独立子进程测试；尚未实现跨会话自动策略、活动 Clash 配置接入或发布安装包。
 
 ## 当前结论
 
@@ -59,6 +59,7 @@ flowchart LR
 | Direct 探测隐私策略 | 已实现：`privacy-first`、精确/后缀 deny、缺失策略 fail-closed；禁直连时只启 Proxy 且仍要求 L3 |
 | SQLite 强证据存储与运行时写入 | 已实现：默认关闭、HMAC 目标键、独立会话、异步有界队列、迁移/校验/裁剪；仅存证据，不应用持久策略 |
 | 持久证据生命周期 | 已实现：只读状态、一致性在线备份、临时副本验证、恢复到新路径；不覆盖、不自动激活 |
+| 跨会话 Shadow 评估 | 已实现：强证据次数 + 独立 Session 双阈值；双向证据判冲突；只发建议事件，不改变路由 |
 | 独立 Mihomo listener 拓扑 | v1.19.29 已验证强制 Direct/Proxy、域名保留和循环规避 |
 | Mihomo HTTPS/TLS 自适应路径 | macOS arm64 与 Linux amd64/v1.19.29 已验证 Direct 无 ServerHello 后由 Proxy 恢复并提交 L3 |
 | 活动 Clash Verge Rev 集成 | 尚未写入或重载；留待配合下的真实试用 |
@@ -119,7 +120,9 @@ go run ./cmd/smartroute observations clear -config configs/smartroute.example.js
   "database_path": "data/learning.db",
   "queue_size": 256,
   "retention_hours": 720,
-  "shutdown_timeout_ms": 2000
+  "shutdown_timeout_ms": 2000,
+  "direct_suggestion_sessions": 3,
+  "proxy_suggestion_sessions": 2
 }
 ```
 
@@ -129,6 +132,10 @@ go run ./cmd/smartroute observations clear -config configs/smartroute.example.js
 
 ```bash
 go run ./cmd/smartroute learning status -config configs/smartroute.example.json
+go run ./cmd/smartroute learning evaluate \
+  -config configs/smartroute.example.json \
+  -network-profile manual-experimental \
+  -hostname example.com -port 443
 go run ./cmd/smartroute learning backup \
   -config configs/smartroute.example.json \
   -destination /tmp/smartroute-learning-backup
@@ -140,6 +147,8 @@ go run ./cmd/smartroute learning restore \
 ```
 
 备份目录包含数据库密钥，因此与原数据库同等敏感，不是脱敏导出。恢复命令只写入全新路径，不会修改配置或自动启用恢复结果；失败的备份/恢复保留 `INCOMPLETE` 标记并拒绝后续使用。
+
+`learning evaluate` 与运行期异步评估共用同一状态机。Direct 默认要求 5 次强证据、至少 3 个 Session；Proxy 默认要求 3 次、至少 2 个 Session。保留期内两个方向只要都出现强证据，就输出 `conflicting` 而不是多数决。`direct_suggested`/`proxy_suggested` 目前只是分析结果，不会进入候选顺序或生成规则。命令不会回显目标，但显式 hostname 参数仍可能留在本地 shell history 或短暂出现在进程列表中。
 
 ## 独立测试环境
 

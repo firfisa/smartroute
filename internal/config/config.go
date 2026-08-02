@@ -49,11 +49,13 @@ type LearningConfig struct {
 }
 
 type LearningPersistenceConfig struct {
-	Enabled           bool   `json:"enabled"`
-	DatabasePath      string `json:"database_path"`
-	QueueSize         int    `json:"queue_size"`
-	RetentionHours    int    `json:"retention_hours"`
-	ShutdownTimeoutMS int    `json:"shutdown_timeout_ms"`
+	Enabled                  bool   `json:"enabled"`
+	DatabasePath             string `json:"database_path"`
+	QueueSize                int    `json:"queue_size"`
+	RetentionHours           int    `json:"retention_hours"`
+	ShutdownTimeoutMS        int    `json:"shutdown_timeout_ms"`
+	DirectSuggestionSessions int    `json:"direct_suggestion_sessions"`
+	ProxySuggestionSessions  int    `json:"proxy_suggestion_sessions"`
 }
 
 type PrivacyConfig struct {
@@ -94,6 +96,7 @@ func Default() Config {
 			Persistence: LearningPersistenceConfig{
 				Enabled: false, DatabasePath: "data/learning.db", QueueSize: 256,
 				RetentionHours: 720, ShutdownTimeoutMS: 2000,
+				DirectSuggestionSessions: 3, ProxySuggestionSessions: 2,
 			},
 		},
 		Privacy: PrivacyConfig{
@@ -162,6 +165,12 @@ func Load(path string) (Config, error) {
 					}
 					if _, present := persistenceFields["shutdown_timeout_ms"]; !present {
 						cfg.Learning.Persistence.ShutdownTimeoutMS = defaults.Learning.Persistence.ShutdownTimeoutMS
+					}
+					if _, present := persistenceFields["direct_suggestion_sessions"]; !present {
+						cfg.Learning.Persistence.DirectSuggestionSessions = defaults.Learning.Persistence.DirectSuggestionSessions
+					}
+					if _, present := persistenceFields["proxy_suggestion_sessions"]; !present {
+						cfg.Learning.Persistence.ProxySuggestionSessions = defaults.Learning.Persistence.ProxySuggestionSessions
 					}
 				}
 			}
@@ -243,6 +252,12 @@ func (c Config) Validate() error {
 	}
 	if c.Learning.Persistence.ShutdownTimeoutMS < 100 || c.Learning.Persistence.ShutdownTimeoutMS > 30000 {
 		validationErrors = append(validationErrors, errors.New("learning.persistence.shutdown_timeout_ms must be between 100 and 30000"))
+	}
+	if c.Learning.Persistence.DirectSuggestionSessions < 2 || c.Learning.Persistence.DirectSuggestionSessions > 1000 {
+		validationErrors = append(validationErrors, errors.New("learning.persistence.direct_suggestion_sessions must be between 2 and 1000"))
+	}
+	if c.Learning.Persistence.ProxySuggestionSessions < 2 || c.Learning.Persistence.ProxySuggestionSessions > 1000 {
+		validationErrors = append(validationErrors, errors.New("learning.persistence.proxy_suggestion_sessions must be between 2 and 1000"))
 	}
 	if _, err := privacy.New(c.Privacy.Mode, c.Privacy.NeverDirectProbe); err != nil {
 		validationErrors = append(validationErrors, fmt.Errorf("privacy: %w", err))

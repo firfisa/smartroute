@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/firfisa/smartroute/internal/learning"
 	"github.com/firfisa/smartroute/internal/model"
 )
 
@@ -61,6 +62,41 @@ func TestRecorderHashesSensitiveTargetFields(t *testing.T) {
 	}
 	if event.LearningReason != "ephemeral_proxy_preference_promoted" || event.DurableReason != "durable_evidence_queued" || event.PolicyState != model.StateProxyPreferred {
 		t.Fatalf("stored learning metadata = %+v", event)
+	}
+}
+
+func TestRecorderStoresDurableAssessmentWithoutCleartextTarget(t *testing.T) {
+	directory := t.TempDir()
+	recorder, err := New(testOptions(directory))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assessment := learning.DurableAssessment{
+		State: learning.DurableStateProxySuggested, SuggestedPath: model.PathProxy,
+		ReasonCode:   learning.ReasonDurableProxySuggested,
+		Evidence:     learning.DurableEvidenceSummary{ProxyWins: 3, ProxySessions: 2},
+		RequiredWins: 3, RequiredSessions: 2,
+	}
+	target := model.Target{NetworkProfileID: "private-profile", Hostname: "secret.example", Port: 443, Transport: model.TransportTCP}
+	if err := recorder.Record(Event{
+		EventType: learning.EventTypeDurableAssessment, Target: &target,
+		ReasonCode: assessment.ReasonCode, DurableAssessment: &assessment,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := recorder.Close(); err != nil {
+		t.Fatal(err)
+	}
+	line := readOnlyJSONL(t, directory)
+	if strings.Contains(line, target.Hostname) || strings.Contains(line, target.NetworkProfileID) {
+		t.Fatalf("assessment record contains cleartext target: %s", line)
+	}
+	var event storedEvent
+	if err := json.Unmarshal([]byte(line), &event); err != nil {
+		t.Fatal(err)
+	}
+	if event.DurableAssessment == nil || event.DurableAssessment.SuggestedPath != model.PathProxy || event.DurableAssessment.Evidence.ProxySessions != 2 {
+		t.Fatalf("stored assessment = %+v", event.DurableAssessment)
 	}
 }
 
