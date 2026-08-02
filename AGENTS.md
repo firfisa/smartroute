@@ -24,6 +24,7 @@ Current scope:
 - Opt-in SQLite strong-evidence collection uses a bounded asynchronous writer; durable policy application waits for cross-session evaluation, backup/restore, health gates, and user controls.
 - Durable evidence status and verified backup/restore-to-new-path are local lifecycle tools; destructive clear and automatic activation remain out of scope.
 - Cross-session durable assessment is shadow-only and requires both strong-win and independent-session thresholds; any retained opposite-direction evidence is conflicting.
+- Aggregate Shadow reports omit target keys and identities and use only targets with retained strong paired evidence as their explicit denominator.
 
 Out of scope until an ADR changes it:
 
@@ -64,6 +65,7 @@ These rules must not be weakened silently:
 24. Durable evidence collection defaults off and is shadow-only; enqueue and runtime write failure must never delay, reject, replay, or reroute the current connection, and stored evidence cannot select a route until a later ADR authorizes it.
 25. Durable backups include the target-HMAC key and are as sensitive as the live store; status/backup must not create or migrate the source, incomplete artifacts must be rejected, and restore must never overwrite or automatically activate a database.
 26. A durable `direct_suggested` or `proxy_suggested` assessment is diagnostic only and must never feed `PreferredPath`, candidate order, generated rules, or an applied-policy row; retained evidence in both directions produces no suggestion.
+27. Aggregate reports must never expose target keys or imply that targets with strong evidence represent all traffic; suggestion coverage alone is not proof of latency, reliability, or proxy-usage improvement.
 
 ## 4. Repository map
 

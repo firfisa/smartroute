@@ -304,6 +304,18 @@ func TestRunLearningStatusAndBackupExistingStore(t *testing.T) {
 	if assessment.ReasonCode != learning.ReasonDurableProxyIncomplete || assessment.Evidence.ProxyWins != 1 || strings.Contains(evaluateOutput.String(), target.Hostname) {
 		t.Fatalf("assessment = %+v output=%s", assessment, evaluateOutput.String())
 	}
+	var reportOutput bytes.Buffer
+	if err := run([]string{"learning", "report", "-config", configPath}, &reportOutput, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	var report learningReportResult
+	if err := json.Unmarshal(reportOutput.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Report.TargetsWithEvidence != 1 || report.Report.ProxyEvidence != 1 || report.Report.InsufficientTargets != 1 ||
+		strings.Contains(reportOutput.String(), target.Hostname) || strings.Contains(reportOutput.String(), target.NetworkProfileID) {
+		t.Fatalf("report = %+v output=%s", report, reportOutput.String())
+	}
 
 	destination := filepath.Join(t.TempDir(), "backup")
 	var backupOutput bytes.Buffer

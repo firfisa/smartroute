@@ -66,3 +66,30 @@ func TestDurableEvaluatorRejectsInvalidConfigurationAndEvidence(t *testing.T) {
 		}
 	}
 }
+
+func TestDurableEvaluatorBuildsAggregateReport(t *testing.T) {
+	evaluator := testDurableEvaluator(t)
+	report, err := evaluator.Report([]DurableEvidenceSummary{
+		{ProxyWins: 1, ProxySessions: 1},
+		{DirectWins: 1, DirectSessions: 1, ProxyWins: 1, ProxySessions: 1},
+		{DirectWins: 5, DirectSessions: 3},
+		{ProxyWins: 3, ProxySessions: 2},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.TargetsWithEvidence != 4 || report.EvidenceRows != 11 || report.DirectEvidence != 6 || report.ProxyEvidence != 5 ||
+		report.InsufficientTargets != 1 || report.ConflictingTargets != 1 ||
+		report.DirectSuggestedTargets != 1 || report.ProxySuggestedTargets != 1 ||
+		report.DirectRequiredWins != 5 || report.ProxyRequiredSessions != 2 ||
+		report.ReasonCounts[ReasonDurableProxyIncomplete] != 1 || report.ReasonCounts[ReasonDurableConflict] != 1 {
+		t.Fatalf("report = %+v", report)
+	}
+	empty, err := evaluator.Report(nil)
+	if err != nil || empty.TargetsWithEvidence != 0 || empty.ReasonCounts == nil {
+		t.Fatalf("empty report=%+v error=%v", empty, err)
+	}
+	if _, err := evaluator.Report([]DurableEvidenceSummary{{}}); err == nil {
+		t.Fatal("zero-evidence target report error = nil")
+	}
+}

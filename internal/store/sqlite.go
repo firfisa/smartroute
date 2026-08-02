@@ -313,6 +313,37 @@ GROUP BY direction`, targetKey, since.UTC().UnixMilli())
 	return summary, rows.Err()
 }
 
+// ListTargetSummaries returns one aggregate per pseudonymous exact target but
+// deliberately omits both the target key and cleartext identity.
+func (s *Store) ListTargetSummaries(ctx context.Context, since time.Time) ([]Summary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT
+    SUM(CASE WHEN direction = 'direct' THEN 1 ELSE 0 END),
+    SUM(CASE WHEN direction = 'proxy' THEN 1 ELSE 0 END),
+    COUNT(DISTINCT CASE WHEN direction = 'direct' THEN session_id END),
+    COUNT(DISTINCT CASE WHEN direction = 'proxy' THEN session_id END)
+FROM strong_evidence
+WHERE observed_at_ms >= ?
+GROUP BY target_key
+ORDER BY target_key`, since.UTC().UnixMilli())
+	if err != nil {
+		return nil, fmt.Errorf("list durable target summaries: %w", err)
+	}
+	defer rows.Close()
+	var summaries []Summary
+	for rows.Next() {
+		var summary Summary
+		if err := rows.Scan(&summary.DirectWins, &summary.ProxyWins, &summary.DirectSessions, &summary.ProxySessions); err != nil {
+			return nil, fmt.Errorf("scan durable target summary: %w", err)
+		}
+		summaries = append(summaries, summary)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate durable target summaries: %w", err)
+	}
+	return summaries, nil
+}
+
 func (s *Store) PruneEvidence(ctx context.Context, before time.Time) (int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

@@ -344,6 +344,8 @@ ADR-0014 增加独立运维面：`learning status` 只读打开且拒绝迁移�
 
 ADR-0015 在强证据异步写入成功后生成跨会话 Shadow assessment：Direct/Proxy 分别同时满足 win 阈值与 distinct-session 阈值才产生 exact-target 建议；保留期内双向证据一律 `conflicting`。评估查询位于 writer goroutine，不进入连接关键路径，结果只进入事件/受限记录器和只读 `learning evaluate`，不进入 `PreferredPath` 或规则生成。
 
+ADR-0016 增加只读 `learning report`：SQLite 内按 target HMAC 分组，但接口不返回 HMAC，仅把每个精确目标的方向 wins/session counts 交给同一 evaluator，再输出不足、冲突、Direct/Proxy 建议及 reason counts。报告分母明确是“保留期内拥有强配对证据的目标”，不是全部流量。
+
 未来持久策略、网络画像与人工规则可能扩展为：
 
 ```text

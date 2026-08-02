@@ -96,6 +96,8 @@ ADR-0014 implements read-only status plus a verified snapshot lifecycle. `learni
 
 ADR-0015 adds `durable_learning_assessment` after a strong row is written. Its target follows the recorder's HMAC/optional-cleartext policy; its body contains only aggregate wins, distinct sessions, thresholds, state, reason, and optional suggested path. Both-direction evidence is always conflicting. Trial analysis may measure suggestion coverage and contradiction rate, but must not label a suggestion as an applied route or claim latency improvement from it. `learning evaluate` accepts an exact hostname locally and does not echo it, but command-line history/process-list exposure must be considered.
 
+ADR-0016 adds identity-free `learning report`. It groups inside SQLite and never returns target keys. Record `generated_at`, `since`, retention and thresholds with every captured report. The trial worksheet must label `targets_with_evidence` as a selected strong-pair sample; do not divide it by all visited domains unless an independently measured total-target denominator exists. Report suggestion/conflict counts alongside connection success, latency and proxy-usage baselines, never as a substitute for them.
+
 Operational commands:
 
 ```bash

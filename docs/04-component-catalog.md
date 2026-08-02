@@ -1,6 +1,6 @@
 # SmartRoute Component and Interface Catalog
 
-Version: v0.7
+Version: v0.8
 Last updated: 2026-08-02
 
 This file is the maintained registry for components, interfaces, commands, configuration fields, and decision reason codes. Status is explicit: `implemented`, `experimental`, or `planned`.
@@ -123,6 +123,7 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `Engine.PreferredPath(target)` | `internal/learning` | Scoped target | Live Direct/Proxy preference or empty | Returns empty in shadow/unknown/unstable/expired/invalid cases | experimental | Shadow, scope and TTL tests |
 | `learning.NewDurableEvaluator(config)` | `internal/learning` | Direct/Proxy win and distinct-session thresholds | Pure deterministic Shadow evaluator | Rejects thresholds below 2 | experimental | Durable configuration and matrix tests |
 | `DurableEvaluator.Evaluate(summary)` | `internal/learning` | Directional wins and distinct sessions | Insufficient, conflicting, or exact-path suggestion with evidence/reason | Rejects negative/impossible summaries; any evidence in both directions conflicts | experimental | Full outcome matrix and invalid-evidence tests |
+| `DurableEvaluator.Report(summaries)` | `internal/learning` | Identity-free exact-target summaries | Aggregate category/evidence/reason/threshold counts | Rejects zero-evidence or invalid target summaries; never returns identity | experimental | Category matrix, empty and invalid-report tests |
 | `Supervisor.Run(ctx)` | `internal/supervisor` | Context, service specs, starter, restart policy | Runs independent monitors until cancellation | Rejects invalid/duplicate services; runtime failures trigger capped restart rather than stopping siblings | experimental | Restart, start-error, independence, cancellation tests |
 | `CommandStarter.Start(ctx, service)` | `internal/supervisor` | Executable/args and synchronized stdout/stderr | Started child implementing `Wait()` | Parent cancellation interrupts child; `WaitDelay` kills after grace period | experimental | Supervisor consumers; platform process integration pending |
 | `observe.New(options)` | `internal/observe` | Local directory, source and capacity/privacy limits | Source-specific recorder | Rejects unsafe paths/limits and invalid salt; initialization errors are explicit | experimental | Recorder validation/privacy tests |
@@ -133,6 +134,7 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `Store.StartSession(ctx, id, time)` | `internal/store` | Safe local session ID and timestamp | Durable independent-session row | Rejects invalid/duplicate sessions and cancellation | experimental | Session and foreign-key tests |
 | `Store.AppendStrongEvidence(...)` | `internal/store` | Target, known session, winner/opposite pair, timestamp | Whether a schema-v1 row was written | Shared learning gate skips weak/incomplete pairs; unsafe failure tokens and DB errors are explicit | experimental | Strong/weak/privacy/concurrent-write tests |
 | `Store.ListEvidence/Summarize` | `internal/store` | Target and lower timestamp bound | Ordered rows or wins/distinct-session counts | Invalid stored stages/directions fail visibly | experimental | Scope, summary and corrupt-row tests |
+| `Store.ListTargetSummaries(ctx, since)` | `internal/store` | Retention cutoff | One wins/session summary per exact target | Groups by HMAC internally but returns no key or identity; honors cancellation | experimental | Scope, cutoff, cancellation and JSON privacy tests |
 | `Store.PruneEvidence/Checkpoint` | `internal/store` | Retention cutoff or context | Deleted evidence count or compact WAL boundary | Transactionally removes empty sessions; errors never imply automatic replacement | experimental | Evidence/session pruning and privacy-file tests |
 | `store.NewAsyncWriter(...)` | `internal/store` | Store, session, queue capacity, optional error callback | Background strong-evidence writer | Rejects unsafe construction; individual append errors are counted and later writes continue | experimental | Queue bounds, errors, skips and close tests |
 | `store.NewAsyncWriterWithOptions(...)` | `internal/store` | Store, session, queue/error/written callbacks | Background writer with post-write assessment hook | Hook runs only after persisted rows; hook errors/panics are counted without undoing writes or stopping later work | experimental | Callback selection and error/panic-isolation tests |
@@ -162,6 +164,7 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `smartroute observations status\|pause\|resume\|clear\|export` | experimental | Operate the configured local recorder directory | None | Status/control, confirmed deletion, or redacted file export |
 | `smartroute learning status` | experimental | Inspect configured durable evidence health and aggregates | None | Missing state is not created; existing current schema is opened read-only |
 | `smartroute learning evaluate` | experimental | Evaluate one exact target against retained cross-session evidence | None | Opens store read-only; omits target from output; never applies suggestion |
+| `smartroute learning report` | experimental | Aggregate retained target assessments for trial analysis | None | Opens read-only and emits no target identity/key; denominator is targets with strong evidence |
 | `smartroute learning backup` | experimental | Snapshot configured evidence into a new private directory | None beyond local SQLite locks | Includes DB/key/manifest; never a redacted export |
 | `smartroute learning verify-backup` | experimental | Validate checksums and SQLite contents on a temporary copy | None | Leaves source snapshot unchanged |
 | `smartroute learning restore` | experimental | Restore a snapshot to a new database path | None | Refuses every existing DB/key/marker; never updates config or activates policy |

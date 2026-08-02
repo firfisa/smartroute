@@ -63,6 +63,7 @@ All notable project changes are recorded here. The project has not published a r
 - Transactional retention now removes empty historical sessions, with runtime startup reordered to prune before creating the current session.
 - Deterministic cross-session Shadow assessment requiring both strong-win and distinct-session thresholds, with conservative any-opposite-direction conflict handling under ADR-0015.
 - Asynchronous `durable_learning_assessment` events after successful writes plus read-only exact-target `smartroute learning evaluate`; neither feeds route selection.
+- Identity-free `smartroute learning report` with in-database exact-target grouping, shared evaluator semantics, explicit retention/thresholds, and insufficient/conflicting/Direct/Proxy aggregate counts under ADR-0016.
 
 ### Known limitations
 

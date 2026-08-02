@@ -60,6 +60,7 @@ flowchart LR
 | SQLite 强证据存储与运行时写入 | 已实现：默认关闭、HMAC 目标键、独立会话、异步有界队列、迁移/校验/裁剪；仅存证据，不应用持久策略 |
 | 持久证据生命周期 | 已实现：只读状态、一致性在线备份、临时副本验证、恢复到新路径；不覆盖、不自动激活 |
 | 跨会话 Shadow 评估 | 已实现：强证据次数 + 独立 Session 双阈值；双向证据判冲突；只发建议事件，不改变路由 |
+| 隐私安全的 Shadow 汇总 | 已实现：按精确目标在库内分组，只输出不足/冲突/Direct/Proxy 数量与阈值，不输出目标 HMAC |
 | 独立 Mihomo listener 拓扑 | v1.19.29 已验证强制 Direct/Proxy、域名保留和循环规避 |
 | Mihomo HTTPS/TLS 自适应路径 | macOS arm64 与 Linux amd64/v1.19.29 已验证 Direct 无 ServerHello 后由 Proxy 恢复并提交 L3 |
 | 活动 Clash Verge Rev 集成 | 尚未写入或重载；留待配合下的真实试用 |
@@ -136,6 +137,8 @@ go run ./cmd/smartroute learning evaluate \
   -config configs/smartroute.example.json \
   -network-profile manual-experimental \
   -hostname example.com -port 443
+go run ./cmd/smartroute learning report \
+  -config configs/smartroute.example.json
 go run ./cmd/smartroute learning backup \
   -config configs/smartroute.example.json \
   -destination /tmp/smartroute-learning-backup
@@ -149,6 +152,8 @@ go run ./cmd/smartroute learning restore \
 备份目录包含数据库密钥，因此与原数据库同等敏感，不是脱敏导出。恢复命令只写入全新路径，不会修改配置或自动启用恢复结果；失败的备份/恢复保留 `INCOMPLETE` 标记并拒绝后续使用。
 
 `learning evaluate` 与运行期异步评估共用同一状态机。Direct 默认要求 5 次强证据、至少 3 个 Session；Proxy 默认要求 3 次、至少 2 个 Session。保留期内两个方向只要都出现强证据，就输出 `conflicting` 而不是多数决。`direct_suggested`/`proxy_suggested` 目前只是分析结果，不会进入候选顺序或生成规则。命令不会回显目标，但显式 hostname 参数仍可能留在本地 shell history 或短暂出现在进程列表中。
+
+`learning report` 不需要 hostname，且不会输出目标明文或 HMAC；它统计保留期内有强配对证据的目标分别处于不足、冲突、Direct 建议或 Proxy 建议的数量。这个分母不包含全部访问目标，因此报告只能衡量“已取得强证据样本”的覆盖结构，不能单独证明延迟或成功率已经提升。
 
 ## 独立测试环境
 

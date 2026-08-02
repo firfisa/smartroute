@@ -45,6 +45,7 @@ required_files=(
   "docs/adr/0013-opt-in-async-durable-evidence-writer.md"
   "docs/adr/0014-durable-evidence-lifecycle.md"
   "docs/adr/0015-cross-session-shadow-assessment.md"
+  "docs/adr/0016-privacy-safe-shadow-report.md"
   "configs/smartroute.example.json"
   "upstreams.lock"
 )
@@ -163,6 +164,13 @@ if ! matches 'direct_suggestion_sessions' "${project_root}/configs/smartroute.ex
   ! matches 'durable_learning_assessment' "${project_root}/docs/08-observation-and-live-trial.md" "${project_root}/docs/adr/0015-cross-session-shadow-assessment.md" ||
   ! matches 'must never feed.*PreferredPath' "${project_root}/AGENTS.md"; then
   echo "cross-session shadow assessment contract is missing" >&2
+  exit 1
+fi
+
+if ! matches 'learning report' "${project_root}/README.md" "${project_root}/docs/04-component-catalog.md" ||
+  ! matches 'target keys' "${project_root}/docs/adr/0016-privacy-safe-shadow-report.md" ||
+  ! matches 'must never expose target keys' "${project_root}/AGENTS.md"; then
+  echo "privacy-safe Shadow report contract is missing" >&2
   exit 1
 fi
 

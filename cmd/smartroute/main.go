@@ -563,9 +563,16 @@ type learningBackupResult struct {
 	Manifest    store.BackupManifest `json:"manifest"`
 }
 
+type learningReportResult struct {
+	GeneratedAt    time.Time              `json:"generated_at"`
+	Since          time.Time              `json:"since"`
+	RetentionHours int                    `json:"retention_hours"`
+	Report         learning.DurableReport `json:"report"`
+}
+
 func runLearning(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("learning requires status, evaluate, backup, verify-backup, or restore")
+		return errors.New("learning requires status, evaluate, report, backup, verify-backup, or restore")
 	}
 	action := args[0]
 	flags := flag.NewFlagSet("learning "+action, flag.ContinueOnError)
@@ -652,6 +659,40 @@ func runLearning(args []string, stdout, stderr io.Writer) error {
 		encoder := json.NewEncoder(stdout)
 		encoder.SetIndent("", "  ")
 		return encoder.Encode(assessment)
+	case "report":
+		cfg, err := config.Load(*configPath)
+		if err != nil {
+			return err
+		}
+		evidenceStore, err := openExistingLearningStore(context.Background(), cfg.Learning.Persistence.DatabasePath)
+		if err != nil {
+			return err
+		}
+		defer evidenceStore.Close()
+		generatedAt := time.Now().UTC()
+		since := generatedAt.Add(-cfg.LearningEvidenceRetention())
+		storedSummaries, err := evidenceStore.ListTargetSummaries(context.Background(), since)
+		if err != nil {
+			return err
+		}
+		summaries := make([]learning.DurableEvidenceSummary, 0, len(storedSummaries))
+		for _, summary := range storedSummaries {
+			summaries = append(summaries, durableSummary(summary))
+		}
+		evaluator, err := durableEvaluatorFromConfig(cfg)
+		if err != nil {
+			return err
+		}
+		report, err := evaluator.Report(summaries)
+		if err != nil {
+			return err
+		}
+		encoder := json.NewEncoder(stdout)
+		encoder.SetIndent("", "  ")
+		return encoder.Encode(learningReportResult{
+			GeneratedAt: generatedAt, Since: since,
+			RetentionHours: cfg.Learning.Persistence.RetentionHours, Report: report,
+		})
 	case "verify-backup":
 		if *source == "" {
 			return errors.New("learning verify-backup requires -source")
@@ -870,6 +911,7 @@ Usage:
   smartroute observations status|pause|resume|clear|export [-config path]
   smartroute learning status [-config path]
   smartroute learning evaluate -network-profile label -hostname host -port port [-transport tcp|udp] [-config path]
+  smartroute learning report [-config path]
   smartroute learning backup -destination new-directory [-config path]
   smartroute learning verify-backup -source backup-directory
   smartroute learning restore -source backup-directory -destination new-database

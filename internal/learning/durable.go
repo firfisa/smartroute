@@ -49,6 +49,22 @@ type DurableAssessmentEvent struct {
 	Assessment DurableAssessment `json:"assessment"`
 }
 
+type DurableReport struct {
+	TargetsWithEvidence    int            `json:"targets_with_evidence"`
+	EvidenceRows           int            `json:"evidence_rows"`
+	DirectEvidence         int            `json:"direct_evidence"`
+	ProxyEvidence          int            `json:"proxy_evidence"`
+	InsufficientTargets    int            `json:"insufficient_targets"`
+	ConflictingTargets     int            `json:"conflicting_targets"`
+	DirectSuggestedTargets int            `json:"direct_suggested_targets"`
+	ProxySuggestedTargets  int            `json:"proxy_suggested_targets"`
+	ReasonCounts           map[string]int `json:"reason_counts"`
+	DirectRequiredWins     int            `json:"direct_required_wins"`
+	DirectRequiredSessions int            `json:"direct_required_sessions"`
+	ProxyRequiredWins      int            `json:"proxy_required_wins"`
+	ProxyRequiredSessions  int            `json:"proxy_required_sessions"`
+}
+
 type DurableEvaluator struct {
 	config DurableEvaluatorConfig
 }
@@ -102,4 +118,39 @@ func (e *DurableEvaluator) Evaluate(summary DurableEvidenceSummary) (DurableAsse
 		assessment.ReasonCode = ReasonDurableProxyIncomplete
 	}
 	return assessment, nil
+}
+
+func (e *DurableEvaluator) Report(summaries []DurableEvidenceSummary) (DurableReport, error) {
+	report := DurableReport{
+		ReasonCounts:       make(map[string]int),
+		DirectRequiredWins: e.config.DirectWins, DirectRequiredSessions: e.config.DirectSessions,
+		ProxyRequiredWins: e.config.ProxyWins, ProxyRequiredSessions: e.config.ProxySessions,
+	}
+	for _, summary := range summaries {
+		if summary.DirectWins+summary.ProxyWins == 0 {
+			return DurableReport{}, errors.New("durable target report summary must contain evidence")
+		}
+		assessment, err := e.Evaluate(summary)
+		if err != nil {
+			return DurableReport{}, err
+		}
+		report.TargetsWithEvidence++
+		report.DirectEvidence += summary.DirectWins
+		report.ProxyEvidence += summary.ProxyWins
+		report.EvidenceRows += summary.DirectWins + summary.ProxyWins
+		report.ReasonCounts[assessment.ReasonCode]++
+		switch assessment.State {
+		case DurableStateInsufficient:
+			report.InsufficientTargets++
+		case DurableStateConflicting:
+			report.ConflictingTargets++
+		case DurableStateDirectSuggested:
+			report.DirectSuggestedTargets++
+		case DurableStateProxySuggested:
+			report.ProxySuggestedTargets++
+		default:
+			return DurableReport{}, errors.New("durable assessment has unknown state")
+		}
+	}
+	return report, nil
 }

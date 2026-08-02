@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -157,6 +158,43 @@ func TestSummaryCountsDistinctSessionsAndScopesTarget(t *testing.T) {
 		if err != nil || got != (Summary{}) {
 			t.Fatalf("isolated target=%+v summary=%+v err=%v", isolated, got, err)
 		}
+	}
+}
+
+func TestListTargetSummariesOmitsIdentityAndHonorsCutoff(t *testing.T) {
+	store, _ := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for _, session := range []string{"session-a", "session-b"} {
+		if err := store.StartSession(ctx, session, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first := storeTarget("private-home", "secret.example", 443)
+	second := storeTarget("private-home", "other.example", 443)
+	for _, session := range []string{"session-a", "session-b"} {
+		if _, err := store.AppendStrongEvidence(ctx, first, session, storeWinner(model.PathProxy), storeFailure(model.PathDirect, model.StageOutbound, "failed"), now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.AppendStrongEvidence(ctx, second, "session-a", storeWinner(model.PathDirect), storeFailure(model.PathProxy, model.StageOutbound, "failed"), now.Add(-2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	summaries, err := store.ListTargetSummaries(ctx, now.Add(-time.Hour))
+	if err != nil || len(summaries) != 1 || summaries[0].ProxyWins != 2 || summaries[0].ProxySessions != 2 {
+		t.Fatalf("summaries=%+v error=%v", summaries, err)
+	}
+	encoded, err := json.Marshal(summaries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encoded, []byte(first.Hostname)) || bytes.Contains(encoded, []byte(first.NetworkProfileID)) || bytes.Contains(encoded, []byte("target_key")) {
+		t.Fatalf("summary output contains identity: %s", encoded)
+	}
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := store.ListTargetSummaries(canceled, time.Time{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled summary error = %v", err)
 	}
 }
 

@@ -63,6 +63,7 @@ MVP 不是为了证明“能够自动写 YAML”，而是回答五个可证伪�
 | SQLite 强证据 schema v1 与异步 writer | 实验性完成、默认关闭且 shadow-only | HMAC 目标键、独立会话、迁移/重开/并发、损坏/未来版本拒绝、裁剪、明文扫描、队列背压/排空、disabled 无文件 |
 | 持久证据生命周期 | 实验性完成 | 缺失不创建、只读无迁移、聚合状态、online backup、SHA-256 清单、临时副本验证、恢复到新路径、拒绝覆盖/不完整产物 |
 | 跨会话 Shadow 评估 | 实验性完成、不应用 | wins + distinct sessions 双阈值、无证据/不足/建议/双向冲突矩阵、异步事件、离线精确目标评估、路由零影响 |
+| Shadow 聚合报告 | 实验性完成 | 只读按目标分组、无 target key/身份输出、保留期 cutoff、类别/reason/阈值计数、明确样本分母 |
 | 域名形式目标保留 | 实验性完成 | `echo.test` 经 sidecar 和 fake gateway 断言 |
 | 隔离故障目标 | 第一批完成 | `go run ./cmd/smartroute-testlab` |
 | 独立 Mihomo listener 拓扑 | macOS arm64、Linux amd64/v1.19.29 已完成 | `make mihomo-lab`；临时目录、随机端口、独立子进程 |
@@ -90,6 +91,8 @@ MVP 不是为了证明“能够自动写 YAML”，而是回答五个可证伪�
 - 输出“如果启用 SmartRoute，理论上会改变哪些连接”。
 
 目标是先证明“次优路由比例”足够大。
+
+跨会话证据初步使用 `learning report` 统计强证据目标中的 suggestion coverage 与 conflict rate，但它不能替代全连接基线。最终判断仍必须将 bounded observation 中的连接成功率、端到端延迟、代理使用比例与静态基线配对比较。
 
 ### Phase 2：TCP/TLS Adaptive（2–4 周）
 
