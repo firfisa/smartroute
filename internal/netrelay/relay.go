@@ -2,12 +2,27 @@
 package netrelay
 
 import (
+	"context"
 	"io"
 	"net"
 	"sync"
 )
 
-func Bidirectional(left, right net.Conn) {
+// Bidirectional relays until both directions finish. Cancellation closes both
+// owned connections so a peer that never responds cannot outlive its server.
+func Bidirectional(ctx context.Context, left, right net.Conn) {
+	finished := make(chan struct{})
+	closerDone := make(chan struct{})
+	go func() {
+		defer close(closerDone)
+		select {
+		case <-ctx.Done():
+			_ = left.Close()
+			_ = right.Close()
+		case <-finished:
+		}
+	}()
+
 	var wait sync.WaitGroup
 	wait.Add(2)
 	copyDirection := func(dst, src net.Conn) {
@@ -20,4 +35,6 @@ func Bidirectional(left, right net.Conn) {
 	go copyDirection(right, left)
 	go copyDirection(left, right)
 	wait.Wait()
+	close(finished)
+	<-closerDone
 }

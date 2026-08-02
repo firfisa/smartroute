@@ -108,6 +108,8 @@ ADR-0019 adds random trial scoping. When recording is enabled, `supervise` gener
 
 ADR-0020 adds `trial preflight`. Both lab reports now carry a schema version and UTC generation time. Preflight strictly decodes their full contents, requires the exact non-duplicated scenario set and all isolation booleans to agree, verifies the pinned Mihomo version/build marker, and rejects reports older than 24 hours by default. It also requires observation recording to be enabled and paused, applies separate Direct/cleartext/ephemeral-auto acknowledgments, and matches a verified backup to any existing durable store. Warnings do not block readiness; failures do. The command does not pause/resume, create a backup, run a lab, inspect Clash, or authorize activation.
 
+ADR-0021 makes runtime shutdown ordering deterministic. Sidecar and Guard close pending handshakes and both relay endpoints when canceled, then wait for every accepted handler before returning. Only after that return may the supervisor-side process close its recorder and durable writer. This is an explicit stop-window interruption: it is not a route failure, must not enter learning, and cannot be transparently replayed.
+
 Operational commands:
 
 ```bash

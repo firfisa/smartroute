@@ -118,7 +118,7 @@ Evidence status:
 | Forced listeners, L1 gap, TLS L3 recovery | Passed on macOS arm64 and Linux amd64 with v1.19.29 |
 | Guard unit semantics | Passed with `net.Pipe`, including refused, wedged and dual-failure cases |
 | Guard engine stop/fallback/restart through Mihomo | Scenario code implemented; current sandbox blocked loopback bind before config validation, so a permitted macOS/Linux run is still required |
-| Guard/engine supervisor lifecycle | In-memory process abstraction passes restart, independence, backoff and cancellation race tests; child + Mihomo runtime fault run pending |
+| Guard/engine supervisor lifecycle | In-memory process abstraction passes restart, independence and backoff tests; Sidecar/Guard pending-handshake and relay cancellation/drain pass with `net.Pipe`; child + Mihomo runtime fault run pending |
 
 System-proxy and TUN validation will be a distinct, manual opt-in suite because those operations can affect the host network even when a separate config is used.
 

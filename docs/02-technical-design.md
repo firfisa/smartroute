@@ -1,6 +1,6 @@
 # SmartRoute 总体技术设计
 
-版本：v0.6
+版本：v0.7
 状态：供原型验证，不是最终实现规范
 
 ## 1. 设计目标
@@ -52,6 +52,8 @@ flowchart TB
 ```
 
 `smartroute supervise` 只拥有 SmartRoute 的 Guard 与 adaptive engine 子进程，不接管 Mihomo。引擎退出时 Guard 继续沿原策略兜底；Guard 退出时 supervisor 以 100ms 起、5s 封顶的指数退避恢复它。重启只改善后续连接，不能重放已经观察到 Guard/engine 故障的连接；supervisor 自身还需要未来的 launchd/systemd/Windows service 管理。详见 ADR-0008。
+
+Sidecar 与 Guard 的 `Serve` 生命周期覆盖监听器和全部已接受连接。父 context 取消或 accept 边界退出后，服务停止接纳新连接，关闭仍在 SOCKS/TLS 握手中的 inbound，并让 context-aware relay 同时关闭两端；所有 copy 协程和 handler 结束后 `Serve` 才返回。这样上层可以随后关闭 recorder/SQLite，但意味着显式停服会终止活跃连接，不会把它重放到另一条路径。详见 ADR-0021。
 
 本地观测记录由独立的 `internal/observe` 边界负责，默认关闭。启用后目标与网络画像默认使用带本地随机盐的 HMAC，engine、Guard、supervisor 各写自己的容量/时间受限 JSONL；暂停、恢复、显式清空和脱敏导出由 `smartroute observations` 管理。运行期写失败只产生一次有界告警，不改变路由；该记录器不是 SQLite 学习策略库。详见 ADR-0009。
 

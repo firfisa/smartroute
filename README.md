@@ -53,7 +53,7 @@ flowchart LR
 | Direct/Proxy 错峰竞争、取消 loser | 实验性实现 |
 | TCP sidecar relay 与 `serve` 命令 | 实验性实现 |
 | 独立 availability Guard 与 `guard` 命令 | 已实现单元测试；隔离 Mihomo 故障/恢复运行待复验 |
-| Guard/engine 独立进程 supervisor | 已实现本地 `supervise` 命令、独立重启和封顶退避；OS 服务集成待实现 |
+| Guard/engine 独立进程 supervisor | 已实现本地 `supervise`、独立重启和封顶退避；Sidecar/Guard 取消时会中断并排空所有已接受 handler 后退出；OS 服务集成待实现 |
 | 隐私安全的本地观测记录 | 已实现：默认关闭、目标 HMAC、容量/时间上限、暂停/清空/导出；真实试用尚未开启 |
 | 独立回环 Test Lab 与故障注入 | 已实现第一批场景 |
 | TLS readiness gate | 已实现：结构化 ServerHello 达到 L3，预读字节无损回放 |

@@ -73,6 +73,7 @@ MVP 不是为了证明“能够自动写 YAML”，而是回答五个可证伪�
 | adaptive engine 可用性 Guard | 单元与拓扑代码完成；隔离运行待复验 | 引擎拒绝/握手卡死时同连接回原策略；停止、回退、重启、恢复场景 |
 | Direct 探测隐私门控 | 实验性完成 | privacy-first、精确/后缀 deny、无效/缺失策略 fail-closed；Proxy-only 仍需 L3 |
 | Guard/engine 进程 supervisor | 实验性完成 | 独立启动/退出故障、连续失败退避、封顶、稳定窗口重置、父进程取消 |
+| 运行时连接关闭边界 | 实验性完成 | context 关闭 handshake/relay 两端，Sidecar/Guard 等待已接受 handler 全部退出；`net.Pipe` race 测试不依赖端口 |
 | 受限本地观测记录器 | 实验性完成 | 默认 HMAC、明文显式开关、暂停/恢复、容量与时间裁剪、确认清空、无盐导出、stdout 去重 |
 | 连接级 readiness 报告 | 实验性完成 | paused 严格读取、无身份聚合、Direct/Proxy 与 Guard 分母、decision/candidate p50/p95/p99；静态基线/应用结果/字节仍缺失 |
 | 受控试用 session scope | 实验性完成 | supervisor/Guard/engine 共享随机非语义 ID，重启保持；旧行显式 unscoped，聚合不输出 ID |

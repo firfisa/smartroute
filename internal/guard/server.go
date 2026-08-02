@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/firfisa/smartroute/internal/model"
@@ -68,20 +69,55 @@ func (s Server) Serve(ctx context.Context, listener net.Listener) error {
 	if s.AdaptiveTimeout <= 0 {
 		s.AdaptiveTimeout = 250 * time.Millisecond
 	}
+	serveCtx, cancel := context.WithCancel(ctx)
+	listenerClosed := make(chan struct{})
+	listenerCloserDone := make(chan struct{})
 	go func() {
-		<-ctx.Done()
-		_ = listener.Close()
+		defer close(listenerCloserDone)
+		select {
+		case <-serveCtx.Done():
+			_ = listener.Close()
+		case <-listenerClosed:
+		}
 	}()
+	defer func() {
+		cancel()
+		close(listenerClosed)
+		<-listenerCloserDone
+	}()
+	var handlers sync.WaitGroup
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
+			cancel()
+			handlers.Wait()
 			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
 				return nil
 			}
 			return fmt.Errorf("accept guard connection: %w", err)
 		}
-		go s.handle(ctx, conn)
+		handlers.Add(1)
+		go func() {
+			defer handlers.Done()
+			s.serveConnection(serveCtx, conn)
+		}()
 	}
+}
+
+func (s Server) serveConnection(ctx context.Context, conn net.Conn) {
+	finished := make(chan struct{})
+	closerDone := make(chan struct{})
+	go func() {
+		defer close(closerDone)
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-finished:
+		}
+	}()
+	s.handle(ctx, conn)
+	close(finished)
+	<-closerDone
 }
 
 func (s Server) handle(ctx context.Context, inbound net.Conn) {
@@ -151,7 +187,7 @@ func (s Server) handle(ctx context.Context, inbound net.Conn) {
 		event.AdaptiveFailure = adaptiveFailure
 	}
 	s.emit(event)
-	netrelay.Bidirectional(inbound, selected)
+	netrelay.Bidirectional(ctx, inbound, selected)
 }
 
 func (s Server) emit(event DecisionEvent) {
