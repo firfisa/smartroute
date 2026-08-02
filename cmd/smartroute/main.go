@@ -281,7 +281,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 			events.Emit(event, observe.Event{
 				EventType: event.EventType, Target: &event.Target, SelectedPath: event.SelectedPath,
 				ReasonCode: event.ReasonCode, PolicyReason: event.PolicyReason,
-				Observation: &observation, Committed: &committed,
+				Observation: &observation, OtherObservation: event.OtherObservation, Committed: &committed,
 			})
 		},
 		OnDiagnostic: func(event sidecar.DiagnosticEvent) {

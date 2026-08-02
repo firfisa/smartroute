@@ -43,6 +43,7 @@ flowchart LR
 | --- | --- |
 | 严格 JSON 配置与 loopback 安全校验 | 已实现 |
 | Direct/Proxy 成对观测决策矩阵 | 实验性实现 |
+| 运行时已完成反事实证据 | 已实现：只保留 winner 前已经终止的另一条路径；取消/未启动不算失败 |
 | 结构化理由、置信度和证据输出 | 实验性实现 |
 | SOCKS5 client/server、域名目标保留 | 实验性实现 |
 | Direct/Proxy 错峰竞争、取消 loser | 实验性实现 |
@@ -103,7 +104,7 @@ bash scripts/prepare-upstreams.sh mihomo  # first Mihomo Lab run only
 make mihomo-lab
 ```
 
-进程内场景覆盖 TCP 候选竞争、分片 ClientHello、early-data 拒绝、TLS loser 取消、ServerHello 预读回放、隐私禁止 Direct 时的 Proxy-only L3，以及自适应引擎不可用时的同连接原策略回退。既有 Mihomo 运行结果验证了强制 Direct/Proxy、域名保留、无递归、L1 ACK 假阳性，以及 HTTPS/TLS 从不可达 Direct 自动恢复到 Proxy 的 L3 提交；新增的 Guard 停止/恢复场景已进入隔离实验代码，仍需在允许环回子进程的 macOS/Linux 环境复验。这里的 L3 只证明收到了结构合法的 ServerHello，不代表证书或完整握手成功。详见 [独立测试环境](docs/07-isolated-test-lab.md)、[ADR-0006](docs/adr/0006-separate-availability-guard.md) 和 [ADR-0007](docs/adr/0007-enforce-direct-probe-privacy.md)。
+进程内场景覆盖 TCP 候选竞争、分片 ClientHello、early-data 拒绝、TLS loser 取消、ServerHello 预读回放、隐私禁止 Direct 时的 Proxy-only L3，以及自适应引擎不可用时的同连接原策略回退。成功竞争会保留 winner 之前已经完成的另一条路径证据，但不会等待 loser，也不会把取消或未启动当失败。既有 Mihomo 运行结果验证了强制 Direct/Proxy、域名保留、无递归、L1 ACK 假阳性，以及 HTTPS/TLS 从不可达 Direct 自动恢复到 Proxy 的 L3 提交；新增的 Guard 停止/恢复场景已进入隔离实验代码，仍需在允许环回子进程的 macOS/Linux 环境复验。这里的 L3 只证明收到了结构合法的 ServerHello，不代表证书或完整握手成功。详见 [独立测试环境](docs/07-isolated-test-lab.md)、[ADR-0007](docs/adr/0007-enforce-direct-probe-privacy.md) 和 [ADR-0010](docs/adr/0010-preserve-only-completed-counterfactual-evidence.md)。
 
 为适配真实环境，可以对活动 Clash Verge Rev 目录进行只读、脱敏的结构检查；现阶段仍禁止自动写入或重载。本地观测记录器已经就绪，但尚未对活动环境启用。待隔离 Mihomo 测试、备份和回滚验证完成后，再在用户配合下进入短时真实试用。详见 [观测与真实试用计划](docs/08-observation-and-live-trial.md) 和 [ADR-0009](docs/adr/0009-bounded-local-observation-recorder.md)。
 

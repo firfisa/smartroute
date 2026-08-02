@@ -93,14 +93,14 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `config.Load(path)` | `internal/config` | JSON file path | Validated `Config` | Wraps read/decode errors; rejects unknown fields | experimental | `TestLoadRejectsUnknownFields` |
 | `Config.Validate()` | `internal/config` | Config value | `error` | Joins all detectable validation errors | experimental | Config test table |
 | `Observation.Validate()` | `internal/model` | Observation value | `error` | Rejects invalid path/stage, negative latency, weak success, unclassified failure | experimental | Decision tests |
-| `Observation.MarshalJSON()` | `internal/model` | Observation value | JSON with stage names and millisecond latency | Returns JSON encoding errors | experimental | `TestObservationJSONUsesReadableUnits` |
+| `Observation.MarshalJSON/UnmarshalJSON()` | `internal/model` | Observation value or readable JSON | Symmetric stage names and millisecond latency | Decode rejects unknown stage and any invalid observation | experimental | Readable-units and round-trip tests |
 | `model.ParseStage(value)` | `internal/model` | Stage name | `Stage` | Rejects unknown stage | experimental | CLI parser tests |
 | `PairEvaluator.Evaluate(direct, proxy)` | `internal/decision` | Ordered paired observations | Explainable `Decision` | Rejects invalid observations/config | experimental | Outcome-matrix table |
 | `socks5.ReadRequest(rw)` | `internal/socks5` | SOCKS byte stream | Domain/IP target and port | Rejects auth, unsupported commands/address types, malformed input | experimental | Protocol and Test Lab tests |
 | `socks5.DialContext(ctx, endpoint, target)` | `internal/socks5` | Context, SOCKS endpoint, target | Connected tunnel | Closes on cancellation; returns handshake/reply errors | experimental | Test Lab |
 | `CandidateDialer.Dial(ctx, target)` | `internal/transport` | Context and target | Connection and observation | Implementer classifies cancellation/path error | experimental contract | Racer tests |
 | `SOCKS5Dialer.Dial(ctx, target)` | `internal/transport` | TCP target, fixed endpoint, declared `ReadinessStage` | SOCKS tunnel plus observation at the declared stage; default L1 | Classifies timeout, cancellation, SOCKS failure; rejects invalid stages | experimental | Test Lab and Mihomo Lab |
-| `Racer.Race(ctx, target)` | `internal/transport` | Two dialers, head-start, timeout, target | One owned winning connection and reason | Cancels/drains loser; returns `RaceError` when both fail | experimental | `internal/transport/racer_test.go` |
+| `Racer.Race(ctx, target)` | `internal/transport` | Two dialers, head-start, timeout, target | Winner plus optional already-completed `OtherObservation` | Never waits for loser; cancels/drains running loser; returns `RaceError` when both fail | experimental | Winner, prior-failure, canceled-loser and dual-failure tests |
 | `tlsinspect.ReadClientHello(reader, max)` | `internal/tlsinspect` | TLS byte stream and byte limit | Opaque validated ClientHello with exact record bytes | Rejects malformed, oversized, trailing first-flight data and `early_data` | experimental | Fragmentation/rejection table |
 | `tlsinspect.ReadServerHello(reader, max)` | `internal/tlsinspect` | TLS byte stream and byte limit | Structurally valid ServerHello plus exact consumed records | Classifies alerts, truncation, malformed and unexpected messages | experimental | Fragmentation/alert tests |
 | `ReadinessGate.Await(ctx, conn, target)` | `internal/transport` | Context, candidate connection, target | Stage, failure class and prefetched bytes | Must not lose or unsafely replay consumed bytes | experimental contract | TLS gate tests |
@@ -227,7 +227,7 @@ Guard availability reasons:
 | `candidate.ready` | Readiness gate | path, stage, latency | Decision engine | planned |
 | `candidate.failed` | Dialer/gate | path, stage, failure class | Decision engine | planned |
 | `candidate.canceled` | Racer | path, cancellation reason | Metrics | planned |
-| `decision` | Sidecar/decision engine | `event_type`, target, selected path, reason, optional `policy_reason`, observation, `committed` | CLI/recorder/UI | experimental `DecisionEvent`; JSONL schema v1 implemented |
+| `decision` | Sidecar/decision engine | `event_type`, target, selected path, reason, optional `policy_reason`, winner `observation`, optional completed `other_observation`, `committed` | CLI/recorder/UI | experimental `DecisionEvent`; JSONL schema v1 implemented |
 | `diagnostic` | Sidecar | `event_type`, target, reason, failure class, optional Direct/Proxy failures and `policy_reason` | CLI/debug | experimental `DiagnosticEvent`; no payload bytes |
 | `guard_decision` | Guard | `event_type`, target, selected lane, reason, bounded failure classes, `committed` | CLI/recorder/UI | experimental; JSONL schema v1 implemented, no payload bytes |
 | `supervisor` | Supervisor | `event_type`, service, state, attempt, bounded failure class, optional `backoff_ms` | CLI/recorder/operator | experimental; states include `started`, `start_failed`, `exited`, `restart_scheduled`, `stopped` |

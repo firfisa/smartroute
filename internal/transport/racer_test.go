@@ -83,10 +83,49 @@ func TestRacerProxyWinsAndCancelsDirect(t *testing.T) {
 	if result.Observation.Path != model.PathProxy || result.ReasonCode != ReasonProxyCandidateWon {
 		t.Fatalf("Race() = %+v", result)
 	}
+	if result.OtherObservation != nil {
+		t.Fatalf("canceled in-flight Direct was reported as completed evidence: %+v", result.OtherObservation)
+	}
 	select {
 	case <-directCanceled:
 	case <-time.After(time.Second):
 		t.Fatal("Direct candidate was not canceled")
+	}
+}
+
+func TestRacerProxySuccessPreservesPriorDirectFailure(t *testing.T) {
+	direct := &controlledDialer{path: model.PathDirect, failure: "direct_reset"}
+	proxy := &controlledDialer{path: model.PathProxy, delay: time.Millisecond}
+	racer := Racer{Direct: direct, Proxy: proxy, HeadStart: 50 * time.Millisecond, Timeout: time.Second}
+
+	result, err := racer.Race(context.Background(), testTarget())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Conn.Close()
+	if result.Observation.Path != model.PathProxy || result.OtherObservation == nil {
+		t.Fatalf("Race() = %+v", result)
+	}
+	if result.OtherObservation.Path != model.PathDirect || result.OtherObservation.Success || result.OtherObservation.FailureClass != "direct_reset" {
+		t.Fatalf("other observation = %+v", result.OtherObservation)
+	}
+}
+
+func TestRacerDirectSuccessPreservesPriorProxyFailure(t *testing.T) {
+	direct := &controlledDialer{path: model.PathDirect, delay: 30 * time.Millisecond}
+	proxy := &controlledDialer{path: model.PathProxy, failure: "proxy_unavailable"}
+	racer := Racer{Direct: direct, Proxy: proxy, HeadStart: 5 * time.Millisecond, Timeout: time.Second}
+
+	result, err := racer.Race(context.Background(), testTarget())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Conn.Close()
+	if result.Observation.Path != model.PathDirect || result.OtherObservation == nil {
+		t.Fatalf("Race() = %+v", result)
+	}
+	if result.OtherObservation.Path != model.PathProxy || result.OtherObservation.Success || result.OtherObservation.FailureClass != "proxy_unavailable" {
+		t.Fatalf("other observation = %+v", result.OtherObservation)
 	}
 }
 

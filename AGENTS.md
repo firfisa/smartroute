@@ -54,6 +54,7 @@ These rules must not be weakened silently:
 16. `privacy-first`, matching `never_direct_probe` entries, invalid targets, and missing runtime policy must open zero Direct candidates; privacy denial still requires the Proxy path to meet its protocol readiness gate.
 17. Guard and adaptive engine are supervised independently; restart shortens future failure windows but never justifies replaying the connection that observed a process failure, and supervisor failure requires an external service manager.
 18. Persistent observation is opt-in and capacity bounded; target/profile identity is pseudonymous by default, raw events are not duplicated to stdout while recording, and recorder failure never changes a routing outcome.
+19. A successful race may expose the other path only when that path completed before selection; canceled, still-running, and unstarted candidates are never learning evidence, and the winner is never delayed to manufacture a pair.
 
 ## 4. Repository map
 

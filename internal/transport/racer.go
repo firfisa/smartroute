@@ -18,9 +18,10 @@ const (
 
 // RaceResult owns the selected connection. The caller must close it.
 type RaceResult struct {
-	Conn        net.Conn
-	Observation model.Observation
-	ReasonCode  string
+	Conn             net.Conn
+	Observation      model.Observation
+	OtherObservation *model.Observation
+	ReasonCode       string
 }
 
 // RaceError reports both terminal candidate observations when no path became
@@ -104,7 +105,11 @@ func (r Racer) Race(ctx context.Context, target model.Target) (RaceResult, error
 				}
 				cancel()
 				drainLosers(results, started-received)
-				return RaceResult{Conn: result.conn, Observation: result.observation, ReasonCode: reason}, nil
+				return RaceResult{
+					Conn: result.conn, Observation: result.observation,
+					OtherObservation: completedOtherObservation(observations, result.observation.Path),
+					ReasonCode:       reason,
+				}, nil
 			}
 
 			if result.observation.Path == model.PathDirect && !proxyStarted {
@@ -127,6 +132,19 @@ func (r Racer) Race(ctx context.Context, target model.Target) (RaceResult, error
 			}
 		}
 	}
+}
+
+func completedOtherObservation(observations map[model.Path]model.Observation, selected model.Path) *model.Observation {
+	other := model.PathDirect
+	if selected == model.PathDirect {
+		other = model.PathProxy
+	}
+	observation, ok := observations[other]
+	if !ok {
+		return nil
+	}
+	copy := observation
+	return &copy
 }
 
 func drainLosers(results <-chan candidateResult, count int) {

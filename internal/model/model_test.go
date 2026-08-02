@@ -24,3 +24,28 @@ func TestObservationJSONUsesReadableUnits(t *testing.T) {
 		}
 	}
 }
+
+func TestObservationJSONRoundTrip(t *testing.T) {
+	want := Observation{
+		Path: PathDirect, StageReached: StageTCP, Latency: 125 * time.Millisecond,
+		FailureClass: "direct_reset",
+	}
+	encoded, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got Observation
+	if err := json.Unmarshal(encoded, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("round trip = %+v, want %+v", got, want)
+	}
+}
+
+func TestObservationJSONRejectsInvalidStage(t *testing.T) {
+	var observation Observation
+	if err := json.Unmarshal([]byte(`{"path":"direct","success":false,"stage_reached":"bogus","latency_ms":1,"failure_class":"failed"}`), &observation); err == nil {
+		t.Fatal("invalid stage unmarshal error = nil")
+	}
+}

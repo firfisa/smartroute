@@ -47,6 +47,8 @@ All notable project changes are recorded here. The project has not published a r
 - Opt-in local JSONL observations with HMAC-pseudonymous targets/profiles, per-source rotation, count/age caps, and mode-0600 state.
 - `smartroute observations` status, pause, resume, clear-confirmation, and redacted export controls, plus ADR-0009.
 - Raw runtime event suppression while persistent recording is enabled; later recorder write failures warn once without interrupting routing.
+- Optional `other_observation` evidence when the opposite candidate completed before route selection; canceled, running, and unstarted losers remain excluded.
+- Symmetric validated JSON marshal/unmarshal for observation stage and millisecond latency fields, plus ADR-0010.
 
 ### Known limitations
 

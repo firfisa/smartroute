@@ -20,13 +20,14 @@ import (
 // DecisionEvent is the minimum explainable runtime event emitted by the
 // Phase 0 sidecar. It contains no payload or credentials.
 type DecisionEvent struct {
-	EventType    string            `json:"event_type"`
-	Target       model.Target      `json:"target"`
-	SelectedPath model.Path        `json:"selected_path"`
-	ReasonCode   string            `json:"reason_code"`
-	PolicyReason string            `json:"policy_reason,omitempty"`
-	Observation  model.Observation `json:"observation"`
-	Committed    bool              `json:"committed"`
+	EventType        string             `json:"event_type"`
+	Target           model.Target       `json:"target"`
+	SelectedPath     model.Path         `json:"selected_path"`
+	ReasonCode       string             `json:"reason_code"`
+	PolicyReason     string             `json:"policy_reason,omitempty"`
+	Observation      model.Observation  `json:"observation"`
+	OtherObservation *model.Observation `json:"other_observation,omitempty"`
+	Committed        bool               `json:"committed"`
 }
 
 type DiagnosticEvent struct {
@@ -141,7 +142,8 @@ func (s Server) handle(ctx context.Context, inbound net.Conn) {
 			EventType: EventTypeDecision,
 			Target:    target, SelectedPath: result.Observation.Path,
 			ReasonCode: result.ReasonCode, Observation: result.Observation,
-			Committed: true,
+			OtherObservation: result.OtherObservation,
+			Committed:        true,
 		})
 	}
 	netrelay.Bidirectional(inbound, result.Conn)
@@ -214,8 +216,9 @@ func (s Server) handleTLS(ctx context.Context, inbound net.Conn, target model.Ta
 			EventType: EventTypeDecision,
 			Target:    target, SelectedPath: result.Observation.Path,
 			ReasonCode: result.ReasonCode, PolicyReason: privacyDecision.ReasonCode,
-			Observation: result.Observation,
-			Committed:   true,
+			Observation:      result.Observation,
+			OtherObservation: result.OtherObservation,
+			Committed:        true,
 		})
 	}
 	netrelay.Bidirectional(inbound, result.Conn)

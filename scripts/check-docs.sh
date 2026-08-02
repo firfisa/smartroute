@@ -37,6 +37,7 @@ required_files=(
   "docs/adr/0007-enforce-direct-probe-privacy.md"
   "docs/adr/0008-supervise-guard-and-engine.md"
   "docs/adr/0009-bounded-local-observation-recorder.md"
+  "docs/adr/0010-preserve-only-completed-counterfactual-evidence.md"
   "configs/smartroute.example.json"
   "upstreams.lock"
 )
@@ -115,6 +116,12 @@ fi
 if ! matches 'smartroute observations' "${project_root}/README.md" "${project_root}/docs/adr/0009-bounded-local-observation-recorder.md" ||
   ! matches 'include_cleartext_hostname' "${project_root}/configs/smartroute.example.json" "${project_root}/docs/04-component-catalog.md"; then
   echo "bounded local observation contract is missing" >&2
+  exit 1
+fi
+
+if ! matches 'other_observation' "${project_root}/docs/04-component-catalog.md" "${project_root}/docs/adr/0010-preserve-only-completed-counterfactual-evidence.md" ||
+  ! matches 'canceled.*not.*evidence' "${project_root}/docs/adr/0010-preserve-only-completed-counterfactual-evidence.md"; then
+  echo "completed counterfactual evidence contract is missing" >&2
   exit 1
 fi
 

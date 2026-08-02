@@ -69,6 +69,8 @@ Mihomo 已支持为 listener 指定固定 `proxy`，也支持按 `IN-NAME` 等�
 
 该配置契约已经在锁定的 Mihomo v1.19.29 源码和独立子进程中核对：强制 Direct/Proxy、域名形式目标转发与循环规避成立。不过运行实验同时证明，Mihomo inbound 在目标解析和拨号前就回复 SOCKS 成功；该响应只能记作 L1 `StageOutbound`，不能当作 L2 `StageTCP`。证据表见 `docs/05-upstreams.md` 和 ADR-0004。
 
+候选竞争在 winner 达到提交层级后立即返回，不等待另一条路径。若另一条路径已经先行终止，其终态作为可选 `other_observation` 随 winner 保存；仍在运行而被取消、尚未启动的候选都没有学习意义。当前运行时因此能诚实形成“Direct 失败 + Proxy 成功”等强证据，但不能从同一首连接形成“两者都成功”的延迟对照。详见 ADR-0010。
+
 候选拓扑如下。该结构已在 macOS 与锁定版本的独立子进程中验证，其他平台、TUN/Fake-IP 和真实 selector 仍需分别验证：
 
 ```yaml

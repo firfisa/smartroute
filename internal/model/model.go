@@ -2,6 +2,7 @@ package model
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -104,6 +105,35 @@ func (o Observation) MarshalJSON() ([]byte, error) {
 		LatencyMS:    o.Latency.Milliseconds(),
 		FailureClass: o.FailureClass,
 	})
+}
+
+func (o *Observation) UnmarshalJSON(data []byte) error {
+	if o == nil {
+		return errors.New("cannot unmarshal observation into nil receiver")
+	}
+	var encoded struct {
+		Path         Path   `json:"path"`
+		Success      bool   `json:"success"`
+		StageReached string `json:"stage_reached"`
+		LatencyMS    int64  `json:"latency_ms"`
+		FailureClass string `json:"failure_class"`
+	}
+	if err := json.Unmarshal(data, &encoded); err != nil {
+		return fmt.Errorf("decode observation: %w", err)
+	}
+	stage, err := ParseStage(encoded.StageReached)
+	if err != nil {
+		return err
+	}
+	decoded := Observation{
+		Path: encoded.Path, Success: encoded.Success, StageReached: stage,
+		Latency: time.Duration(encoded.LatencyMS) * time.Millisecond, FailureClass: encoded.FailureClass,
+	}
+	if err := decoded.Validate(); err != nil {
+		return err
+	}
+	*o = decoded
+	return nil
 }
 
 func (o Observation) Validate() error {
