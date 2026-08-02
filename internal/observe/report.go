@@ -14,8 +14,9 @@ import (
 	"github.com/firfisa/smartroute/internal/model"
 )
 
-const ReportVersion = 1
+const ReportVersion = 2
 const maxReportLineBytes = 1 << 20
+const maxInt64 = int64(^uint64(0) >> 1)
 
 var knownReportReasons = map[string]struct{}{
 	"direct_candidate_before_head_start": {}, "proxy_candidate_before_head_start": {},
@@ -37,6 +38,7 @@ var knownReportReasons = map[string]struct{}{
 var knownReportEventTypes = map[string]struct{}{
 	"decision": {}, "diagnostic": {}, "guard_decision": {}, "supervisor": {},
 	"learning_health": {}, "durable_learning_assessment": {},
+	"relay_outcome": {},
 }
 
 type ReportOptions struct {
@@ -83,6 +85,26 @@ type AdaptiveReport struct {
 	OtherCompletedOutcomes     int                     `json:"other_completed_outcomes"`
 	DecisionReadinessLatencyMS MillisecondDistribution `json:"decision_readiness_latency_ms"`
 	WinnerCandidateLatencyMS   MillisecondDistribution `json:"winner_candidate_latency_ms"`
+	Relay                      RelayReport             `json:"relay"`
+}
+
+type RelayReport struct {
+	Outcomes                    int                     `json:"outcomes"`
+	Ended                       int                     `json:"ended"`
+	Canceled                    int                     `json:"canceled"`
+	WithRemoteToClientBytes     int                     `json:"with_remote_to_client_bytes"`
+	RemoteToClientCoverageRatio float64                 `json:"remote_to_client_coverage_ratio"`
+	ClientToRemoteBytes         int64                   `json:"client_to_remote_bytes"`
+	RemoteToClientBytes         int64                   `json:"remote_to_client_bytes"`
+	Direct                      RelayPathReport         `json:"direct"`
+	Proxy                       RelayPathReport         `json:"proxy"`
+	DurationMS                  MillisecondDistribution `json:"duration_ms"`
+}
+
+type RelayPathReport struct {
+	Connections         int   `json:"connections"`
+	ClientToRemoteBytes int64 `json:"client_to_remote_bytes"`
+	RemoteToClientBytes int64 `json:"remote_to_client_bytes"`
 }
 
 type GuardReport struct {
@@ -100,12 +122,13 @@ type MillisecondDistribution struct {
 }
 
 type ReportInterpretation struct {
-	ReadinessNotApplicationSuccess bool `json:"readiness_not_application_success"`
-	LatencyStartsAfterClientHello  bool `json:"latency_starts_after_client_hello"`
-	NoStaticBaseline               bool `json:"no_static_baseline"`
-	NoByteVolume                   bool `json:"no_byte_volume"`
-	TargetIdentitiesOmitted        bool `json:"target_identities_omitted"`
-	TrialSessionIDsOmitted         bool `json:"trial_session_ids_omitted"`
+	ReadinessNotApplicationSuccess        bool `json:"readiness_not_application_success"`
+	RelayRemoteBytesNotApplicationSuccess bool `json:"relay_remote_bytes_not_application_success"`
+	RelayBytesPostCommitAdaptiveOnly      bool `json:"relay_bytes_post_commit_adaptive_only"`
+	LatencyStartsAfterClientHello         bool `json:"latency_starts_after_client_hello"`
+	NoStaticBaseline                      bool `json:"no_static_baseline"`
+	TargetIdentitiesOmitted               bool `json:"target_identities_omitted"`
+	TrialSessionIDsOmitted                bool `json:"trial_session_ids_omitted"`
 }
 
 func BuildReport(directory string, options ReportOptions) (Report, error) {
@@ -122,7 +145,8 @@ func BuildReport(directory string, options ReportOptions) (Report, error) {
 	report := Report{ReportVersion: ReportVersion, GeneratedAt: now().UTC(), Since: options.Since.UTC(),
 		SourceCounts: map[string]int{}, EventCounts: map[string]int{}, ReasonCounts: map[string]int{},
 		Interpretation: ReportInterpretation{ReadinessNotApplicationSuccess: true,
-			LatencyStartsAfterClientHello: true, NoStaticBaseline: true, NoByteVolume: true,
+			RelayRemoteBytesNotApplicationSuccess: true, RelayBytesPostCommitAdaptiveOnly: true,
+			LatencyStartsAfterClientHello: true, NoStaticBaseline: true,
 			TargetIdentitiesOmitted: true, TrialSessionIDsOmitted: true}}
 	status, err := Inspect(directory)
 	if err != nil {
@@ -132,7 +156,7 @@ func BuildReport(directory string, options ReportOptions) (Report, error) {
 	targets := map[string]struct{}{}
 	profiles := map[string]struct{}{}
 	trialSessions := map[string]struct{}{}
-	var decisionLatencies, winnerLatencies []int64
+	var decisionLatencies, winnerLatencies, relayDurations []int64
 	for _, source := range managedSources {
 		err := walkManagedJSONL(directory, source, func(path string, _ fs.DirEntry) error {
 			report.FilesScanned++
@@ -165,6 +189,10 @@ func BuildReport(directory string, options ReportOptions) (Report, error) {
 					report.HealthTransitions++
 				case "durable_learning_assessment":
 					report.DurableAssessments++
+				case "relay_outcome":
+					if err := consumeRelay(&report.Adaptive.Relay, event, &relayDurations); err != nil {
+						return fmt.Errorf("%s: aggregate relay outcome: %w", path, err)
+					}
 				}
 				return nil
 			})
@@ -185,6 +213,10 @@ func BuildReport(directory string, options ReportOptions) (Report, error) {
 	}
 	report.Adaptive.DecisionReadinessLatencyMS = summarizeMilliseconds(decisionLatencies)
 	report.Adaptive.WinnerCandidateLatencyMS = summarizeMilliseconds(winnerLatencies)
+	report.Adaptive.Relay.DurationMS = summarizeMilliseconds(relayDurations)
+	if report.Adaptive.Relay.Outcomes > 0 {
+		report.Adaptive.Relay.RemoteToClientCoverageRatio = float64(report.Adaptive.Relay.WithRemoteToClientBytes) / float64(report.Adaptive.Relay.Outcomes)
+	}
 	return report, nil
 }
 
@@ -208,7 +240,7 @@ func scanReportFile(path, expectedSource string, since time.Time, consume func(s
 		if err := decoder.Decode(&event); err != nil {
 			return fmt.Errorf("%s:%d: decode observation: %w", path, line, err)
 		}
-		if event.SchemaVersion != schemaVersion {
+		if event.SchemaVersion != legacySchemaVersion && event.SchemaVersion != schemaVersion {
 			return fmt.Errorf("%s:%d: unsupported observation schema %d", path, line, event.SchemaVersion)
 		}
 		if event.Source != expectedSource {
@@ -258,6 +290,11 @@ func validateReportEvent(event storedEvent) error {
 	if event.DecisionLatencyMS != nil && *event.DecisionLatencyMS < 0 {
 		return errors.New("decision_latency_ms must not be negative")
 	}
+	relayFieldsPresent := event.ClientToRemoteBytes != nil || event.RemoteToClientBytes != nil ||
+		event.RelayDurationMS != nil || event.Termination != ""
+	if event.EventType != "relay_outcome" && relayFieldsPresent {
+		return errors.New("relay fields are valid only for relay_outcome")
+	}
 	switch event.EventType {
 	case "decision":
 		if event.Target == nil || event.Committed == nil || event.Observation == nil || event.ReasonCode == "" {
@@ -287,6 +324,22 @@ func validateReportEvent(event storedEvent) error {
 	case "supervisor":
 		if event.Target != nil {
 			return errors.New("supervisor event must not contain target")
+		}
+	case "relay_outcome":
+		if event.SchemaVersion != schemaVersion {
+			return errors.New("relay_outcome requires observation schema 2")
+		}
+		if event.Target == nil || event.ClientToRemoteBytes == nil || event.RemoteToClientBytes == nil || event.RelayDurationMS == nil {
+			return errors.New("relay_outcome requires target and complete byte/duration counters")
+		}
+		if event.SelectedPath != model.PathDirect && event.SelectedPath != model.PathProxy {
+			return errors.New("relay_outcome requires a Direct or Proxy selected path")
+		}
+		if *event.ClientToRemoteBytes < 0 || *event.RemoteToClientBytes < 0 || *event.RelayDurationMS < 0 {
+			return errors.New("relay_outcome counters must not be negative")
+		}
+		if event.Termination != "ended" && event.Termination != "canceled" {
+			return errors.New("relay_outcome termination must be ended or canceled")
 		}
 	}
 	return nil
@@ -366,6 +419,48 @@ func consumeGuard(report *GuardReport, event storedEvent) {
 	default:
 		report.Unavailable++
 	}
+}
+
+func consumeRelay(report *RelayReport, event storedEvent, durations *[]int64) error {
+	report.Outcomes++
+	switch event.Termination {
+	case "ended":
+		report.Ended++
+	case "canceled":
+		report.Canceled++
+	}
+	clientToRemote := *event.ClientToRemoteBytes
+	remoteToClient := *event.RemoteToClientBytes
+	if remoteToClient > 0 {
+		report.WithRemoteToClientBytes++
+	}
+	var err error
+	if report.ClientToRemoteBytes, err = addInt64(report.ClientToRemoteBytes, clientToRemote); err != nil {
+		return err
+	}
+	if report.RemoteToClientBytes, err = addInt64(report.RemoteToClientBytes, remoteToClient); err != nil {
+		return err
+	}
+	path := &report.Direct
+	if event.SelectedPath == model.PathProxy {
+		path = &report.Proxy
+	}
+	path.Connections++
+	if path.ClientToRemoteBytes, err = addInt64(path.ClientToRemoteBytes, clientToRemote); err != nil {
+		return err
+	}
+	if path.RemoteToClientBytes, err = addInt64(path.RemoteToClientBytes, remoteToClient); err != nil {
+		return err
+	}
+	*durations = append(*durations, *event.RelayDurationMS)
+	return nil
+}
+
+func addInt64(current, value int64) (int64, error) {
+	if value < 0 || current > maxInt64-value {
+		return 0, errors.New("relay byte aggregate exceeds int64")
+	}
+	return current + value, nil
 }
 
 func updateReportRange(report *Report, value time.Time) {

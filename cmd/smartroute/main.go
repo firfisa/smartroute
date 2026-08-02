@@ -440,6 +440,18 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 				DirectFailure: event.DirectFailure, ProxyFailure: event.ProxyFailure,
 			})
 		},
+		OnRelayOutcome: func(event sidecar.RelayOutcomeEvent) {
+			outputMu.Lock()
+			defer outputMu.Unlock()
+			clientToRemote := event.ClientToRemoteBytes
+			remoteToClient := event.RemoteToClientBytes
+			duration := event.RelayDurationMS
+			events.Emit(event, observe.Event{
+				EventType: event.EventType, Target: &event.Target, SelectedPath: event.SelectedPath,
+				ClientToRemoteBytes: &clientToRemote, RemoteToClientBytes: &remoteToClient,
+				RelayDurationMS: &duration, Termination: event.Termination,
+			})
+		},
 	}
 	fmt.Fprintf(stderr, "experimental TLS sidecar listening on %s; privacy=%s; no Clash files are read or modified\n", listener.Addr(), cfg.Privacy.Mode)
 	return server.Serve(ctx, listener)

@@ -1,6 +1,6 @@
 # SmartRoute 总体技术设计
 
-版本：v0.7
+版本：v0.8
 状态：供原型验证，不是最终实现规范
 
 ## 1. 设计目标
@@ -485,6 +485,7 @@ learned-proxy.yaml
 - 决策理由、置信度和策略版本。
 - 选路前已经发送的字节数。
 - 取消候选数量和额外连接开销。
+- 已提交 adaptive relay 的方向字节数、持续时间与显式生命周期取消；仅保存计数，不保存内容。
 
 日志不得包含：
 
@@ -492,6 +493,8 @@ learned-proxy.yaml
 - 查询参数、Cookie、认证头。
 - 代理订阅密钥。
 - 默认公开的完整浏览历史。
+
+`relay_outcome` 在两条 copy 方向都结束后产生。Client→remote 计数从提交后的 relay 开始，因此 TLS readiness 阶段已发送的 ClientHello 不在其中；remote→client 包含预读回放的 ServerHello。非零远端字节不能当作应用成功，零远端字节也不能自动成为学习失败。Identity-free report 只按 Direct/Proxy 汇总这些 post-commit 计数，仍缺少静态基线和应用结果。详见 ADR-0022。
 
 ## 14. 从 Sidecar 到内核的迁移条件
 

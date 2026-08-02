@@ -38,6 +38,18 @@ func TestBuildReportAggregatesReadinessWithoutIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	now = now.Add(time.Second)
+	proxyUp, proxyDown, proxyDuration := int64(100), int64(1000), int64(500)
+	if err := engine.Record(Event{EventType: "relay_outcome", Target: &target, SelectedPath: model.PathProxy,
+		ClientToRemoteBytes: &proxyUp, RemoteToClientBytes: &proxyDown, RelayDurationMS: &proxyDuration, Termination: "ended"}); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Second)
+	directUp, directDown, directDuration := int64(50), int64(0), int64(200)
+	if err := engine.Record(Event{EventType: "relay_outcome", Target: &target, SelectedPath: model.PathDirect,
+		ClientToRemoteBytes: &directUp, RemoteToClientBytes: &directDown, RelayDurationMS: &directDuration, Termination: "canceled"}); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Second)
 	if err := engine.Record(Event{EventType: "diagnostic", Target: &target, ReasonCode: "tls_candidates_failed"}); err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +80,7 @@ func TestBuildReportAggregatesReadinessWithoutIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.EventsIncluded != 6 || report.FilesScanned != 2 || report.TargetScopesObserved != 1 || report.NetworkProfilesObserved != 1 || report.TrialSessionsObserved != 1 || report.UnscopedEvents != 0 {
+	if report.ReportVersion != ReportVersion || report.EventsIncluded != 8 || report.FilesScanned != 2 || report.TargetScopesObserved != 1 || report.NetworkProfilesObserved != 1 || report.TrialSessionsObserved != 1 || report.UnscopedEvents != 0 {
 		t.Fatalf("report=%+v", report)
 	}
 	if report.Adaptive.ReadinessOutcomes != 3 || report.Adaptive.Ready != 2 || report.Adaptive.FailedBeforeReadiness != 1 || report.Adaptive.ReadinessSuccessRatio != 2.0/3.0 {
@@ -79,6 +91,17 @@ func TestBuildReportAggregatesReadinessWithoutIdentity(t *testing.T) {
 	}
 	assertDistribution(t, report.Adaptive.DecisionReadinessLatencyMS, 2, 40, 120, 120)
 	assertDistribution(t, report.Adaptive.WinnerCandidateLatencyMS, 2, 30, 80, 80)
+	if report.Adaptive.Relay.Outcomes != 2 || report.Adaptive.Relay.Ended != 1 || report.Adaptive.Relay.Canceled != 1 ||
+		report.Adaptive.Relay.WithRemoteToClientBytes != 1 || report.Adaptive.Relay.RemoteToClientCoverageRatio != .5 ||
+		report.Adaptive.Relay.ClientToRemoteBytes != 150 || report.Adaptive.Relay.RemoteToClientBytes != 1000 ||
+		report.Adaptive.Relay.Direct.Connections != 1 || report.Adaptive.Relay.Direct.ClientToRemoteBytes != 50 ||
+		report.Adaptive.Relay.Proxy.Connections != 1 || report.Adaptive.Relay.Proxy.RemoteToClientBytes != 1000 {
+		t.Fatalf("relay=%+v", report.Adaptive.Relay)
+	}
+	assertDistribution(t, report.Adaptive.Relay.DurationMS, 2, 200, 500, 500)
+	if !report.Interpretation.RelayRemoteBytesNotApplicationSuccess || !report.Interpretation.RelayBytesPostCommitAdaptiveOnly {
+		t.Fatalf("interpretation=%+v", report.Interpretation)
+	}
 	if report.Guard.Decisions != 1 || report.Guard.OriginalSelected != 1 || report.HealthTransitions != 1 || report.DurableAssessments != 1 {
 		t.Fatalf("guard/health report=%+v", report)
 	}
@@ -157,6 +180,79 @@ func TestBuildReportRejectsIdentityLikeUnknownReason(t *testing.T) {
 	}
 	if _, err := BuildReport(directory, ReportOptions{Since: time.Unix(1, 0)}); err == nil || !strings.Contains(err.Error(), "unknown reason_code") {
 		t.Fatalf("reason error=%v", err)
+	}
+}
+
+func TestBuildReportAcceptsLegacyDecisionsButRejectsLegacyRelayOutcome(t *testing.T) {
+	directory := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(directory, SourceEngine), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	committed := true
+	bytesUp, bytesDown, duration := int64(1), int64(2), int64(3)
+	target := &storedTarget{NetworkProfileHash: strings.Repeat("a", 64), HostnameHash: strings.Repeat("b", 64), Port: 443, Transport: model.TransportTCP}
+	legacyDecision := storedEvent{
+		SchemaVersion: legacySchemaVersion, RecordedAt: time.Unix(100, 0).UTC(), Source: SourceEngine,
+		EventType: "decision", Target: target, SelectedPath: model.PathDirect, ReasonCode: "direct_candidate_won",
+		Committed: &committed, Observation: &model.Observation{Path: model.PathDirect, Success: true, StageReached: model.StageTCP},
+	}
+	decisionJSON, err := json.Marshal(legacyDecision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(directory, SourceEngine, "legacy.jsonl")
+	if err := os.WriteFile(path, append(decisionJSON, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if report, err := BuildReport(directory, ReportOptions{Since: time.Unix(1, 0)}); err != nil || report.Adaptive.Ready != 1 {
+		t.Fatalf("legacy decision report=%+v err=%v", report, err)
+	}
+
+	legacyRelay := storedEvent{
+		SchemaVersion: legacySchemaVersion, RecordedAt: time.Unix(101, 0).UTC(), Source: SourceEngine,
+		EventType: "relay_outcome", Target: target, SelectedPath: model.PathDirect,
+		ClientToRemoteBytes: &bytesUp, RemoteToClientBytes: &bytesDown, RelayDurationMS: &duration, Termination: "ended",
+	}
+	relayJSON, err := json.Marshal(legacyRelay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write(append(relayJSON, '\n')); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := BuildReport(directory, ReportOptions{Since: time.Unix(1, 0)}); err == nil || !strings.Contains(err.Error(), "requires observation schema 2") {
+		t.Fatalf("legacy relay error=%v", err)
+	}
+}
+
+func TestBuildReportRejectsRelayByteOverflow(t *testing.T) {
+	directory := t.TempDir()
+	recorder, err := New(Options{Directory: directory, Source: SourceEngine, MaxFileBytes: 1 << 20, MaxFiles: 2, Retention: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := model.Target{NetworkProfileID: "profile", Hostname: "example.com", Port: 443, Transport: model.TransportTCP}
+	zero, duration := int64(0), int64(1)
+	for _, bytes := range []int64{maxInt64, 1} {
+		value := bytes
+		if err := recorder.Record(Event{EventType: "relay_outcome", Target: &target, SelectedPath: model.PathProxy,
+			ClientToRemoteBytes: &value, RemoteToClientBytes: &zero, RelayDurationMS: &duration, Termination: "ended"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := recorder.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := BuildReport(directory, ReportOptions{Since: time.Unix(1, 0)}); err == nil || !strings.Contains(err.Error(), "exceeds int64") {
+		t.Fatalf("overflow error=%v", err)
 	}
 }
 

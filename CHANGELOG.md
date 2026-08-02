@@ -69,6 +69,7 @@ All notable project changes are recorded here. The project has not published a r
 - Random `trial_session_id` scoping shared by supervisor, Guard, engine and child restarts, with legacy unscoped accounting and identity-free session counts under ADR-0019.
 - Versioned, UTC-timestamped Test Lab and Mihomo Lab evidence plus `smartroute trial preflight`, which fails closed on stale/incomplete isolation evidence, missing privacy/Auto acknowledgments, unpaused recording, or an unmatched durable backup without inspecting or authorizing active Clash, under ADR-0020.
 - Context-aware bidirectional relay and deterministic Sidecar/Guard shutdown: cancellation closes pending handshakes and both relay endpoints, joins copy goroutines, and waits for every accepted handler before `Serve` returns, under ADR-0021.
+- Observation JSONL schema 2 `relay_outcome` events and identity-free report v2 aggregates for post-commit Direct/Proxy directional bytes, duration, remote-byte coverage, and lifecycle cancellation, with schema-1 read compatibility and explicit non-application-success limits under ADR-0022.
 
 ### Known limitations
 

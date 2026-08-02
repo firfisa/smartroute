@@ -51,6 +51,7 @@ required_files=(
   "docs/adr/0019-random-shared-trial-session-scope.md"
   "docs/adr/0020-read-only-evidence-based-trial-preflight.md"
   "docs/adr/0021-context-cancel-and-drain-runtime-connections.md"
+  "docs/adr/0022-post-commit-relay-telemetry.md"
   "configs/smartroute.example.json"
   "upstreams.lock"
 )
@@ -190,6 +191,13 @@ if ! matches 'netrelay\.Bidirectional\(ctx' "${project_root}/docs/04-component-c
   ! matches 'wait for all connection handlers' "${project_root}/AGENTS.md" ||
   ! matches 'never routing evidence' "${project_root}/docs/adr/0021-context-cancel-and-drain-runtime-connections.md"; then
   echo "runtime connection cancellation and drain contract is missing" >&2
+  exit 1
+fi
+
+if ! matches 'relay_outcome' "${project_root}/docs/04-component-catalog.md" "${project_root}/docs/08-observation-and-live-trial.md" ||
+  ! matches 'Remote bytes include protocol readiness data' "${project_root}/AGENTS.md" ||
+  ! matches 'not application success' "${project_root}/docs/adr/0022-post-commit-relay-telemetry.md"; then
+  echo "post-commit relay telemetry privacy contract is missing" >&2
   exit 1
 fi
 

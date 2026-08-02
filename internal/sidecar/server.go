@@ -47,9 +47,24 @@ type DiagnosticEvent struct {
 	DecisionLatencyMS *int64       `json:"decision_latency_ms,omitempty"`
 }
 
+// RelayOutcomeEvent contains aggregate post-commit transfer metadata only. It
+// never contains payload bytes and does not claim application-level success.
+type RelayOutcomeEvent struct {
+	EventType           string       `json:"event_type"`
+	Target              model.Target `json:"target"`
+	SelectedPath        model.Path   `json:"selected_path"`
+	ClientToRemoteBytes int64        `json:"client_to_remote_bytes"`
+	RemoteToClientBytes int64        `json:"remote_to_client_bytes"`
+	RelayDurationMS     int64        `json:"relay_duration_ms"`
+	Termination         string       `json:"termination"`
+}
+
 const (
 	EventTypeDecision               = "decision"
 	EventTypeDiagnostic             = "diagnostic"
+	EventTypeRelayOutcome           = "relay_outcome"
+	RelayTerminationEnded           = "ended"
+	RelayTerminationCanceled        = "canceled"
 	ReasonCandidateBelowCommitStage = "candidate_below_commit_stage"
 	ReasonClientHelloRejected       = "client_hello_rejected"
 	ReasonTLSCandidatesFailed       = "tls_candidates_failed"
@@ -87,6 +102,7 @@ type Server struct {
 	Clock               func() time.Time
 	OnDecision          func(DecisionEvent)
 	OnDiagnostic        func(DiagnosticEvent)
+	OnRelayOutcome      func(RelayOutcomeEvent)
 }
 
 func (s Server) Serve(ctx context.Context, listener net.Listener) error {
@@ -205,7 +221,7 @@ func (s Server) handle(ctx context.Context, inbound net.Conn) {
 			Committed:        true,
 		})
 	}
-	netrelay.Bidirectional(ctx, inbound, result.Conn)
+	s.relay(ctx, inbound, result.Conn, target, result.Observation.Path)
 }
 
 func (s Server) handleTLS(ctx context.Context, inbound net.Conn, target model.Target) {
@@ -327,7 +343,29 @@ func (s Server) handleTLS(ctx context.Context, inbound net.Conn, target model.Ta
 			DecisionLatencyMS: &decisionLatencyMS,
 		})
 	}
-	netrelay.Bidirectional(ctx, inbound, result.Conn)
+	s.relay(ctx, inbound, result.Conn, target, result.Observation.Path)
+}
+
+func (s Server) relay(ctx context.Context, inbound, outbound net.Conn, target model.Target, path model.Path) {
+	if s.OnRelayOutcome == nil {
+		_ = netrelay.Bidirectional(ctx, inbound, outbound)
+		return
+	}
+	now := s.Clock
+	if now == nil {
+		now = time.Now
+	}
+	started := now()
+	result := netrelay.Bidirectional(ctx, inbound, outbound)
+	termination := RelayTerminationEnded
+	if result.Canceled {
+		termination = RelayTerminationCanceled
+	}
+	s.OnRelayOutcome(RelayOutcomeEvent{
+		EventType: EventTypeRelayOutcome, Target: target, SelectedPath: path,
+		ClientToRemoteBytes: result.LeftToRightBytes, RemoteToClientBytes: result.RightToLeftBytes,
+		RelayDurationMS: nonNegativeMilliseconds(now().Sub(started)), Termination: termination,
+	})
 }
 
 func nonNegativeMilliseconds(duration time.Duration) int64 {

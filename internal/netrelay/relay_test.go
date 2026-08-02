@@ -14,10 +14,9 @@ func TestBidirectionalCancellationClosesBothOwnedConnections(t *testing.T) {
 	defer leftClient.Close()
 	defer rightPeer.Close()
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
+	done := make(chan Result, 1)
 	go func() {
-		Bidirectional(ctx, leftRelay, rightRelay)
-		close(done)
+		done <- Bidirectional(ctx, leftRelay, rightRelay)
 	}()
 
 	payload := []byte("payload")
@@ -39,7 +38,10 @@ func TestBidirectionalCancellationClosesBothOwnedConnections(t *testing.T) {
 
 	cancel()
 	select {
-	case <-done:
+	case result := <-done:
+		if result.LeftToRightBytes != int64(len(payload)) || result.RightToLeftBytes != 0 || !result.Canceled {
+			t.Fatalf("result = %+v", result)
+		}
 	case <-time.After(time.Second):
 		t.Fatal("relay did not stop after context cancellation")
 	}

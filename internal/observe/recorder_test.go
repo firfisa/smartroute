@@ -54,7 +54,7 @@ func TestRecorderHashesSensitiveTargetFields(t *testing.T) {
 	if event.Target == nil || len(event.Target.HostnameHash) != 64 || len(event.Target.NetworkProfileHash) != 64 || event.Target.Hostname != "" {
 		t.Fatalf("stored target = %+v", event.Target)
 	}
-	if event.SchemaVersion != 1 || !event.CommittedValue() {
+	if event.SchemaVersion != schemaVersion || !event.CommittedValue() {
 		t.Fatalf("stored event = %+v", event)
 	}
 	if event.OtherObservation == nil || event.OtherObservation.Path != model.PathDirect || event.OtherObservation.FailureClass != "direct_reset" {
@@ -170,6 +170,39 @@ func TestRecorderStoresLearningHealthMetadataWithoutCleartextTarget(t *testing.T
 	}
 	if event.Trigger != "proxy_path_failed" || event.FailureTargets != 3 || event.RecoveryTargets != 1 || event.FrozenUntil == nil || !event.FrozenUntil.Equal(until) {
 		t.Fatalf("stored health event=%+v", event)
+	}
+}
+
+func TestRecorderStoresRelayOutcomeWithoutPayloadOrCleartextIdentity(t *testing.T) {
+	directory := t.TempDir()
+	recorder, err := New(testOptions(directory))
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := model.Target{NetworkProfileID: "private-network", Hostname: "secret.example", Port: 443, Transport: model.TransportTCP}
+	clientToRemote, remoteToClient, duration := int64(123), int64(456), int64(789)
+	if err := recorder.Record(Event{
+		EventType: "relay_outcome", Target: &target, SelectedPath: model.PathProxy,
+		ClientToRemoteBytes: &clientToRemote, RemoteToClientBytes: &remoteToClient,
+		RelayDurationMS: &duration, Termination: "ended",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := recorder.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data := readOnlyJSONL(t, directory)
+	if strings.Contains(data, target.Hostname) || strings.Contains(data, target.NetworkProfileID) {
+		t.Fatalf("relay record leaked identity: %s", data)
+	}
+	var event storedEvent
+	if err := json.Unmarshal([]byte(data), &event); err != nil {
+		t.Fatal(err)
+	}
+	if event.SchemaVersion != schemaVersion || event.ClientToRemoteBytes == nil || *event.ClientToRemoteBytes != 123 ||
+		event.RemoteToClientBytes == nil || *event.RemoteToClientBytes != 456 || event.RelayDurationMS == nil ||
+		*event.RelayDurationMS != 789 || event.Termination != "ended" {
+		t.Fatalf("stored relay event = %+v", event)
 	}
 }
 

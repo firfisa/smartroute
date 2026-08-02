@@ -64,6 +64,7 @@ flowchart LR
 | 跨会话 Shadow 评估 | 已实现：强证据次数 + 独立 Session 双阈值；双向证据判冲突；只发建议事件，不改变路由 |
 | 隐私安全的 Shadow 汇总 | 已实现：按精确目标在库内分组，只输出不足/冲突/Direct/Proxy 数量与阈值，不输出目标 HMAC |
 | 连接级 readiness 汇总 | 已实现：暂停后只读汇总成功门槛、选路比例、Guard 回退和 p50/p95/p99；不输出目标 HMAC，不冒充应用成功率 |
+| Post-commit relay 汇总 | 已实现：按 Direct/Proxy 聚合已提交 adaptive relay 的双向字节、持续时间、远端有字节覆盖和取消数；不记录 payload，不冒充应用成功或全局流量节省 |
 | 受控试用会话分组 | 已实现：supervisor 为 engine/Guard/自身生成并共享随机 ID，子进程重启不换组；报告只输出会话数 |
 | 受控试用只读 preflight | 已实现：验证隐私确认、Shadow/Auto 风险、暂停状态、SQLite/备份以及 24 小时内的 Test Lab/Mihomo Lab 完整证据；不读取 Clash，也不授权上线 |
 | 独立 Mihomo listener 拓扑 | v1.19.29 已验证强制 Direct/Proxy、域名保留和循环规避 |
@@ -103,7 +104,7 @@ go run ./cmd/smartroute observations export -config configs/smartroute.example.j
 go run ./cmd/smartroute observations clear -config configs/smartroute.example.json -confirm-clear
 ```
 
-`report` 和 `clear` 必须先 `pause`。报告只输出事件、readiness、Direct/Proxy、Guard、健康冻结及延迟聚合，不输出目标/profile HMAC。这里的 `readiness_success_ratio` 只表示达到当前 TCP/TLS 提交门槛，不是网页成功、证书验证完成或用户可感知成功率。默认记录不含明文 hostname，导出不包含本地 HMAC 盐值；记录器不是学习策略库。
+`report` 和 `clear` 必须先 `pause`。报告只输出事件、readiness、Direct/Proxy、Guard、健康冻结、relay 双向字节及延迟聚合，不输出目标/profile HMAC。这里的 `readiness_success_ratio` 只表示达到当前 TCP/TLS 提交门槛；relay 的远端字节可能只是预读回放的 TLS ServerHello，同样不是网页成功、证书验证完成或用户可感知成功率。字节仅覆盖 SmartRoute 已提交后的 adaptive relay，不含静态规则流量、TLS ClientHello 或链路开销，因此不能单独计算全局代理节省。默认记录不含明文 hostname，导出不包含本地 HMAC 盐值；记录器不是学习策略库。
 
 开启记录后，推荐通过 `supervise` 启动一次受控试用：它会自动生成不可读的随机 `trial_session_id`，并让 supervisor、Guard、engine 及其后续重启共享同一会话。单独启动 `serve`/`guard` 会各自生成会话；只有需要手工跨进程合并时才传入同一个符合 `trial-` + 32 位小写十六进制格式的 `-trial-session`。聚合报告仅显示 `trial_sessions_observed` 和旧记录的 `unscoped_events`，不显示具体 ID。
 

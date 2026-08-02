@@ -2,10 +2,16 @@ package sidecar
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/firfisa/smartroute/internal/model"
+	"github.com/firfisa/smartroute/internal/transport"
 )
 
 func TestServeCancellationDrainsPendingHandshake(t *testing.T) {
@@ -28,6 +34,91 @@ func TestServeCancellationDrainsPendingHandshake(t *testing.T) {
 	}
 	if _, err := clientConn.Write([]byte{0x05}); err == nil {
 		t.Fatal("pending inbound connection remained open after Serve returned")
+	}
+}
+
+func TestRelayOutcomeCountsPostCommitBytesWithoutPayload(t *testing.T) {
+	serverConn, clientConn := net.Pipe()
+	peers := make(chan net.Conn, 1)
+	outcomes := make(chan RelayOutcomeEvent, 1)
+	times := make(chan time.Time, 2)
+	started := time.Unix(100, 0)
+	times <- started
+	times <- started.Add(250 * time.Millisecond)
+	server := Server{
+		HandshakeTimeout: time.Second,
+		Racer: transport.Racer{
+			Direct:    stageDialer{path: model.PathDirect, stage: model.StageTCP, peer: peers},
+			Proxy:     stageDialer{path: model.PathProxy, stage: model.StageTCP, peer: make(chan net.Conn, 1)},
+			HeadStart: 100 * time.Millisecond, Timeout: time.Second,
+		},
+		Clock: func() time.Time { return <-times },
+		OnRelayOutcome: func(event RelayOutcomeEvent) {
+			outcomes <- event
+		},
+	}
+	handled := make(chan struct{})
+	go func() {
+		server.handle(context.Background(), serverConn)
+		close(handled)
+	}()
+	performSOCKSRequest(t, clientConn)
+	peer := <-peers
+
+	request := []byte("request-body")
+	requestWritten := make(chan error, 1)
+	go func() {
+		_, err := clientConn.Write(request)
+		requestWritten <- err
+	}()
+	receivedRequest := make([]byte, len(request))
+	if _, err := io.ReadFull(peer, receivedRequest); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-requestWritten; err != nil {
+		t.Fatal(err)
+	}
+
+	response := []byte("response-body")
+	responseWritten := make(chan error, 1)
+	go func() {
+		_, err := peer.Write(response)
+		responseWritten <- err
+	}()
+	receivedResponse := make([]byte, len(response))
+	if _, err := io.ReadFull(clientConn, receivedResponse); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-responseWritten; err != nil {
+		t.Fatal(err)
+	}
+	_ = peer.Close()
+	_ = clientConn.Close()
+
+	select {
+	case outcome := <-outcomes:
+		if outcome.EventType != EventTypeRelayOutcome || outcome.SelectedPath != model.PathDirect ||
+			outcome.ClientToRemoteBytes != int64(len(request)) || outcome.RemoteToClientBytes != int64(len(response)) ||
+			outcome.RelayDurationMS != 250 || outcome.Termination != RelayTerminationEnded {
+			t.Fatalf("outcome = %+v", outcome)
+		}
+		if outcome.Target.Hostname != "echo.test" {
+			t.Fatalf("target = %+v", outcome.Target)
+		}
+		encoded, err := json.Marshal(outcome)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(encoded), string(request)) || strings.Contains(string(encoded), string(response)) {
+			t.Fatalf("relay outcome leaked copied payload: %s", encoded)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("missing relay outcome")
+	}
+	select {
+	case <-handled:
+	case <-time.After(time.Second):
+		t.Fatal("handler did not finish after relay endpoints closed")
 	}
 }
 

@@ -1,6 +1,6 @@
 # Observation and Live-Trial Plan
 
-Version: v0.4
+Version: v0.5
 Status: bounded recorder implemented; live configuration writes are not implemented
 
 ## 1. Read-only baseline found on 2026-08-02
@@ -55,7 +55,7 @@ The first two lanes remain the default development path. Read-only inspection ma
 | Privacy policy reason | Implemented when policy changes candidate set | Prove why Direct was skipped | Structured enum; never include the configured pattern text |
 | Client-visible outcome | Planned | Detect refresh/retry/regression | Success/failure/timing only |
 | Process identity | Off | Diagnose application-specific behavior | Separate opt-in; normalize locally |
-| Aggregate byte counts | Off initially | Estimate avoidable proxy traffic | Enable only after validation |
+| Post-commit adaptive relay byte counts | Implemented with recorder | Measure observed Direct/Proxy relay volume and cancellation | Directional integer counts only; no payload; not total wire/system traffic |
 
 Never record:
 
@@ -80,7 +80,7 @@ The Phase 0 recorder uses local JSONL for schema iteration before learned-policy
 
 Raw observations must never be committed to GitHub. Analysis artifacts intended for the repository must contain aggregates or synthetic fixtures only.
 
-The Phase 0 stdout `DecisionEvent` and `DiagnosticEvent` gained an optional `policy_reason` field in ADR-0007. This is an additive experimental-schema change; consumers must tolerate its absence on non-TLS or pre-policy failures. JSONL schema v1 stores the bounded form. It is not a learned-policy database and has no SQLite migration.
+The Phase 0 stdout `DecisionEvent` and `DiagnosticEvent` gained an optional `policy_reason` field in ADR-0007. Observation JSONL schema 1 stored that bounded decision-era form. Schema 2 adds `relay_outcome`; the report reader accepts both versions, while new recorders write version 2. This remains separate from the learned-policy SQLite database.
 
 ADR-0008 adds an independent `supervisor` lifecycle event. It contains service state, attempt, bounded failure class and backoff only—never a target, hostname or child error string—and is not part of learned routing evidence.
 
@@ -102,13 +102,15 @@ ADR-0016 adds identity-free `learning report`. It groups inside SQLite and never
 
 ADR-0017 adds process-local systemic-health transitions. `learning_health` rows contain a pseudonymized optional triggering target plus safe trigger/reason/state, freeze deadline, and bounded distinct-target counts. They do not mean the current route was changed and do not remove earlier SQLite evidence.
 
-ADR-0018 adds paused `observations report`. It strictly reads managed JSONL and emits only counts, ratios, p50/p95/p99 readiness timing, distinct target/profile counts, and explicit interpretation flags—never hashes. `readiness_success_ratio` is the fraction of recorded adaptive attempts reaching the current TCP/TLS commit gate, not application or client-visible success. `decision_readiness_latency_ms` starts after the safe ClientHello and privacy decision and includes candidate staggering/fallback; `winner_candidate_latency_ms` starts later at the winner candidate itself. The current report has no static-rule lane, client outcome, or bytes, so it cannot calculate `avoidable_proxy_ratio`, end-to-end success, or traffic savings.
+ADR-0018 introduced paused `observations report` with readiness counts, ratios, p50/p95/p99 timing, distinct target/profile counts, and explicit interpretation flags—never hashes. `readiness_success_ratio` is the fraction of recorded adaptive attempts reaching the current TCP/TLS commit gate, not application or client-visible success. `decision_readiness_latency_ms` starts after the safe ClientHello and privacy decision; `winner_candidate_latency_ms` starts later at the winner candidate itself. ADR-0022 subsequently adds bounded post-commit adaptive relay bytes, but the report still has no static-rule lane, client outcome, wire overhead, or full-system byte denominator, so it cannot calculate `avoidable_proxy_ratio`, end-to-end success, or total traffic savings.
 
 ADR-0019 adds random trial scoping. When recording is enabled, `supervise` generates one `trial-<128-bit hex>` identifier and passes it to Guard and engine; restarts retain it. Human-readable labels are rejected. The ID remains in pseudonymous JSONL/export for within-trial joining, but aggregate reports output only `trial_sessions_observed` and `unscoped_events`. It is not the network profile and is not the SQLite evidence session. Standalone Guard/engine processes generate separate IDs unless the operator explicitly passes one shared generated-format value.
 
 ADR-0020 adds `trial preflight`. Both lab reports now carry a schema version and UTC generation time. Preflight strictly decodes their full contents, requires the exact non-duplicated scenario set and all isolation booleans to agree, verifies the pinned Mihomo version/build marker, and rejects reports older than 24 hours by default. It also requires observation recording to be enabled and paused, applies separate Direct/cleartext/ephemeral-auto acknowledgments, and matches a verified backup to any existing durable store. Warnings do not block readiness; failures do. The command does not pause/resume, create a backup, run a lab, inspect Clash, or authorize activation.
 
 ADR-0021 makes runtime shutdown ordering deterministic. Sidecar and Guard close pending handshakes and both relay endpoints when canceled, then wait for every accepted handler before returning. Only after that return may the supervisor-side process close its recorder and durable writer. This is an explicit stop-window interruption: it is not a route failure, must not enter learning, and cannot be transparently replayed.
+
+ADR-0022 adds one engine `relay_outcome` after a committed relay ends. It stores only HMAC-scoped target metadata, selected path, post-commit directional byte counts, duration, and `ended`/`canceled`; it never stores copied bytes or raw errors. The report aggregates these values by Direct/Proxy and rejects counter overflow. Remote bytes may include replayed TLS ServerHello and are not application success. Client→remote excludes the TLS ClientHello sent during readiness. The totals omit static-rule connections, Guard-original traffic and wire overhead, so they cannot by themselves prove `avoidable_proxy_ratio` or total proxy savings.
 
 Operational commands:
 
