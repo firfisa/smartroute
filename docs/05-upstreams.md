@@ -46,7 +46,7 @@ Remaining runtime checks:
 - Confirm both forced listeners work through config reloads on macOS; startup behavior is verified.
 - Confirm the proxy listener cannot resolve to `DIRECT` through a user selector when collecting a Proxy counterfactual.
 - Re-run the new Guard engine-stop/original-fallback/restart scenarios on macOS and Linux; the implementation and unit tests are complete, but this added child-process topology has not yet been recorded as passed.
-- Protect failure of the Guard process itself with a supervisor and/or an outer Mihomo health fallback, while documenting that the outer group still cannot retry the first failed connection.
+- Run the new SmartRoute supervisor with the pinned Mihomo fault lab; the in-process lifecycle/restart contract is implemented, while host-service integration and any outer Mihomo health fallback remain pending. Neither can retry the first connection that observed Guard failure.
 
 ## 3. Preparation
 

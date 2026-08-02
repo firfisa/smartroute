@@ -42,8 +42,10 @@ All notable project changes are recorded here. The project has not published a r
 - Runtime `privacy-first` and `never_direct_probe` enforcement before Direct candidate creation, with exact/suffix matching and fail-closed target normalization.
 - Single-path TLS L3 connector used for privacy-forced Proxy traffic, preserving ServerHello readiness and prefetched-byte replay without opening Direct.
 - Structured privacy decision/failure reasons and ADR-0007 covering matching, precedence, migration and rollback semantics.
+- `smartroute supervise` with independently monitored Guard/engine child processes, structured lifecycle events, stable-window reset and capped exponential restart backoff.
+- Graceful child interruption with a bounded kill delay, synchronized child event writers, and ADR-0008 documenting residual Guard-down and supervisor-down windows.
 
 ### Known limitations
 
-- TLS readiness is structural and experimental; certificate/Finished validation, learning persistence, Guard-process supervision, privacy-safe persistent recording, active configuration integration, and broad real-site compatibility are not implemented yet.
+- TLS readiness is structural and experimental; certificate/Finished validation, OS-level supervisor service integration, privacy-safe persistent recording, active configuration integration, and broad real-site compatibility are not implemented yet.
 - No public release artifacts have been published yet.

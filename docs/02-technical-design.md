@@ -27,6 +27,8 @@ SmartRoute 只接管“现有规则无法可靠决定”的流量，并满足以
 
 ```mermaid
 flowchart TB
+    Sup["SmartRoute Supervisor"] -->|"独立监控/重启"| G
+    Sup -->|"独立监控/重启"| S
     App["应用流量"] --> M["Mihomo: TUN / 系统代理 / 静态规则"]
     M -->|"明确规则"| Fixed["DIRECT / PROXY / REJECT"]
     M -->|"未知 TCP 目标"| G["SmartRoute Availability Guard"]
@@ -41,6 +43,8 @@ flowchart TB
     UI["本地 UI / 后续 Clash Verge Rev 集成"] <--> E
     E --> Export["可选规则导出 / rule-provider"]
 ```
+
+`smartroute supervise` 只拥有 SmartRoute 的 Guard 与 adaptive engine 子进程，不接管 Mihomo。引擎退出时 Guard 继续沿原策略兜底；Guard 退出时 supervisor 以 100ms 起、5s 封顶的指数退避恢复它。重启只改善后续连接，不能重放已经观察到 Guard/engine 故障的连接；supervisor 自身还需要未来的 launchd/systemd/Windows service 管理。详见 ADR-0008。
 
 为什么不是先做外挂探测器：
 

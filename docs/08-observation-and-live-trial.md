@@ -80,9 +80,11 @@ Raw observations must never be committed to GitHub. Analysis artifacts intended 
 
 The Phase 0 stdout `DecisionEvent` and `DiagnosticEvent` gained an optional `policy_reason` field in ADR-0007. This is an additive experimental-schema change; consumers must tolerate its absence on non-TLS or pre-policy failures. No persistent migration exists yet because the recorder remains unimplemented.
 
+ADR-0008 adds an independent `supervisor` lifecycle event. It contains service state, attempt, bounded failure class and backoff only—never a target, hostname or child error string—and is not part of learned routing evidence.
+
 ## 5. Coordinated replacement procedure
 
-The isolated Mihomo listener topology and minimal L3 TLS readiness recovery have passed on macOS/v1.19.29. Runtime Direct-probe privacy enforcement is implemented and tested locally. A separate Guard implements pre-payload fallback when the adaptive engine is unavailable, but its new Mihomo stop/restart scenarios still need a permitted platform run and Guard-process failure remains unprotected. Configuration replacement will begin only after those availability checks, recorder privacy controls, rollback tests, and a broader real-TLS compatibility matrix pass.
+The isolated Mihomo listener topology and minimal L3 TLS readiness recovery have passed on macOS/v1.19.29. Runtime Direct-probe privacy enforcement and independent Guard/engine supervision are implemented and tested locally. The new Mihomo stop/restart scenarios still need a permitted platform run, and supervisor failure itself still requires an OS service boundary. Configuration replacement will begin only after those availability checks, recorder privacy controls, rollback tests, and a broader real-TLS compatibility matrix pass.
 
 1. Agree on the trial network, time window, target traffic, and stop conditions.
 2. Resolve the active profile plus merge/script layers read-only.

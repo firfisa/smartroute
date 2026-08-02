@@ -48,6 +48,7 @@ flowchart LR
 | Direct/Proxy 错峰竞争、取消 loser | 实验性实现 |
 | TCP sidecar relay 与 `serve` 命令 | 实验性实现 |
 | 独立 availability Guard 与 `guard` 命令 | 已实现单元测试；隔离 Mihomo 故障/恢复运行待复验 |
+| Guard/engine 独立进程 supervisor | 已实现本地 `supervise` 命令、独立重启和封顶退避；OS 服务集成待实现 |
 | 独立回环 Test Lab 与故障注入 | 已实现第一批场景 |
 | TLS readiness gate | 已实现：结构化 ServerHello 达到 L3，预读字节无损回放 |
 | TLS ClientHello/0-RTT 安全处理 | 已实现分片重组；检测到 `early_data` 时在拨号前拒绝 |
@@ -69,6 +70,16 @@ go run ./cmd/smartroute trace \
   -proxy success:tls:120
 make check
 ```
+
+实验运行时建议由父进程统一启动两个子服务：
+
+```bash
+go run ./cmd/smartroute supervise \
+  -config configs/smartroute.example.json \
+  -acknowledge-direct-probes
+```
+
+`privacy-first` 模式不需要 Direct 探测确认。Supervisor 只管理 SmartRoute Guard 与 adaptive engine，不管理 Mihomo，也不能透明恢复恰好撞上 Guard 崩溃窗口的连接。
 
 ## 独立测试环境
 

@@ -20,6 +20,7 @@ flowchart TB
     Guard["internal/guard\nPre-payload availability"]
     NetRelay["internal/netrelay\nBidirectional relay"]
     Privacy["internal/privacy\nDirect-probe policy"]
+    Supervisor["internal/supervisor\nChild lifecycle"]
     TestLab["internal/testlab\nIsolated fault lab"]
     LabCLI["cmd/smartroute-testlab\nJSON lab runner"]
     MihomoLab["internal/mihomolab\nPinned child-process lab"]
@@ -32,6 +33,7 @@ flowchart TB
     CLI --> Sidecar
     CLI --> Guard
     CLI --> Privacy
+    CLI --> Supervisor
     Config --> Privacy
     Decision --> Model
     Transport --> Model
@@ -74,6 +76,7 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `internal/guard` | Data plane | experimental | Before forwarding payload to either lane, select the adaptive engine or fall back to the original-policy SOCKS listener | Direct/Proxy evidence, learning, post-commit replay, Guard-process supervision | `internal/guard/server_test.go`; Mihomo Lab fault scenarios |
 | `internal/netrelay` | Data plane | experimental | Shared bidirectional TCP copying and half-close handling | Routing decisions or payload inspection | Consumer tests in Guard, Sidecar and Test Lab |
 | `internal/privacy` | Policy | experimental | Validate/normalize exact and suffix deny rules; decide whether a target may open Direct | Network I/O, hostname persistence, or route learning | `internal/privacy/policy_test.go`; Sidecar privacy tests |
+| `internal/supervisor` | Runtime | experimental | Independently monitor Guard/engine child processes, cap restart backoff, and emit lifecycle events | Supervising Mihomo, replaying failed connections, or host-level service installation | `internal/supervisor/supervisor_test.go`; CLI service-spec tests |
 | `internal/testlab` | Test | implemented | Ephemeral loopback echo target, fake Direct/Proxy gateways, deterministic faults | External network and active Clash access | `internal/testlab/lab_test.go` |
 | `internal/mihomolab` | Test | implemented | Temporary config/home, child lifecycle, synthetic DNS, forced-listener and readiness assertions | Active Clash discovery, external traffic, TUN, system proxy | `internal/mihomolab/lab_test.go`; explicit runtime command |
 | `internal/upstream` | Integration | planned | Mihomo config/API adapter and topology validation | Shipping Mihomo source | Planned integration tests |
@@ -102,6 +105,8 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `TLSRacer.ConnectPath(ctx, target, hello, path)` | `internal/transport` | One policy-selected candidate and validated no-early-data ClientHello | L3 connection with replay prefix | Rejects invalid/missing path; returns `TLSPathError` with classified observation | experimental | Proxy-only success/replay and failure tests |
 | `privacy.New(mode, patterns)` | `internal/privacy` | Mode and exact/suffix deny patterns | Immutable compiled local policy | Rejects unknown mode, whitespace, URL-like/invalid host syntax and suffix IP rules | experimental | Policy validation table |
 | `Policy.Evaluate(target)` | `internal/privacy` | Target hostname/IP | Allow/deny plus stable reason code | Missing policy and invalid target fail closed to Proxy-only | experimental | Exact/suffix/boundary/privacy-first tests |
+| `Supervisor.Run(ctx)` | `internal/supervisor` | Context, service specs, starter, restart policy | Runs independent monitors until cancellation | Rejects invalid/duplicate services; runtime failures trigger capped restart rather than stopping siblings | experimental | Restart, start-error, independence, cancellation tests |
+| `CommandStarter.Start(ctx, service)` | `internal/supervisor` | Executable/args and synchronized stdout/stderr | Started child implementing `Wait()` | Parent cancellation interrupts child; `WaitDelay` kills after grace period | experimental | Supervisor consumers; platform process integration pending |
 | `sidecar.Server.Serve(ctx, listener)` | `internal/sidecar` | Context, listener, plain Racer or TLSRacer | Serves until cancellation/error; TLS mode requires L3 | Rejects unsafe ClientHello before dialing; never reads Clash config | experimental | Sidecar, Test Lab and Mihomo Lab |
 | `guard.Server.Serve(ctx, listener)` | `internal/guard` | Context, listener, adaptive/original dialers and bounded timeouts | Serves SOCKS targets; commits one availability lane before payload | Falls back on adaptive handshake failure; refuses when both lanes fail; never replays post-commit data | experimental | Adaptive, unavailable, wedged and dual-failure unit tests; Mihomo Lab scenarios |
 | `netrelay.Bidirectional(left, right)` | `internal/netrelay` | Two owned TCP-like connections | Relays both directions until completion | Best-effort half-close; relay errors are not routing evidence | experimental | Guard/Sidecar end-to-end tests |
@@ -117,6 +122,7 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `smartroute trace -direct SPEC -proxy SPEC` | implemented | Evaluate one synthetic paired observation and print JSON | None | None |
 | `smartroute serve [-acknowledge-direct-probes]` | experimental | Run TLS-over-SOCKS sidecar with runtime privacy policy | Privacy-first/deny targets open Proxy only; acknowledged explicit-opt-in targets may race Direct/Proxy | None; emits decision/diagnostic JSON only |
 | `smartroute guard` | experimental | Run the separate availability boundary in front of the adaptive engine | Configured loopback Guard, engine and original-policy SOCKS endpoints | None; emits `guard_decision` JSON only |
+| `smartroute supervise` | experimental | Run Guard and adaptive engine as independently restartable children | Same loopback effects as the two child commands; does not operate Mihomo | None; emits child events plus `supervisor` lifecycle JSON |
 | `smartroute policy` | planned | Inspect, lock, revoke, or export policy | None by default | Policy store |
 | `smartroute-testlab` | implemented | Run isolated deterministic data-plane scenarios | Ephemeral loopback sockets only | None |
 | `smartroute-mihomo-lab -mihomo PATH` | implemented | Run isolated pinned-Mihomo contract scenarios | Child process, temporary home, local synthetic DNS and ephemeral loopback sockets only | Temporary files removed; JSON report only |
@@ -211,6 +217,7 @@ Guard availability reasons:
 | `decision` | Sidecar/decision engine | `event_type`, target, selected path, reason, optional `policy_reason`, observation, `committed` | CLI/store/UI | experimental `DecisionEvent`; persistent form planned |
 | `diagnostic` | Sidecar | `event_type`, target, reason, failure class, optional Direct/Proxy failures and `policy_reason` | CLI/debug | experimental `DiagnosticEvent`; no payload bytes |
 | `guard_decision` | Guard | `event_type`, target, selected lane, reason, bounded failure classes, `committed` | CLI/store/UI | experimental; no payload bytes and no persistence |
+| `supervisor` | Supervisor | `event_type`, service, state, attempt, bounded failure class, optional `backoff_ms` | CLI/operator | experimental; states include `started`, `start_failed`, `exited`, `restart_scheduled`, `stopped` |
 | `policy.promoted` | Learning engine | old/new state, evidence, expiry | Store/UI/export | planned |
 | `learning.frozen` | Health guard | failing control, profile ID | UI/metrics | planned |
 

@@ -14,7 +14,7 @@ The repository is in Phase 0: architecture and feasibility spike.
 
 Current scope:
 
-- Go-based TCP/SOCKS5 availability Guard, adaptive sidecar, staggered candidate racer, and decision engine.
+- Go-based process supervisor, TCP/SOCKS5 availability Guard, adaptive sidecar, staggered candidate racer, and decision engine.
 - Deterministic loopback Test Lab plus a pinned, isolated Mihomo child-process contract lab before any active Clash integration.
 - macOS-first development while keeping platform boundaries explicit.
 - TCP and TLS observability first.
@@ -52,6 +52,7 @@ These rules must not be weakened silently:
 14. TLS first-flight racing may duplicate only a fully parsed ClientHello without `early_data`; every consumed winner byte must be replayed exactly, and a valid ServerHello is L3 evidence rather than full-handshake success.
 15. The availability Guard must choose the original-policy lane before forwarding client payload to either lane when the adaptive engine is unavailable; post-commit failures are never transparently replayed, and Guard-process failure remains a separate protection boundary.
 16. `privacy-first`, matching `never_direct_probe` entries, invalid targets, and missing runtime policy must open zero Direct candidates; privacy denial still requires the Proxy path to meet its protocol readiness gate.
+17. Guard and adaptive engine are supervised independently; restart shortens future failure windows but never justifies replaying the connection that observed a process failure, and supervisor failure requires an external service manager.
 
 ## 4. Repository map
 
@@ -71,6 +72,7 @@ Keep this map current whenever a top-level component is added, removed, or renam
 | `internal/guard/` | Separate pre-payload availability selection between adaptive engine and original policy |
 | `internal/netrelay/` | Shared bidirectional TCP relay primitive |
 | `internal/privacy/` | Local Direct-probe policy compilation, normalization, and reason codes |
+| `internal/supervisor/` | Independent child lifecycle, bounded restart backoff, and structured service events |
 | `internal/testlab/` | Loopback targets, fake gateways, and fault scenarios |
 | `internal/mihomolab/` | Temporary Mihomo config, child lifecycle, synthetic DNS, and topology assertions |
 | `internal/tlsinspect/` | Bounded ClientHello/ServerHello record parsing and early-data rejection |

@@ -35,6 +35,7 @@ required_files=(
   "docs/adr/0005-safe-tls-first-flight-racing.md"
   "docs/adr/0006-separate-availability-guard.md"
   "docs/adr/0007-enforce-direct-probe-privacy.md"
+  "docs/adr/0008-supervise-guard-and-engine.md"
   "configs/smartroute.example.json"
   "upstreams.lock"
 )
@@ -101,6 +102,12 @@ fi
 if ! matches 'privacy_first_proxy_only' "${project_root}/docs/04-component-catalog.md" ||
   ! matches 'never_direct_probe' "${project_root}/docs/adr/0007-enforce-direct-probe-privacy.md"; then
   echo "runtime Direct-probe privacy contract is missing" >&2
+  exit 1
+fi
+
+if ! matches 'smartroute supervise' "${project_root}/README.md" "${project_root}/docs/adr/0008-supervise-guard-and-engine.md" ||
+  ! matches 'restart_scheduled' "${project_root}/docs/04-component-catalog.md"; then
+  echo "supervisor lifecycle contract is missing" >&2
   exit 1
 fi
 

@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,6 +23,7 @@ import (
 	"github.com/firfisa/smartroute/internal/model"
 	"github.com/firfisa/smartroute/internal/privacy"
 	"github.com/firfisa/smartroute/internal/sidecar"
+	"github.com/firfisa/smartroute/internal/supervisor"
 	"github.com/firfisa/smartroute/internal/transport"
 )
 
@@ -56,6 +58,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return runServe(args[1:], stdout, stderr)
 	case "guard":
 		return runGuard(args[1:], stdout, stderr)
+	case "supervise":
+		return runSupervise(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return nil
@@ -63,6 +67,91 @@ func run(args []string, stdout, stderr io.Writer) error {
 		printUsage(stderr)
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+func runSupervise(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("supervise", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	path := flags.String("config", "configs/smartroute.example.json", "path to SmartRoute JSON config")
+	profileID := flags.String("network-profile", "manual-experimental", "local network profile label for child events")
+	allowDirectProbes := flags.Bool("acknowledge-direct-probes", false, "acknowledge Direct candidates in explicit-opt-in privacy mode")
+	minBackoff := flags.Duration("restart-min-backoff", 100*time.Millisecond, "minimum child restart backoff")
+	maxBackoff := flags.Duration("restart-max-backoff", 5*time.Second, "maximum child restart backoff")
+	stableAfter := flags.Duration("restart-stable-after", 30*time.Second, "runtime that resets consecutive-failure backoff")
+	shutdownGrace := flags.Duration("shutdown-grace", 2*time.Second, "grace period before a child is killed")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *profileID == "" {
+		return errors.New("network-profile must not be empty")
+	}
+	if err := validateSupervisorDurations(*minBackoff, *maxBackoff, *stableAfter, *shutdownGrace); err != nil {
+		return err
+	}
+	cfg, err := config.Load(*path)
+	if err != nil {
+		return err
+	}
+	if err := validateDirectProbeAcknowledgement(cfg.Privacy.Mode, *allowDirectProbes); err != nil {
+		return err
+	}
+	absoluteConfig, err := filepath.Abs(*path)
+	if err != nil {
+		return fmt.Errorf("resolve config path: %w", err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve SmartRoute executable: %w", err)
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	stdoutWriter := &synchronizedWriter{writer: stdout}
+	stderrWriter := &synchronizedWriter{writer: stderr}
+	monitor := supervisor.Supervisor{
+		Services: supervisedServices(executable, absoluteConfig, *profileID, *allowDirectProbes),
+		Starter: supervisor.CommandStarter{
+			Stdout: stdoutWriter, Stderr: stderrWriter, ShutdownGrace: *shutdownGrace,
+		},
+		MinBackoff: *minBackoff, MaxBackoff: *maxBackoff, StableAfter: *stableAfter,
+		OnEvent: func(event supervisor.Event) {
+			_ = json.NewEncoder(stdoutWriter).Encode(event)
+		},
+	}
+	fmt.Fprintln(stderrWriter, "supervising separate adaptive-engine and guard child processes; no Clash files are read or modified")
+	return monitor.Run(ctx)
+}
+
+func validateSupervisorDurations(minimum, maximum, stableAfter, shutdownGrace time.Duration) error {
+	if minimum < 0 || maximum < 0 || stableAfter < 0 || shutdownGrace < 0 {
+		return errors.New("supervisor durations must not be negative")
+	}
+	if minimum > 0 && maximum > 0 && maximum < minimum {
+		return errors.New("restart-max-backoff must not be less than restart-min-backoff")
+	}
+	return nil
+}
+
+func supervisedServices(executable, configPath, profileID string, acknowledgeDirect bool) []supervisor.Service {
+	serveArgs := []string{"serve", "-config", configPath, "-network-profile", profileID}
+	if acknowledgeDirect {
+		serveArgs = append(serveArgs, "-acknowledge-direct-probes")
+	}
+	return []supervisor.Service{
+		{Name: "adaptive_engine", Executable: executable, Args: serveArgs},
+		{Name: "availability_guard", Executable: executable, Args: []string{"guard", "-config", configPath, "-network-profile", profileID}},
+	}
+}
+
+type synchronizedWriter struct {
+	mu     sync.Mutex
+	writer io.Writer
+}
+
+func (w *synchronizedWriter) Write(value []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.writer.Write(value)
 }
 
 func runGuard(args []string, stdout, stderr io.Writer) error {
@@ -267,11 +356,14 @@ Usage:
   smartroute trace [-config path] [-direct spec] [-proxy spec]
   smartroute serve -acknowledge-direct-probes [-config path] [-network-profile label]
   smartroute guard [-config path] [-network-profile label]
+  smartroute supervise [-acknowledge-direct-probes] [-config path] [-network-profile label]
 
 The trace command evaluates one synthetic paired observation. The experimental
 serve command accepts TLS-over-SOCKS on the configured loopback listener and
 does not read or modify Clash configuration. Explicit-opt-in privacy mode
-requires a Direct-probe acknowledgment; privacy-first opens Proxy only. The guard command
-runs as a separate availability process and falls back to the configured original
-SOCKS listener if the adaptive engine cannot accept a target connection.`)
+requires a Direct-probe acknowledgment; privacy-first opens Proxy only. The guard
+command falls back to the configured original SOCKS listener if the adaptive
+engine cannot accept a target connection. The supervise command runs Guard and
+engine as independently restartable child processes; it does not replay a
+connection lost while Guard itself is down.`)
 }
