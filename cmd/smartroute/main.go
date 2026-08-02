@@ -67,6 +67,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return runSupervise(args[1:], stdout, stderr)
 	case "observations":
 		return runObservations(args[1:], stdout, stderr)
+	case "learning":
+		return runLearning(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return nil
@@ -395,11 +397,11 @@ func openDurableLearning(ctx context.Context, cfg config.Config, onError func(er
 		return closeOnError(err)
 	}
 	now := time.Now().UTC()
-	if err := evidenceStore.StartSession(ctx, sessionID, now); err != nil {
-		return closeOnError(fmt.Errorf("start durable learning session: %w", err))
-	}
 	if _, err := evidenceStore.PruneEvidence(ctx, now.Add(-cfg.LearningEvidenceRetention())); err != nil {
 		return closeOnError(fmt.Errorf("prune durable learning evidence: %w", err))
+	}
+	if err := evidenceStore.StartSession(ctx, sessionID, now); err != nil {
+		return closeOnError(fmt.Errorf("start durable learning session: %w", err))
 	}
 	writer, err := store.NewAsyncWriter(evidenceStore, sessionID, cfg.Learning.Persistence.QueueSize, onError)
 	if err != nil {
@@ -511,6 +513,167 @@ func runObservations(args []string, stdout, stderr io.Writer) error {
 	}
 }
 
+type learningStoreStatus struct {
+	ConfiguredEnabled bool               `json:"configured_enabled"`
+	DatabasePath      string             `json:"database_path"`
+	DatabaseExists    bool               `json:"database_exists"`
+	KeyExists         bool               `json:"key_exists"`
+	DatabaseBytes     int64              `json:"database_bytes,omitempty"`
+	Health            string             `json:"health"`
+	Store             *store.StoreStatus `json:"store,omitempty"`
+}
+
+type learningBackupResult struct {
+	Destination string               `json:"destination"`
+	Manifest    store.BackupManifest `json:"manifest"`
+}
+
+func runLearning(args []string, stdout, stderr io.Writer) error {
+	if len(args) == 0 {
+		return errors.New("learning requires status, backup, verify-backup, or restore")
+	}
+	action := args[0]
+	flags := flag.NewFlagSet("learning "+action, flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	configPath := flags.String("config", "configs/smartroute.example.json", "path to SmartRoute JSON config")
+	source := flags.String("source", "", "completed SmartRoute backup directory")
+	destination := flags.String("destination", "", "new backup directory or restored database path")
+	if err := flags.Parse(args[1:]); err != nil {
+		return err
+	}
+	switch action {
+	case "status":
+		cfg, err := config.Load(*configPath)
+		if err != nil {
+			return err
+		}
+		status, err := inspectLearningStore(context.Background(), cfg)
+		if err != nil {
+			return err
+		}
+		encoder := json.NewEncoder(stdout)
+		encoder.SetIndent("", "  ")
+		return encoder.Encode(status)
+	case "backup":
+		if *destination == "" {
+			return errors.New("learning backup requires -destination")
+		}
+		cfg, err := config.Load(*configPath)
+		if err != nil {
+			return err
+		}
+		evidenceStore, err := openExistingLearningStore(context.Background(), cfg.Learning.Persistence.DatabasePath)
+		if err != nil {
+			return err
+		}
+		defer evidenceStore.Close()
+		manifest, err := evidenceStore.Backup(context.Background(), *destination)
+		if err != nil {
+			return err
+		}
+		absoluteDestination, err := filepath.Abs(*destination)
+		if err != nil {
+			return fmt.Errorf("resolve completed backup destination: %w", err)
+		}
+		encoder := json.NewEncoder(stdout)
+		encoder.SetIndent("", "  ")
+		return encoder.Encode(learningBackupResult{Destination: absoluteDestination, Manifest: manifest})
+	case "verify-backup":
+		if *source == "" {
+			return errors.New("learning verify-backup requires -source")
+		}
+		manifest, err := store.VerifyBackup(context.Background(), *source)
+		if err != nil {
+			return err
+		}
+		encoder := json.NewEncoder(stdout)
+		encoder.SetIndent("", "  ")
+		return encoder.Encode(manifest)
+	case "restore":
+		if *source == "" || *destination == "" {
+			return errors.New("learning restore requires -source and -destination")
+		}
+		result, err := store.RestoreBackup(context.Background(), *source, *destination)
+		if err != nil {
+			return err
+		}
+		encoder := json.NewEncoder(stdout)
+		encoder.SetIndent("", "  ")
+		return encoder.Encode(result)
+	default:
+		return fmt.Errorf("unknown learning action %q", action)
+	}
+}
+
+func inspectLearningStore(ctx context.Context, cfg config.Config) (learningStoreStatus, error) {
+	path := cfg.Learning.Persistence.DatabasePath
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return learningStoreStatus{}, fmt.Errorf("resolve learning database path: %w", err)
+	}
+	result := learningStoreStatus{ConfiguredEnabled: cfg.Learning.Persistence.Enabled, DatabasePath: absolute}
+	databaseInfo, databaseErr := os.Stat(path)
+	keyInfo, keyErr := os.Stat(path + ".key")
+	if databaseErr != nil && !errors.Is(databaseErr, os.ErrNotExist) {
+		return result, fmt.Errorf("inspect learning database: %w", databaseErr)
+	}
+	if keyErr != nil && !errors.Is(keyErr, os.ErrNotExist) {
+		return result, fmt.Errorf("inspect learning database key: %w", keyErr)
+	}
+	result.DatabaseExists = databaseErr == nil
+	result.KeyExists = keyErr == nil
+	if result.DatabaseExists {
+		if !databaseInfo.Mode().IsRegular() {
+			return result, errors.New("learning database path must be a regular file")
+		}
+		result.DatabaseBytes = databaseInfo.Size()
+	}
+	if result.KeyExists && !keyInfo.Mode().IsRegular() {
+		return result, errors.New("learning database key path must be a regular file")
+	}
+	switch {
+	case !result.DatabaseExists && !result.KeyExists:
+		result.Health = "absent"
+		return result, nil
+	case !result.DatabaseExists:
+		result.Health = "orphaned_key"
+		return result, nil
+	case !result.KeyExists:
+		result.Health = "missing_key"
+		return result, nil
+	}
+	evidenceStore, err := store.OpenReadOnly(ctx, store.Config{Path: path, BusyTimeout: 5 * time.Second})
+	if err != nil {
+		return result, fmt.Errorf("inspect durable learning store: %w", err)
+	}
+	defer evidenceStore.Close()
+	storeStatus, err := evidenceStore.Status(ctx)
+	if err != nil {
+		return result, err
+	}
+	result.Health = "ok"
+	result.Store = &storeStatus
+	return result, nil
+}
+
+func openExistingLearningStore(ctx context.Context, path string) (*store.Store, error) {
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, errors.New("durable learning database does not exist")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("inspect durable learning database: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("durable learning database must be a regular file")
+	}
+	evidenceStore, err := store.OpenReadOnly(ctx, store.Config{Path: path, BusyTimeout: 5 * time.Second})
+	if err != nil {
+		return nil, fmt.Errorf("open durable learning database: %w", err)
+	}
+	return evidenceStore, nil
+}
+
 func validateDirectProbeAcknowledgement(mode string, acknowledged bool) error {
 	if mode == privacy.ModeExplicitOptIn && !acknowledged {
 		return errors.New("serve requires -acknowledge-direct-probes in explicit-opt-in privacy mode")
@@ -616,6 +779,10 @@ Usage:
   smartroute guard [-config path] [-network-profile label]
   smartroute supervise [-acknowledge-direct-probes] [-config path] [-network-profile label]
   smartroute observations status|pause|resume|clear|export [-config path]
+  smartroute learning status [-config path]
+  smartroute learning backup -destination new-directory [-config path]
+  smartroute learning verify-backup -source backup-directory
+  smartroute learning restore -source backup-directory -destination new-database
 
 The trace command evaluates one synthetic paired observation. The experimental
 serve command accepts TLS-over-SOCKS on the configured loopback listener and

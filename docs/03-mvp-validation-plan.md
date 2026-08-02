@@ -61,6 +61,7 @@ MVP 不是为了证明“能够自动写 YAML”，而是回答五个可证伪�
 | 进程内学习状态机 | 实验性完成 | 最小路由键、连续强证据阈值、TTL、矛盾转不稳定、网络/端口/传输隔离 |
 | 偏好候选顺序 | 实验性完成 | 默认 shadow；auto 下 Proxy-first/Direct-first，首选提前失败立即启动另一条 |
 | SQLite 强证据 schema v1 与异步 writer | 实验性完成、默认关闭且 shadow-only | HMAC 目标键、独立会话、迁移/重开/并发、损坏/未来版本拒绝、裁剪、明文扫描、队列背压/排空、disabled 无文件 |
+| 持久证据生命周期 | 实验性完成 | 缺失不创建、只读无迁移、聚合状态、online backup、SHA-256 清单、临时副本验证、恢复到新路径、拒绝覆盖/不完整产物 |
 | 域名形式目标保留 | 实验性完成 | `echo.test` 经 sidecar 和 fake gateway 断言 |
 | 隔离故障目标 | 第一批完成 | `go run ./cmd/smartroute-testlab` |
 | 独立 Mihomo listener 拓扑 | macOS arm64、Linux amd64/v1.19.29 已完成 | `make mihomo-lab`；临时目录、随机端口、独立子进程 |
@@ -273,7 +274,7 @@ MVP 不是为了证明“能够自动写 YAML”，而是回答五个可证伪�
 3. 用两个 Mihomo listener 验证 Direct/Proxy 路径隔离。macOS arm64 与 Linux amd64/v1.19.29 已完成；其 SOCKS ACK 只证明 L1。
 4. 实现候选拨号、延迟启动、取消和结构化事件。
 5. 实现 TLS record 与跨包 ClientHello 解析；明确拒绝复制 early data。最小安全切片已完成，完整真实 TLS 握手兼容矩阵仍待扩展。
-6. 建立 SQLite schema 和 deterministic state machine。schema v1、进程内状态机及 opt-in 异步 shadow 写入已完成；跨会话持久策略评估、备份/恢复和用户控制仍待实现。
+6. 建立 SQLite schema 和 deterministic state machine。schema v1、进程内状态机、opt-in 异步 shadow 写入以及 status/backup/verify/restore-to-new-path 已完成；跨会话持久策略评估、破坏性清理和更完整的用户控制仍待实现。
 7. 加入网络画像、控制探针和学习冻结。
 8. 做 CLI：状态、观测、锁定、撤销、隐私列表、导出。
 9. 跑故障注入与静态规则基线。

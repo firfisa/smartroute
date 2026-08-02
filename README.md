@@ -58,6 +58,7 @@ flowchart LR
 | TLS ClientHello/0-RTT 安全处理 | 已实现分片重组；检测到 `early_data` 时在拨号前拒绝 |
 | Direct 探测隐私策略 | 已实现：`privacy-first`、精确/后缀 deny、缺失策略 fail-closed；禁直连时只启 Proxy 且仍要求 L3 |
 | SQLite 强证据存储与运行时写入 | 已实现：默认关闭、HMAC 目标键、独立会话、异步有界队列、迁移/校验/裁剪；仅存证据，不应用持久策略 |
+| 持久证据生命周期 | 已实现：只读状态、一致性在线备份、临时副本验证、恢复到新路径；不覆盖、不自动激活 |
 | 独立 Mihomo listener 拓扑 | v1.19.29 已验证强制 Direct/Proxy、域名保留和循环规避 |
 | Mihomo HTTPS/TLS 自适应路径 | macOS arm64 与 Linux amd64/v1.19.29 已验证 Direct 无 ServerHello 后由 Proxy 恢复并提交 L3 |
 | 活动 Clash Verge Rev 集成 | 尚未写入或重载；留待配合下的真实试用 |
@@ -123,6 +124,22 @@ go run ./cmd/smartroute observations clear -config configs/smartroute.example.js
 ```
 
 它只保存目标 HMAC 和通过共享门控的结构化强证据，独立密钥位于 `<database>.key`。写入使用非阻塞有界队列；队列满或运行期数据库错误不会改变当前连接。当前不会从数据库加载自动策略、生成 Clash 规则或授权持久证据改变路由。备份、移动或删除时必须把数据库、`-wal`/`-shm`（如存在）和 `.key` 视为一个单元。
+
+持久证据可以在不启用路由策略的情况下检查、备份并演练恢复：
+
+```bash
+go run ./cmd/smartroute learning status -config configs/smartroute.example.json
+go run ./cmd/smartroute learning backup \
+  -config configs/smartroute.example.json \
+  -destination /tmp/smartroute-learning-backup
+go run ./cmd/smartroute learning verify-backup \
+  -source /tmp/smartroute-learning-backup
+go run ./cmd/smartroute learning restore \
+  -source /tmp/smartroute-learning-backup \
+  -destination /tmp/restored-learning.db
+```
+
+备份目录包含数据库密钥，因此与原数据库同等敏感，不是脱敏导出。恢复命令只写入全新路径，不会修改配置或自动启用恢复结果；失败的备份/恢复保留 `INCOMPLETE` 标记并拒绝后续使用。
 
 ## 独立测试环境
 

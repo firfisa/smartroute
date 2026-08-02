@@ -90,7 +90,9 @@ ADR-0011 adds optional `learning_reason` and `policy_state` to the same decision
 
 ADR-0012 adds a separate SQLite schema for cross-session strong evidence. It stores an HMAC target key, safe session ID, direction, readiness stages, bounded failure class and timestamp—never cleartext hostname/profile.
 
-ADR-0013 connects that schema to `serve` only when `learning.persistence.enabled` is explicitly true. Strong pairs enter a non-blocking bounded queue; `durable_reason` reports queued/full/closed status, and write errors never change the connection. Startup integrity/pruning failures are explicit before the listener opens. This is evidence collection only: the runtime never loads a route from SQLite. Before a live trial enables it, backup/restore and deletion controls for the database, WAL/SHM files, and `.key` must be rehearsed as one unit.
+ADR-0013 connects that schema to `serve` only when `learning.persistence.enabled` is explicitly true. Strong pairs enter a non-blocking bounded queue; `durable_reason` reports queued/full/closed status, and write errors never change the connection. Startup integrity/pruning failures are explicit before the listener opens. This is evidence collection only: the runtime never loads a route from SQLite. Before a live trial enables it, backup/restore must be rehearsed; until destructive clear exists, any deletion of the database, WAL/SHM files, and `.key` requires a separately approved exact manual scope.
+
+ADR-0014 implements read-only status plus a verified snapshot lifecycle. `learning backup` uses SQLite online backup and includes the HMAC key; the result is recoverable but not redacted and must be protected like the live store. `verify-backup` checks the manifest/checksums and SQLite contents without modifying the source. `restore` writes only to a new database path and never changes configuration. Before a live trial, run status, create and verify a fresh backup, restore it to a disposable new path, validate that restored status matches, then remove the disposable copy through a separately approved cleanup action. Destructive clear remains intentionally unimplemented.
 
 Operational commands:
 

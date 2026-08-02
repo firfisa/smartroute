@@ -86,3 +86,7 @@ Negative:
 Race tests cover non-blocking capacity, close/enqueue synchronization, draining, write-error continuation, weak-evidence exclusion, disabled no-file behavior, enabled SQLite writing, session ID safety, and event metadata propagation.
 
 Rollback sets `learning.persistence.enabled` to false and restarts the adaptive engine. Existing database, WAL/SHM files, and key remain untouched for explicit later handling; rollback never deletes evidence automatically.
+
+## Follow-up
+
+ADR-0014 later added read-only status and verified backup/restore-to-new-path. It did not add destructive clear, automatic activation, or durable-policy application.

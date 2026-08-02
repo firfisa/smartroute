@@ -43,6 +43,7 @@ required_files=(
   "docs/adr/0011-ephemeral-learning-and-preferred-racing.md"
   "docs/adr/0012-sqlite-strong-evidence-store.md"
   "docs/adr/0013-opt-in-async-durable-evidence-writer.md"
+  "docs/adr/0014-durable-evidence-lifecycle.md"
   "configs/smartroute.example.json"
   "upstreams.lock"
 )
@@ -147,6 +148,13 @@ if ! matches '"persistence"' "${project_root}/configs/smartroute.example.json" |
   ! matches 'durable_evidence_queue_full' "${project_root}/docs/04-component-catalog.md" "${project_root}/docs/adr/0013-opt-in-async-durable-evidence-writer.md" ||
   ! matches 'defaults off and is shadow-only' "${project_root}/AGENTS.md"; then
   echo "opt-in asynchronous durable writer contract is missing" >&2
+  exit 1
+fi
+
+if ! matches 'learning status' "${project_root}/README.md" "${project_root}/docs/04-component-catalog.md" ||
+  ! matches 'verify-backup' "${project_root}/README.md" "${project_root}/docs/adr/0014-durable-evidence-lifecycle.md" ||
+  ! matches 'must never overwrite or automatically activate' "${project_root}/AGENTS.md"; then
+  echo "durable evidence lifecycle contract is missing" >&2
   exit 1
 fi
 

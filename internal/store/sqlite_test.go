@@ -56,6 +56,45 @@ func TestOpenMigratesAndReopensSchema(t *testing.T) {
 	}
 }
 
+func TestOpenReadOnlyRequiresExistingCurrentSchemaAndKey(t *testing.T) {
+	directory := t.TempDir()
+	missing := filepath.Join(directory, "missing.db")
+	if _, err := OpenReadOnly(context.Background(), Config{Path: missing}); err == nil {
+		t.Fatal("missing read-only store error = nil")
+	}
+	if _, err := os.Stat(missing + ".key"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read-only open created key: %v", err)
+	}
+	store, path := openTestStore(t)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	readOnly, err := OpenReadOnly(context.Background(), Config{Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readOnly.Status(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := readOnly.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	writable, err := Open(context.Background(), Config{Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writable.db.Exec(`PRAGMA user_version = 0`); err != nil {
+		t.Fatal(err)
+	}
+	if err := writable.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenReadOnly(context.Background(), Config{Path: path}); err == nil || !bytes.Contains([]byte(err.Error()), []byte("no migration was attempted")) {
+		t.Fatalf("old schema read-only error = %v", err)
+	}
+}
+
 func TestStrongEvidencePersistsWithoutCleartextTarget(t *testing.T) {
 	store, path := openTestStore(t)
 	ctx := context.Background()
@@ -164,6 +203,34 @@ func TestPruneEvidenceAndContextCancellation(t *testing.T) {
 	cancel()
 	if _, err := store.ListEvidence(canceled, target, time.Time{}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled query error = %v", err)
+	}
+}
+
+func TestPruneEvidenceRemovesOnlyEmptySessions(t *testing.T) {
+	store, _ := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for _, session := range []string{"old-session", "current-session"} {
+		if err := store.StartSession(ctx, session, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	target := storeTarget("home", "example.com", 443)
+	if _, err := store.AppendStrongEvidence(ctx, target, "old-session", storeWinner(model.PathProxy), storeFailure(model.PathDirect, model.StageOutbound, "failed"), now.Add(-2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AppendStrongEvidence(ctx, target, "current-session", storeWinner(model.PathProxy), storeFailure(model.PathDirect, model.StageOutbound, "failed"), now); err != nil {
+		t.Fatal(err)
+	}
+	if count, err := store.PruneEvidence(ctx, now.Add(-time.Hour)); err != nil || count != 1 {
+		t.Fatalf("pruned=%d error=%v", count, err)
+	}
+	status, err := store.Status(ctx)
+	if err != nil || status.SessionCount != 1 || status.EvidenceCount != 1 {
+		t.Fatalf("status=%+v error=%v", status, err)
+	}
+	if _, err := store.AppendStrongEvidence(ctx, target, "old-session", storeWinner(model.PathProxy), storeFailure(model.PathDirect, model.StageOutbound, "failed"), now); err == nil {
+		t.Fatal("pruned session still accepted evidence")
 	}
 }
 

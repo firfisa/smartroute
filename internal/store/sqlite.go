@@ -115,6 +115,70 @@ func Open(ctx context.Context, config Config) (*Store, error) {
 	return store, nil
 }
 
+// OpenReadOnly opens an existing current-schema database without creating a
+// database/key, changing permissions, or running migrations.
+func OpenReadOnly(ctx context.Context, config Config) (*Store, error) {
+	if config.Path == "" {
+		return nil, errors.New("learning database path is required")
+	}
+	clean := filepath.Clean(config.Path)
+	if clean == "." || clean == string(filepath.Separator) {
+		return nil, errors.New("learning database path must name a file")
+	}
+	if config.BusyTimeout <= 0 {
+		config.BusyTimeout = 5 * time.Second
+	}
+	absolute, err := filepath.Abs(clean)
+	if err != nil {
+		return nil, fmt.Errorf("resolve learning database path: %w", err)
+	}
+	info, err := os.Stat(absolute)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, errors.New("learning database does not exist")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("inspect learning database: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("learning database path must be a regular file")
+	}
+	secret, err := loadOrCreateSecret(absolute+".key", true)
+	if err != nil {
+		return nil, err
+	}
+	values := url.Values{}
+	values.Add("mode", "ro")
+	values.Add("_pragma", "foreign_keys(1)")
+	values.Add("_pragma", "query_only(1)")
+	values.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", config.BusyTimeout.Milliseconds()))
+	dsn := (&url.URL{Scheme: "file", Path: absolute, RawQuery: values.Encode()}).String()
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open read-only learning database: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	store := &Store{db: db, secret: secret, path: absolute}
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("%w: %v", ErrCorrupt, err)
+	}
+	if err := store.quickCheck(ctx); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	version, err := store.SchemaVersion(ctx)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if version != CurrentSchemaVersion {
+		_ = db.Close()
+		return nil, fmt.Errorf("read-only learning database schema %d does not match supported version %d; no migration was attempted", version, CurrentSchemaVersion)
+	}
+	return store, nil
+}
+
 func (s *Store) Close() error {
 	if s == nil || s.db == nil {
 		return nil
@@ -250,13 +314,26 @@ GROUP BY direction`, targetKey, since.UTC().UnixMilli())
 }
 
 func (s *Store) PruneEvidence(ctx context.Context, before time.Time) (int64, error) {
-	result, err := s.db.ExecContext(ctx, `DELETE FROM strong_evidence WHERE observed_at_ms < ?`, before.UTC().UnixMilli())
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin strong evidence pruning: %w", err)
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `DELETE FROM strong_evidence WHERE observed_at_ms < ?`, before.UTC().UnixMilli())
 	if err != nil {
 		return 0, fmt.Errorf("prune strong learning evidence: %w", err)
 	}
 	count, err := result.RowsAffected()
 	if err != nil {
 		return 0, fmt.Errorf("count pruned learning evidence: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE NOT EXISTS (
+    SELECT 1 FROM strong_evidence WHERE strong_evidence.session_id = sessions.session_id
+)`); err != nil {
+		return 0, fmt.Errorf("prune empty learning sessions: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit strong evidence pruning: %w", err)
 	}
 	return count, nil
 }

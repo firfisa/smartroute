@@ -340,6 +340,8 @@ strong_evidence
 
 ADR-0013 已把它作为显式 opt-in 的 shadow 证据路径接入 `serve`：启动时创建独立 session 并按保留期裁剪，强配对证据通过非阻塞有界队列异步落库，关闭时限时排空并 checkpoint。队列满、writer 已关闭或单条写失败只形成 `durable_reason`/统计，不进入路由结果。数据库仍不在启动时加载策略，也不生成或应用规则。
 
+ADR-0014 增加独立运维面：`learning status` 只读打开且拒绝迁移；`backup` 使用 SQLite online-backup 生成包含数据库、HMAC key、聚合状态和 SHA-256 清单的新目录；`verify-backup` 在私有临时副本上复核；`restore` 只写入全新的数据库路径。备份因为包含 key 与在线库同等敏感，恢复结果不会自动写入配置或启用。
+
 未来持久策略、网络画像与人工规则可能扩展为：
 
 ```text

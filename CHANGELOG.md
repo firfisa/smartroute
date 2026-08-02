@@ -59,8 +59,10 @@ All notable project changes are recorded here. The project has not published a r
 - Durable independent-session summaries, safe failure tokens, corruption/future-schema refusal, and ADR-0012.
 - Opt-in `serve` integration for strong evidence using a non-blocking bounded writer, startup retention pruning, random sessions, bounded drain/checkpoint shutdown, and safe queue/write metadata.
 - Learning persistence configuration with backward-compatible defaults; disabled mode creates no database or key, and stored evidence remains shadow-only under ADR-0013.
+- `smartroute learning status|backup|verify-backup|restore` with no-create read-only inspection, SQLite online snapshots, SHA-256 manifests, private-copy verification, new-path-only restore, and explicit incomplete markers under ADR-0014.
+- Transactional retention now removes empty historical sessions, with runtime startup reordered to prune before creating the current session.
 
 ### Known limitations
 
-- TLS readiness is structural and experimental; durable-policy application, persistence backup/deletion UI, OS-level supervisor service integration, active configuration integration, and broad real-site compatibility are not implemented yet.
+- TLS readiness is structural and experimental; durable-policy application, destructive persistence cleanup/redacted export UI, OS-level supervisor service integration, active configuration integration, and broad real-site compatibility are not implemented yet.
 - No public release artifacts have been published yet.

@@ -180,10 +180,135 @@ func TestRunObservationsPauseAndStatus(t *testing.T) {
 	}
 }
 
+func TestRunLearningStatusDoesNotCreateDisabledStore(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "learning.db")
+	cfg := config.Default()
+	cfg.Learning.Persistence.DatabasePath = databasePath
+	configPath := writeConfig(t, cfg)
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"learning", "status", "-config", configPath}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	var status learningStoreStatus
+	if err := json.Unmarshal(stdout.Bytes(), &status); err != nil {
+		t.Fatal(err)
+	}
+	if status.ConfiguredEnabled || status.DatabaseExists || status.KeyExists || status.Health != "absent" {
+		t.Fatalf("status = %+v", status)
+	}
+	for _, path := range []string{databasePath, databasePath + ".key"} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("status created %s: %v", path, err)
+		}
+	}
+}
+
+func TestRunLearningStatusAndBackupExistingStore(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "learning.db")
+	evidenceStore, err := store.Open(context.Background(), store.Config{Path: databasePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := evidenceStore.StartSession(context.Background(), "session", now); err != nil {
+		t.Fatal(err)
+	}
+	target := model.Target{NetworkProfileID: "private-profile", Hostname: "secret.example", Port: 443, Transport: model.TransportTCP}
+	winner := model.Observation{Path: model.PathProxy, Success: true, StageReached: model.StageTLS}
+	failed := model.Observation{Path: model.PathDirect, StageReached: model.StageOutbound, FailureClass: "timeout"}
+	if written, err := evidenceStore.AppendStrongEvidence(context.Background(), target, "session", winner, &failed, now); err != nil || !written {
+		t.Fatalf("written=%v error=%v", written, err)
+	}
+	if err := evidenceStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Learning.Persistence.Enabled = true
+	cfg.Learning.Persistence.DatabasePath = databasePath
+	configPath := writeConfig(t, cfg)
+
+	var statusOutput, stderr bytes.Buffer
+	if err := run([]string{"learning", "status", "-config", configPath}, &statusOutput, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	var status learningStoreStatus
+	if err := json.Unmarshal(statusOutput.Bytes(), &status); err != nil {
+		t.Fatal(err)
+	}
+	if status.Health != "ok" || status.Store == nil || status.Store.EvidenceCount != 1 || status.Store.ProxyEvidence != 1 {
+		t.Fatalf("status = %+v", status)
+	}
+
+	destination := filepath.Join(t.TempDir(), "backup")
+	var backupOutput bytes.Buffer
+	if err := run([]string{"learning", "backup", "-config", configPath, "-destination", destination}, &backupOutput, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	var result learningBackupResult
+	if err := json.Unmarshal(backupOutput.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Manifest.Status.EvidenceCount != 1 || result.Destination == "" {
+		t.Fatalf("backup result = %+v", result)
+	}
+	manifest, err := os.ReadFile(filepath.Join(destination, store.BackupManifestName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(manifest), target.Hostname) || strings.Contains(string(manifest), target.NetworkProfileID) {
+		t.Fatalf("backup manifest contains target identity: %s", manifest)
+	}
+	var verifyOutput bytes.Buffer
+	if err := run([]string{"learning", "verify-backup", "-source", destination}, &verifyOutput, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	var verified store.BackupManifest
+	if err := json.Unmarshal(verifyOutput.Bytes(), &verified); err != nil || verified.Status.EvidenceCount != 1 {
+		t.Fatalf("verified=%+v error=%v", verified, err)
+	}
+	restoredPath := filepath.Join(t.TempDir(), "restored.db")
+	var restoreOutput bytes.Buffer
+	if err := run([]string{"learning", "restore", "-source", destination, "-destination", restoredPath}, &restoreOutput, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	var restored store.RestoreResult
+	if err := json.Unmarshal(restoreOutput.Bytes(), &restored); err != nil || restored.Status.EvidenceCount != 1 || restored.DatabasePath != restoredPath {
+		t.Fatalf("restored=%+v error=%v", restored, err)
+	}
+}
+
+func TestRunLearningBackupRequiresExistingSourceAndNewDestination(t *testing.T) {
+	cfg := config.Default()
+	cfg.Learning.Persistence.DatabasePath = filepath.Join(t.TempDir(), "missing.db")
+	configPath := writeConfig(t, cfg)
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"learning", "backup", "-config", configPath}, &stdout, &stderr); err == nil || !strings.Contains(err.Error(), "destination") {
+		t.Fatalf("missing destination error = %v", err)
+	}
+	if err := run([]string{"learning", "backup", "-config", configPath, "-destination", filepath.Join(t.TempDir(), "backup")}, &stdout, &stderr); err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("missing source error = %v", err)
+	}
+}
+
+func TestRunLearningVerifyAndRestoreRequireExplicitPaths(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"learning", "verify-backup"}, &stdout, &stderr); err == nil || !strings.Contains(err.Error(), "-source") {
+		t.Fatalf("verify error = %v", err)
+	}
+	if err := run([]string{"learning", "restore", "-source", "/tmp/backup"}, &stdout, &stderr); err == nil || !strings.Contains(err.Error(), "-destination") {
+		t.Fatalf("restore error = %v", err)
+	}
+}
+
 func writeObservationConfig(t *testing.T, directory string) string {
 	t.Helper()
 	cfg := config.Default()
 	cfg.Observation.Directory = directory
+	return writeConfig(t, cfg)
+}
+
+func writeConfig(t *testing.T, cfg config.Config) string {
+	t.Helper()
 	data, err := json.Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)

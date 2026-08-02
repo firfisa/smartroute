@@ -22,6 +22,7 @@ Current scope:
 - DNS as a separate diagnostic path.
 - UDP/QUIC use static or historical policy until protocol-specific validators exist.
 - Opt-in SQLite strong-evidence collection uses a bounded asynchronous writer; durable policy application waits for cross-session evaluation, backup/restore, health gates, and user controls.
+- Durable evidence status and verified backup/restore-to-new-path are local lifecycle tools; destructive clear and automatic activation remain out of scope.
 
 Out of scope until an ADR changes it:
 
@@ -60,6 +61,7 @@ These rules must not be weakened silently:
 22. The in-memory learning table is capacity bounded; reaching the bound may suppress new learning but must never reject, delay, or reroute the current connection.
 23. Durable target identity is HMAC-pseudonymous with a separate local key; a missing key, corrupt database, corrupt record, or future schema must be reported without automatic deletion, replacement, or routing impact.
 24. Durable evidence collection defaults off and is shadow-only; enqueue and runtime write failure must never delay, reject, replay, or reroute the current connection, and stored evidence cannot select a route until a later ADR authorizes it.
+25. Durable backups include the target-HMAC key and are as sensitive as the live store; status/backup must not create or migrate the source, incomplete artifacts must be rejected, and restore must never overwrite or automatically activate a database.
 
 ## 4. Repository map
 
@@ -81,7 +83,7 @@ Keep this map current whenever a top-level component is added, removed, or renam
 | `internal/netrelay/` | Shared bidirectional TCP relay primitive |
 | `internal/privacy/` | Local Direct-probe policy compilation, normalization, and reason codes |
 | `internal/observe/` | Bounded local JSONL recording, pseudonymization, rotation, and lifecycle controls |
-| `internal/store/` | Pseudonymous SQLite sessions/strong evidence, schema migration, integrity checks, retention, and bounded asynchronous writing |
+| `internal/store/` | Pseudonymous SQLite evidence, read-only status, async writing, retention, and verified backup/restore lifecycle |
 | `internal/supervisor/` | Independent child lifecycle, bounded restart backoff, and structured service events |
 | `internal/testlab/` | Loopback targets, fake gateways, and fault scenarios |
 | `internal/mihomolab/` | Temporary Mihomo config, child lifecycle, synthetic DNS, and topology assertions |

@@ -1,6 +1,6 @@
 # SmartRoute Component and Interface Catalog
 
-Version: v0.5
+Version: v0.6
 Last updated: 2026-08-02
 
 This file is the maintained registry for components, interfaces, commands, configuration fields, and decision reason codes. Status is explicit: `implemented`, `experimental`, or `planned`.
@@ -73,7 +73,7 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 
 | Component | Owner | Status | Responsibility | Explicit non-responsibility | Primary tests |
 | --- | --- | --- | --- | --- | --- |
-| `cmd/smartroute` | CLI | experimental | Command parsing, config validation, synthetic decision trace, Guard/engine lifecycles, observation controls, and opt-in durable shadow-writer lifecycle | Durable policy application and active Clash configuration | `cmd/smartroute/main_test.go`; data plane exercised by Test Labs |
+| `cmd/smartroute` | CLI | experimental | Command parsing, config validation, synthetic decision trace, Guard/engine lifecycles, observation controls, durable shadow-writer lifecycle, and evidence status/backup/verify/restore | Durable policy application, destructive evidence cleanup, and active Clash configuration | `cmd/smartroute/main_test.go`; data plane exercised by Test Labs |
 | `cmd/smartroute-testlab` | Test | implemented | Run deterministic loopback scenarios and print JSON report | Real destinations or Clash integration | `internal/testlab/lab_test.go` plus CI named step |
 | `cmd/smartroute-mihomo-lab` | Test | implemented | Run the exact pinned Mihomo binary in an isolated topology and print JSON | Discovering or operating the active Clash instance | `internal/mihomolab/lab_test.go`; `make mihomo-lab` |
 | `internal/config` | Core | implemented | Strict JSON schema, safe loopback defaults, validation | Mihomo YAML generation | `internal/config/config_test.go` |
@@ -92,7 +92,7 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `internal/testlab` | Test | implemented | Ephemeral loopback echo target, fake Direct/Proxy gateways, deterministic faults | External network and active Clash access | `internal/testlab/lab_test.go` |
 | `internal/mihomolab` | Test | implemented | Temporary config/home, child lifecycle, synthetic DNS, forced-listener and readiness assertions | Active Clash discovery, external traffic, TUN, system proxy | `internal/mihomolab/lab_test.go`; explicit runtime command |
 | `internal/upstream` | Integration | planned | Mihomo config/API adapter and topology validation | Shipping Mihomo source | Planned integration tests |
-| `internal/store` | Persistence | experimental | HMAC target keys, sessions, strong evidence, schema migration, integrity checks, summaries, pruning, and a bounded asynchronous writer | Runtime policy application, cleartext targets, raw analytics, or JSONL recording | `internal/store/sqlite_test.go`; `internal/store/writer_test.go` |
+| `internal/store` | Persistence | experimental | HMAC target keys, sessions, evidence/status, migrations, integrity/retention, bounded async writing, and verified snapshot lifecycle | Runtime policy application, overwrite restore, cleartext targets, raw analytics, or JSONL recording | SQLite, writer and lifecycle test suites |
 
 ## 3. Implemented function and interface registry
 
@@ -127,14 +127,19 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `Recorder.Record(event)` | `internal/observe` | Typed bounded event with optional raw target | Pseudonymous JSONL record or paused no-op | Oversized/write errors return to caller; runtime caller warns once and continues routing | experimental | Hashing, pause, rotation and oversized-event tests |
 | `observe.Inspect/Pause/Resume/Clear/Export` | `internal/observe` | Observation directory and explicit destination/paused state | Lifecycle status or local file operation | Only manages engine/Guard/supervisor subdirectories; clear requires pause; export refuses nesting/existing destination and omits salt/symlinks | experimental | Control and export tests |
 | `store.Open(ctx, config)` | `internal/store` | Context, DB path, busy timeout | Migrated/integrity-checked SQLite store with local HMAC key | Rejects unsafe path, missing/invalid key, `store.ErrCorrupt`, and future schema; never replaces data | experimental | Open/reopen, corruption, permissions and future-schema tests |
+| `store.OpenReadOnly(ctx, config)` | `internal/store` | Existing DB path and timeout | Integrity-checked exact-current-schema store | Never creates key/DB or migrates; rejects missing key, corruption and any schema mismatch | experimental | Missing/current/old-schema tests; CLI status tests |
 | `Store.StartSession(ctx, id, time)` | `internal/store` | Safe local session ID and timestamp | Durable independent-session row | Rejects invalid/duplicate sessions and cancellation | experimental | Session and foreign-key tests |
 | `Store.AppendStrongEvidence(...)` | `internal/store` | Target, known session, winner/opposite pair, timestamp | Whether a schema-v1 row was written | Shared learning gate skips weak/incomplete pairs; unsafe failure tokens and DB errors are explicit | experimental | Strong/weak/privacy/concurrent-write tests |
 | `Store.ListEvidence/Summarize` | `internal/store` | Target and lower timestamp bound | Ordered rows or wins/distinct-session counts | Invalid stored stages/directions fail visibly | experimental | Scope, summary and corrupt-row tests |
-| `Store.PruneEvidence/Checkpoint` | `internal/store` | Retention cutoff or context | Deleted count or compact WAL boundary | Errors never imply automatic deletion/replacement | experimental | Prune and privacy-file tests |
+| `Store.PruneEvidence/Checkpoint` | `internal/store` | Retention cutoff or context | Deleted evidence count or compact WAL boundary | Transactionally removes empty sessions; errors never imply automatic replacement | experimental | Evidence/session pruning and privacy-file tests |
 | `store.NewAsyncWriter(...)` | `internal/store` | Store, session, queue capacity, optional error callback | Background strong-evidence writer | Rejects unsafe construction; individual append errors are counted and later writes continue | experimental | Queue bounds, errors, skips and close tests |
 | `AsyncWriter.Enqueue(request)` | `internal/store` | Target, completed pair and timestamp | Immediate accepted flag plus safe durable reason | Never blocks; full/closed queues drop only durable evidence | experimental | Backpressure and close/enqueue race tests |
 | `AsyncWriter.Close(ctx)` | `internal/store` | Shutdown context | Drained completion or context error | Stops admission, drains accepted work, never force-closes its store | experimental | Drain and timeout tests |
 | `runtimeLearningEngine.Observe(...)` | `cmd/smartroute` | Sidecar target and completed candidate evidence | Ephemeral update plus optional durable enqueue reason | Weak pairs do not enqueue; writer result never becomes a route error | experimental | Runtime learner and Sidecar metadata tests |
+| `Store.Status(ctx)` | `internal/store` | Current-schema store | Schema and aggregate session/evidence/time counts | Contains no target/session identity or failure details; query errors are explicit | experimental | Aggregate/privacy and CLI tests |
+| `Store.Backup(ctx, destination)` | `internal/store` | Open source store and new directory | Online SQLite snapshot, key, verified manifest | Refuses existing/unsafe destination; failures retain `INCOMPLETE` | experimental | Snapshot consistency, modes, reopen, marker and overwrite tests |
+| `store.VerifyBackup(ctx, source)` | `internal/store` | Completed snapshot directory | Validated manifest and aggregate status | Rejects incomplete/tampered/unknown/non-regular/corrupt artifacts; verifies a private copy | experimental | Source-immutability and tamper tests |
+| `store.RestoreBackup(ctx, source, destination)` | `internal/store` | Verified snapshot and new DB path | Restored DB/key plus aggregate status | Never overwrites or activates; failures retain `.INCOMPLETE` | experimental | New-path restore and existing-path refusal tests |
 | `sidecar.Server.Serve(ctx, listener)` | `internal/sidecar` | Context, listener, plain Racer or TLSRacer | Serves until cancellation/error; TLS mode requires L3 | Rejects unsafe ClientHello before dialing; never reads Clash config | experimental | Sidecar, Test Lab and Mihomo Lab |
 | `guard.Server.Serve(ctx, listener)` | `internal/guard` | Context, listener, adaptive/original dialers and bounded timeouts | Serves SOCKS targets; commits one availability lane before payload | Falls back on adaptive handshake failure; refuses when both lanes fail; never replays post-commit data | experimental | Adaptive, unavailable, wedged and dual-failure unit tests; Mihomo Lab scenarios |
 | `netrelay.Bidirectional(left, right)` | `internal/netrelay` | Two owned TCP-like connections | Relays both directions until completion | Best-effort half-close; relay errors are not routing evidence | experimental | Guard/Sidecar end-to-end tests |
@@ -152,6 +157,10 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `smartroute guard` | experimental | Run the separate availability boundary in front of the adaptive engine | Configured loopback Guard, engine and original-policy SOCKS endpoints | Optional bounded Guard JSONL; otherwise debug stdout |
 | `smartroute supervise` | experimental | Run Guard and adaptive engine as independently restartable children | Same loopback effects as the two child commands; does not operate Mihomo | Optional bounded per-source JSONL; otherwise debug stdout |
 | `smartroute observations status\|pause\|resume\|clear\|export` | experimental | Operate the configured local recorder directory | None | Status/control, confirmed deletion, or redacted file export |
+| `smartroute learning status` | experimental | Inspect configured durable evidence health and aggregates | None | Missing state is not created; existing current schema is opened read-only |
+| `smartroute learning backup` | experimental | Snapshot configured evidence into a new private directory | None beyond local SQLite locks | Includes DB/key/manifest; never a redacted export |
+| `smartroute learning verify-backup` | experimental | Validate checksums and SQLite contents on a temporary copy | None | Leaves source snapshot unchanged |
+| `smartroute learning restore` | experimental | Restore a snapshot to a new database path | None | Refuses every existing DB/key/marker; never updates config or activates policy |
 | `smartroute policy` | planned | Inspect, lock, revoke, or export policy | None by default | Policy store |
 | `smartroute-testlab` | implemented | Run isolated deterministic data-plane scenarios | Ephemeral loopback sockets only | None |
 | `smartroute-mihomo-lab -mihomo PATH` | implemented | Run isolated pinned-Mihomo contract scenarios | Child process, temporary home, local synthetic DNS and ephemeral loopback sockets only | Temporary files removed; JSON report only |
