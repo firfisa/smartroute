@@ -116,11 +116,18 @@ type sidecarTLSCandidate struct {
 }
 
 type stubLearningEngine struct {
-	preferred model.Path
-	update    learning.Update
-	err       error
-	observed  atomic.Int32
+	preferred     model.Path
+	update        learning.Update
+	err           error
+	observed      atomic.Int32
+	bothFailed    atomic.Int32
+	proxyFailed   atomic.Int32
+	pathSucceeded atomic.Int32
 }
+
+func (s *stubLearningEngine) ObserveBothPathsFailed(model.Target)           { s.bothFailed.Add(1) }
+func (s *stubLearningEngine) ObserveProxyPathFailed(model.Target)           { s.proxyFailed.Add(1) }
+func (s *stubLearningEngine) ObservePathSucceeded(model.Target, model.Path) { s.pathSucceeded.Add(1) }
 
 func (s *stubLearningEngine) PreferredPath(model.Target) model.Path { return s.preferred }
 
@@ -454,9 +461,11 @@ func TestServerPrivacyDenyUsesOnlyProxyTLSPath(t *testing.T) {
 		}
 	}}
 	events := make(chan DecisionEvent, 1)
+	learner := &stubLearningEngine{}
 	server := Server{
 		HandshakeTimeout:  time.Second,
 		DirectProbePolicy: mustPrivacyPolicy(t, privacy.ModeExplicitOptIn, []string{"echo.test"}),
+		Learning:          learner,
 		TLSRacer: &transport.TLSRacer{
 			Direct: direct, Proxy: proxy, Gate: transport.TLSServerHelloGate{}, Timeout: time.Second,
 		},
@@ -474,6 +483,9 @@ func TestServerPrivacyDenyUsesOnlyProxyTLSPath(t *testing.T) {
 	event := <-events
 	if direct.attempts.Load() != 0 || proxy.attempts.Load() != 1 || event.SelectedPath != model.PathProxy || event.ReasonCode != privacy.ReasonNeverDirectExact || event.PolicyReason != privacy.ReasonNeverDirectExact || !event.Committed {
 		t.Fatalf("attempts direct=%d proxy=%d event=%+v", direct.attempts.Load(), proxy.attempts.Load(), event)
+	}
+	if learner.pathSucceeded.Load() != 1 {
+		t.Fatalf("health successes=%d", learner.pathSucceeded.Load())
 	}
 	_ = clientConn.Close()
 }
@@ -522,9 +534,11 @@ func TestServerPrivacyProxyOnlyFailureIsStructured(t *testing.T) {
 		_, _ = io.CopyN(io.Discard, conn, int64(len(helloWire)))
 	}}
 	diagnostics := make(chan DiagnosticEvent, 1)
+	learner := &stubLearningEngine{}
 	server := Server{
 		HandshakeTimeout:  time.Second,
 		DirectProbePolicy: mustPrivacyPolicy(t, privacy.ModePrivacyFirst, nil),
+		Learning:          learner,
 		TLSRacer: &transport.TLSRacer{
 			Direct: direct, Proxy: proxy, Gate: transport.TLSServerHelloGate{}, Timeout: time.Second,
 		},
@@ -543,6 +557,47 @@ func TestServerPrivacyProxyOnlyFailureIsStructured(t *testing.T) {
 	event := <-diagnostics
 	if event.ReasonCode != ReasonPrivacyProxyPathFailed || event.PolicyReason != privacy.ReasonPrivacyFirst || event.DirectFailure != "skipped_by_privacy" || event.ProxyFailure == "" || direct.attempts.Load() != 0 || proxy.attempts.Load() != 1 {
 		t.Fatalf("attempts direct=%d proxy=%d event=%+v", direct.attempts.Load(), proxy.attempts.Load(), event)
+	}
+	if learner.proxyFailed.Load() != 1 || learner.bothFailed.Load() != 0 {
+		t.Fatalf("health proxy=%d both=%d", learner.proxyFailed.Load(), learner.bothFailed.Load())
+	}
+}
+
+func TestServerBothTLSFailuresNotifyLearningHealth(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	serverConn, clientConn := net.Pipe()
+	direct := &sidecarTLSCandidate{path: model.PathDirect, handler: func(net.Conn) {}}
+	proxy := &sidecarTLSCandidate{path: model.PathProxy, handler: func(net.Conn) {}}
+	learner := &stubLearningEngine{}
+	server := Server{HandshakeTimeout: time.Second,
+		DirectProbePolicy: mustPrivacyPolicy(t, privacy.ModeExplicitOptIn, nil), Learning: learner,
+		TLSRacer: &transport.TLSRacer{Direct: direct, Proxy: proxy, Gate: transport.TLSServerHelloGate{}, HeadStart: time.Millisecond, Timeout: time.Second}}
+	go server.handle(ctx, serverConn)
+	performSOCKSRequest(t, clientConn)
+	if _, err := clientConn.Write(fragmentedClientHello(false)); err != nil {
+		t.Fatal(err)
+	}
+	_ = clientConn.SetReadDeadline(time.Now().Add(time.Second))
+	_, _ = clientConn.Read(make([]byte, 1))
+	if learner.bothFailed.Load() != 1 || learner.proxyFailed.Load() != 0 {
+		t.Fatalf("health both=%d proxy=%d", learner.bothFailed.Load(), learner.proxyFailed.Load())
+	}
+}
+
+func TestHealthRelevantFailureRejectsCancellationAndPreOutbound(t *testing.T) {
+	for _, observation := range []model.Observation{
+		{Path: model.PathDirect, StageReached: model.StageOutbound, FailureClass: "canceled"},
+		{Path: model.PathProxy, StageReached: model.StageOutbound, FailureClass: "not_started"},
+		{Path: model.PathDirect, StageReached: model.StageDNS, FailureClass: "timeout"},
+		{Path: model.PathProxy, Success: true, StageReached: model.StageTLS},
+	} {
+		if healthRelevantFailure(observation) {
+			t.Fatalf("accepted irrelevant failure: %+v", observation)
+		}
+	}
+	if !healthRelevantFailure(model.Observation{Path: model.PathProxy, StageReached: model.StageOutbound, FailureClass: "tls_eof"}) {
+		t.Fatal("rejected completed outbound failure")
 	}
 }
 

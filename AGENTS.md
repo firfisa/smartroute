@@ -21,7 +21,7 @@ Current scope:
 - Direct-probe privacy policy is enforced before candidate creation; denied TLS targets use Proxy-only L3 validation.
 - DNS as a separate diagnostic path.
 - UDP/QUIC use static or historical policy until protocol-specific validators exist.
-- Opt-in SQLite strong-evidence collection uses a bounded asynchronous writer; durable policy application waits for cross-session evaluation, backup/restore, health gates, and user controls.
+- Opt-in SQLite strong-evidence collection uses a bounded asynchronous writer; durable policy application waits for trial evidence, policy authorization, and user controls. The runtime health gate suppresses new learning but does not rewrite earlier durable rows.
 - Durable evidence status and verified backup/restore-to-new-path are local lifecycle tools; destructive clear and automatic activation remain out of scope.
 - Cross-session durable assessment is shadow-only and requires both strong-win and independent-session thresholds; any retained opposite-direction evidence is conflicting.
 - Aggregate Shadow reports omit target keys and identities and use only targets with retained strong paired evidence as their explicit denominator.
@@ -66,6 +66,7 @@ These rules must not be weakened silently:
 25. Durable backups include the target-HMAC key and are as sensitive as the live store; status/backup must not create or migrate the source, incomplete artifacts must be rejected, and restore must never overwrite or automatically activate a database.
 26. A durable `direct_suggested` or `proxy_suggested` assessment is diagnostic only and must never feed `PreferredPath`, candidate order, generated rules, or an applied-policy row; retained evidence in both directions produces no suggestion.
 27. Aggregate reports must never expose target keys or imply that targets with strong evidence represent all traffic; suggestion coverage alone is not proof of latency, reliability, or proxy-usage improvement.
+28. Systemic-health freezing affects learning inputs and process-local preferences only. It must not change an in-flight route, replay application data, delete durable evidence, or bypass the original-policy Guard.
 
 ## 4. Repository map
 
@@ -79,6 +80,7 @@ Keep this map current whenever a top-level component is added, removed, or renam
 | `internal/config/` | Configuration schema, defaults, validation |
 | `internal/decision/` | Policy state machine and route decisions |
 | `internal/learning/` | Process-local ephemeral preferences plus pure cross-session shadow assessment |
+| `internal/health/` | Systemic-failure learning freeze and deterministic recovery gate |
 | `internal/model/` | Stable domain types shared by internal components |
 | `internal/transport/` | Candidate dialers and protocol-aware readiness gates |
 | `internal/socks5/` | Minimal no-authentication SOCKS5 client/server protocol |

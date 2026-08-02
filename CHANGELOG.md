@@ -64,8 +64,9 @@ All notable project changes are recorded here. The project has not published a r
 - Deterministic cross-session Shadow assessment requiring both strong-win and distinct-session thresholds, with conservative any-opposite-direction conflict handling under ADR-0015.
 - Asynchronous `durable_learning_assessment` events after successful writes plus read-only exact-target `smartroute learning evaluate`; neither feeds route selection.
 - Identity-free `smartroute learning report` with in-database exact-target grouping, shared evaluator semantics, explicit retention/thresholds, and insufficient/conflicting/Direct/Proxy aggregate counts under ADR-0016.
+- Concurrent systemic-health gate with distinct-target failure windows, Proxy-specific recovery, expiry, immediate network/portal signals, ephemeral-policy clearing, durable-write suppression, and structured `learning_health` events under ADR-0017.
 
 ### Known limitations
 
-- TLS readiness is structural and experimental; durable suggestions are not applied, and health freezing, destructive persistence cleanup/redacted export UI, OS-level supervisor service integration, active configuration integration, and broad real-site compatibility are not implemented yet.
+- TLS readiness is structural and experimental; durable suggestions are not applied, and automatic network-change/captive-portal detection, destructive persistence cleanup/redacted export UI, OS-level supervisor service integration, active configuration integration, and broad real-site compatibility are not implemented yet.
 - No public release artifacts have been published yet.

@@ -59,6 +59,7 @@ MVP 不是为了证明“能够自动写 YAML”，而是回答五个可证伪�
 | Direct-first 错峰候选竞争 | 实验性完成 | Direct 快速、Proxy 恢复、双失败场景 |
 | 已完成的反事实路径证据 | 实验性完成 | Direct/Proxy 先失败后另一条成功会保留成对证据；取消与未启动明确为空 |
 | 进程内学习状态机 | 实验性完成 | 最小路由键、连续强证据阈值、TTL、矛盾转不稳定、网络/端口/传输隔离 |
+| 学习健康冻结 | 实验性完成 | 不同目标故障阈值、Proxy 专属恢复、冻结到期、网络/门户显式信号；自动网络/门户检测待接入 |
 | 偏好候选顺序 | 实验性完成 | 默认 shadow；auto 下 Proxy-first/Direct-first，首选提前失败立即启动另一条 |
 | SQLite 强证据 schema v1 与异步 writer | 实验性完成、默认关闭且 shadow-only | HMAC 目标键、独立会话、迁移/重开/并发、损坏/未来版本拒绝、裁剪、明文扫描、队列背压/排空、disabled 无文件 |
 | 持久证据生命周期 | 实验性完成 | 缺失不创建、只读无迁移、聚合状态、online backup、SHA-256 清单、临时副本验证、恢复到新路径、拒绝覆盖/不完整产物 |
@@ -99,7 +100,7 @@ MVP 不是为了证明“能够自动写 YAML”，而是回答五个可证伪�
 - 未知 TCP 目标进入 sidecar。
 - Direct 先发，Proxy 错峰启动。
 - 实现 TLS ClientHello 完整缓冲和安全握手竞争。
-- 实现策略状态机、缓存、TTL 和网络画像。进程内最小路由键、TTL 与候选顺序切片已完成；跨会话强证据已可 opt-in 异步收集，但画像生成、持久策略评估和健康冻结仍待实现。
+- 实现策略状态机、缓存、TTL 和网络画像。进程内最小路由键、TTL、候选顺序与系统性故障学习冻结已完成；跨会话强证据已可 opt-in 异步收集，但画像自动生成和持久策略授权仍待实现。
 - 支持 Suggest 与 Auto 模式。
 - 加入故障冻结、速率限制和回滚。
 
@@ -278,8 +279,8 @@ MVP 不是为了证明“能够自动写 YAML”，而是回答五个可证伪�
 3. 用两个 Mihomo listener 验证 Direct/Proxy 路径隔离。macOS arm64 与 Linux amd64/v1.19.29 已完成；其 SOCKS ACK 只证明 L1。
 4. 实现候选拨号、延迟启动、取消和结构化事件。
 5. 实现 TLS record 与跨包 ClientHello 解析；明确拒绝复制 early data。最小安全切片已完成，完整真实 TLS 握手兼容矩阵仍待扩展。
-6. 建立 SQLite schema 和 deterministic state machine。schema v1、进程内状态机、opt-in 异步写入、生命周期工具及跨会话 Shadow assessment 已完成；持久建议的试验统计、健康冻结、策略授权、破坏性清理和更完整用户控制仍待实现。
-7. 加入网络画像、控制探针和学习冻结。
+6. 建立 SQLite schema 和 deterministic state machine。schema v1、进程内状态机、opt-in 异步写入、生命周期工具、跨会话 Shadow assessment 与健康冻结已完成；持久建议的真实试验统计、策略授权、破坏性清理和更完整用户控制仍待实现。
+7. 接入网络画像、控制探针及 captive portal 自动信号源；复用已实现的学习冻结入口。
 8. 做 CLI：状态、观测、锁定、撤销、隐私列表、导出。
 9. 跑故障注入与静态规则基线。
 10. 只有核心指标通过后，再做 Tauri/Clash Verge Rev UI。

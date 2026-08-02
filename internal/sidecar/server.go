@@ -64,6 +64,14 @@ type LearningEngine interface {
 	Observe(target model.Target, winner model.Observation, other *model.Observation) (learning.Update, error)
 }
 
+// LearningHealthObserver is optional so routing tests and alternate learning
+// implementations do not need to implement environmental health tracking.
+type LearningHealthObserver interface {
+	ObserveBothPathsFailed(target model.Target)
+	ObserveProxyPathFailed(target model.Target)
+	ObservePathSucceeded(target model.Target, path model.Path)
+}
+
 type Server struct {
 	Racer               transport.Racer
 	TLSRacer            *transport.TLSRacer
@@ -208,6 +216,9 @@ func (s Server) handleTLS(ctx context.Context, inbound net.Conn, target model.Ta
 			var pathError *transport.TLSPathError
 			if errors.As(err, &pathError) {
 				event.ProxyFailure = pathError.Observation.FailureClass
+				if observer, ok := s.Learning.(LearningHealthObserver); ok && healthRelevantFailure(pathError.Observation) {
+					observer.ObserveProxyPathFailed(target)
+				}
 			}
 			s.emitDiagnostic(event)
 			return
@@ -220,6 +231,9 @@ func (s Server) handleTLS(ctx context.Context, inbound net.Conn, target model.Ta
 		if errors.As(err, &raceError) {
 			event.DirectFailure = raceError.Direct.FailureClass
 			event.ProxyFailure = raceError.Proxy.FailureClass
+			if observer, ok := s.Learning.(LearningHealthObserver); ok && healthRelevantFailure(raceError.Direct) && healthRelevantFailure(raceError.Proxy) {
+				observer.ObserveBothPathsFailed(target)
+			}
 		}
 		s.emitDiagnostic(event)
 		return
@@ -231,6 +245,11 @@ func (s Server) handleTLS(ctx context.Context, inbound net.Conn, target model.Ta
 			FailureClass: "tls_candidate_below_tls_stage",
 		})
 		return
+	}
+	if !privacyDecision.AllowDirect {
+		if observer, ok := s.Learning.(LearningHealthObserver); ok {
+			observer.ObservePathSucceeded(target, result.Observation.Path)
+		}
 	}
 	if privacyDecision.AllowDirect && s.Learning != nil {
 		update, learningErr := s.Learning.Observe(target, result.Observation, result.OtherObservation)
@@ -259,6 +278,11 @@ func (s Server) handleTLS(ctx context.Context, inbound net.Conn, target model.Ta
 		})
 	}
 	netrelay.Bidirectional(inbound, result.Conn)
+}
+
+func healthRelevantFailure(observation model.Observation) bool {
+	return !observation.Success && observation.StageReached >= model.StageOutbound &&
+		observation.FailureClass != "canceled" && observation.FailureClass != "not_started"
 }
 
 func (s Server) emitDiagnostic(event DiagnosticEvent) {

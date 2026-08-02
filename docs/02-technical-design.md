@@ -1,6 +1,6 @@
 # SmartRoute 总体技术设计
 
-版本：v0.2
+版本：v0.3
 状态：供原型验证，不是最终实现规范
 
 ## 1. 设计目标
@@ -40,6 +40,7 @@ flowchart TB
     D --> Net["目标网络"]
     P --> Net
     S <--> E["Decision + Ephemeral Learning"]
+    E <--> H["Systemic Health Freeze"]
     S --> Obs
     G --> Obs
     E <--> DB["SQLite 学习库"]
@@ -52,6 +53,8 @@ flowchart TB
 本地观测记录由独立的 `internal/observe` 边界负责，默认关闭。启用后目标与网络画像默认使用带本地随机盐的 HMAC，engine、Guard、supervisor 各写自己的容量/时间受限 JSONL；暂停、恢复、显式清空和脱敏导出由 `smartroute observations` 管理。运行期写失败只产生一次有界告警，不改变路由；该记录器不是 SQLite 学习策略库。详见 ADR-0009。
 
 进程内学习使用与 7.1 节一致的最小键，只接受 winner 达到 L2+ 且另一条路径先完成、达到 L1+ 的强成对证据。默认 `shadow` 只计算临时状态；`ephemeral-auto` 将活跃偏好用作候选启动顺序，但仍在 head-start 后启动另一条路径，首选提前失败时则立即启动另一条。矛盾强证据立即进入 `UNSTABLE` 并撤下偏好；TTL 到期或重启回到未知。内存表有硬容量上限，满载只停止接纳新学习，不影响连接。它不满足跨会话晋升，不能导出为永久规则。详见 ADR-0011。
+
+`internal/health` 在学习入口前识别系统性故障。默认 30 秒窗口内需要 3 个不同目标，避免单一站点或重复连接触发冻结；全局双路故障可由任一路径跨 3 个不同目标成功恢复，Proxy 故障只能由 Proxy 成功恢复。网络画像切换和 captive portal 信号立即冻结；当前状态机入口已实现，但自动信号源尚未接入。冻结会清空进程内偏好并抑制新的临时/持久证据，不改变当前连接或 Guard 回退，也不回删阈值触发前的 SQLite 行。详见 ADR-0017。
 
 为什么不是先做外挂探测器：
 

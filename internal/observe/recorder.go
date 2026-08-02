@@ -66,6 +66,10 @@ type Event struct {
 	State             string
 	Attempt           int
 	BackoffMS         int64
+	Trigger           string
+	FrozenUntil       *time.Time
+	FailureTargets    int
+	RecoveryTargets   int
 }
 
 type Recorder struct {
@@ -112,6 +116,10 @@ type storedEvent struct {
 	State             string                      `json:"state,omitempty"`
 	Attempt           int                         `json:"attempt,omitempty"`
 	BackoffMS         int64                       `json:"backoff_ms,omitempty"`
+	Trigger           string                      `json:"trigger,omitempty"`
+	FrozenUntil       *time.Time                  `json:"frozen_until,omitempty"`
+	FailureTargets    int                         `json:"failure_targets,omitempty"`
+	RecoveryTargets   int                         `json:"recovery_targets,omitempty"`
 }
 
 func New(opts Options) (*Recorder, error) {
@@ -179,6 +187,8 @@ func (r *Recorder) Record(event Event) error {
 		LearningReason: event.LearningReason, DurableReason: event.DurableReason,
 		DurableAssessment: event.DurableAssessment, PolicyState: event.PolicyState,
 		Service: event.Service, State: event.State, Attempt: event.Attempt, BackoffMS: event.BackoffMS,
+		Trigger: event.Trigger, FrozenUntil: event.FrozenUntil,
+		FailureTargets: event.FailureTargets, RecoveryTargets: event.RecoveryTargets,
 	}
 	if event.Target != nil {
 		stored.Target = r.transformTarget(*event.Target)

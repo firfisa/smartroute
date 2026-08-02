@@ -1,6 +1,6 @@
 # SmartRoute Component and Interface Catalog
 
-Version: v0.8
+Version: v0.9
 Last updated: 2026-08-02
 
 This file is the maintained registry for components, interfaces, commands, configuration fields, and decision reason codes. Status is explicit: `implemented`, `experimental`, or `planned`.
@@ -14,6 +14,7 @@ flowchart TB
     Model["internal/model\nDomain types"]
     Decision["internal/decision\nPaired observation evaluator"]
     Learning["internal/learning\nEphemeral preference state"]
+    Health["internal/health\nSystemic learning freeze"]
     SOCKS["internal/socks5\nSOCKS5 wire protocol"]
     Transport["internal/transport\nSOCKS dialers and racer"]
     TLSInspect["internal/tlsinspect\nbounded TLS first-flight parser"]
@@ -33,6 +34,7 @@ flowchart TB
     CLI --> Config
     CLI --> Decision
     CLI --> Learning
+    CLI --> Health
     CLI --> Sidecar
     CLI --> Guard
     CLI --> Privacy
@@ -43,6 +45,8 @@ flowchart TB
     Config --> Learning
     Decision --> Model
     Learning --> Model
+    Health --> Learning
+    Health --> Model
     Store --> Learning
     Store --> Model
     Transport --> Model
@@ -54,6 +58,7 @@ flowchart TB
     Sidecar --> NetRelay
     Sidecar --> Privacy
     Sidecar --> Learning
+    Sidecar -. "optional failure signals" .-> Health
     Guard --> SOCKS
     Guard --> NetRelay
     TestLab --> Sidecar
@@ -79,7 +84,8 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `internal/config` | Core | implemented | Strict JSON schema, safe loopback defaults, validation | Mihomo YAML generation | `internal/config/config_test.go` |
 | `internal/model` | Core | implemented | Path, target, readiness, observation, decision types and readable JSON evidence | State persistence | `internal/model/model_test.go` plus consumer tests |
 | `internal/decision` | Core | experimental | Evaluate one paired Direct/Proxy observation | Multi-session promotion and decay | `internal/decision/evaluator_test.go` |
-| `internal/learning` | Policy | experimental | Maintain process-local preferences and deterministically assess cross-session aggregate evidence in Shadow | Durable policy application, user locks, health freezing, or storage I/O | Engine, durable-evaluator and Sidecar learning-loop tests |
+| `internal/learning` | Policy | experimental | Maintain process-local preferences and deterministically assess cross-session aggregate evidence in Shadow | Durable policy application, user locks, systemic-health inference, or storage I/O | Engine, durable-evaluator and Sidecar learning-loop tests |
+| `internal/health` | Policy | experimental | Freeze learning after distinct-target systemic/proxy failures; recover deterministically; hash in-memory target identities | Selecting live routes, probing networks, persisting health state, or deleting prior evidence | `internal/health/gate_test.go`; runtime and Sidecar integration tests |
 | `internal/socks5` | Data plane | experimental | No-auth SOCKS5 CONNECT parsing/client handshake and domain preservation | Authentication, UDP ASSOCIATE, BIND | `internal/socks5/protocol_test.go`; Test Lab |
 | `internal/transport` | Data plane | experimental | SOCKS5 candidate dialing, TCP and TLS racing, ServerHello gate, cancellation, exact prefetched-byte replay | Certificate/Finished/application validation | Racer and TLS readiness tests; Mihomo Lab |
 | `internal/tlsinspect` | Data plane | experimental | Bounded TLS record reassembly, ClientHello/ServerHello structure checks, early-data rejection | TLS decryption, certificate validation, payload logging | `internal/tlsinspect/tlsinspect_test.go` |
@@ -121,6 +127,11 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `learning.New(config)` | `internal/learning` | Mode, Direct/Proxy thresholds, TTL, optional clock | Concurrent process-local engine | Rejects unknown mode, low thresholds, and non-positive TTL | experimental | Config validation and engine tests |
 | `Engine.Observe(target, winner, other)` | `internal/learning` | Scoped target, ready winner, optional completed opposite observation | Explainable update and ephemeral policy | Rejects invalid pairs; incomplete/canceled/pre-outbound evidence returns non-applied reason | experimental | Promotion, contradiction and weak-evidence tests |
 | `Engine.PreferredPath(target)` | `internal/learning` | Scoped target | Live Direct/Proxy preference or empty | Returns empty in shadow/unknown/unstable/expired/invalid cases | experimental | Shadow, scope and TTL tests |
+| `Engine.Clear()` | `internal/learning` | None | Empty process-local policy table | Does not alter durable evidence | experimental | Runtime health-freeze test |
+| `health.New(config)` | `internal/health` | Failure/recovery thresholds, windows, optional clock | Concurrent deterministic health gate | Rejects low thresholds/non-positive durations; opens no network connection | experimental | Validation and race tests |
+| `Gate.ObserveBothPathsFailed/ObserveProxyPathFailed` | `internal/health` | Scoped target | Updated active/frozen transition | Counts distinct SHA-256 canonical target identities only; relevant failures can extend freeze | experimental | Duplicate, threshold, window and concurrency tests |
+| `Gate.ObservePathSucceeded` | `internal/health` | Scoped target and successful path | Reset or recovery transition | Direct success cannot recover Proxy outage; duplicate target does not advance recovery | experimental | Global/Proxy recovery matrix |
+| `Gate.ObserveNetworkProfileChanged/ObserveCaptivePortal` | `internal/health` | Explicit local signal | Immediate frozen transition | Signal sources are not yet automatic; route is unchanged | experimental | Immediate-signal and expiry tests |
 | `learning.NewDurableEvaluator(config)` | `internal/learning` | Direct/Proxy win and distinct-session thresholds | Pure deterministic Shadow evaluator | Rejects thresholds below 2 | experimental | Durable configuration and matrix tests |
 | `DurableEvaluator.Evaluate(summary)` | `internal/learning` | Directional wins and distinct sessions | Insufficient, conflicting, or exact-path suggestion with evidence/reason | Rejects negative/impossible summaries; any evidence in both directions conflicts | experimental | Full outcome matrix and invalid-evidence tests |
 | `DurableEvaluator.Report(summaries)` | `internal/learning` | Identity-free exact-target summaries | Aggregate category/evidence/reason/threshold counts | Rejects zero-evidence or invalid target summaries; never returns identity | experimental | Category matrix, empty and invalid-report tests |
@@ -207,6 +218,11 @@ go run ./cmd/smartroute trace \
 | `learning.proxy_promotion_wins` | integer | `3` | At least 2 | Consecutive strong Proxy pairs for ephemeral promotion |
 | `learning.direct_promotion_wins` | integer | `5` | At least 2 | Consecutive strong Direct pairs for ephemeral promotion |
 | `learning.policy_ttl_hours` | integer | `72` | Positive | Ephemeral preference expiry; restart clears earlier |
+| `learning.health.enabled` | boolean | `true` | Boolean | Enables learning freeze only; does not enable probes or change current routes |
+| `learning.health.failure_threshold` | integer | `3` | 2–1000 | Different targets required to freeze global or Proxy learning |
+| `learning.health.recovery_threshold` | integer | `3` | 2–1000 | Different successful targets required for early recovery |
+| `learning.health.failure_window_seconds` | integer | `30` | 1–3600 | Active-state distinct failure aggregation window |
+| `learning.health.freeze_duration_seconds` | integer | `300` | 1–86400 | Freeze expiry and extension duration |
 | `learning.persistence.enabled` | boolean | `false` | Boolean | Explicitly opens the SQLite strong-evidence shadow writer; false creates no DB/key |
 | `learning.persistence.database_path` | path | `data/learning.db` | Non-empty file path; not `.` or filesystem root | SQLite file; sibling `.key` and any WAL/SHM files share its lifecycle |
 | `learning.persistence.queue_size` | integer | `256` | 1–65536 | Bounds pending non-blocking durable writes; full queues drop evidence only |
@@ -274,6 +290,7 @@ Ephemeral learning reasons:
 | `ephemeral_preference_contradicted` | Opposite starts at 1 | Remove live preference and enter unstable |
 | `learning_skipped_by_policy` | No | Privacy policy allowed only a single path |
 | `learning_update_error` | No | Bounded metadata only; selected connection still commits |
+| `learning_skipped_health_frozen` | No | Health gate is frozen; current winner still commits but no ephemeral or durable evidence is added |
 
 Durable evidence reasons:
 
@@ -312,11 +329,11 @@ Guard availability reasons:
 | `candidate.canceled` | Racer | path, cancellation reason | Metrics | planned |
 | `decision` | Sidecar/decision engine | `event_type`, target, selected path, reason, optional privacy/learning/durable reasons and ephemeral policy state, winner `observation`, optional completed `other_observation`, `committed` | CLI/recorder/UI | experimental `DecisionEvent`; JSONL schema v1 additive optional metadata |
 | `durable_learning_assessment` | Async writer/evaluator | HMAC-transformed target in recorder, state, reason, aggregate wins/sessions, thresholds, optional suggestion | Trial analysis/UI | experimental Shadow event; never a route input |
+| `learning_health` | Health gate/runtime | optional HMAC-transformed triggering target, trigger, state, reason, freeze deadline, bounded distinct failure/recovery counts | Trial analysis/UI | experimental; emitted only on freeze/recovery/expiry transitions and never changes current route |
 | `diagnostic` | Sidecar | `event_type`, target, reason, failure class, optional Direct/Proxy failures and `policy_reason` | CLI/debug | experimental `DiagnosticEvent`; no payload bytes |
 | `guard_decision` | Guard | `event_type`, target, selected lane, reason, bounded failure classes, `committed` | CLI/recorder/UI | experimental; JSONL schema v1 implemented, no payload bytes |
 | `supervisor` | Supervisor | `event_type`, service, state, attempt, bounded failure class, optional `backoff_ms` | CLI/recorder/operator | experimental; states include `started`, `start_failed`, `exited`, `restart_scheduled`, `stopped` |
 | `policy.promoted` | Learning engine | old/new state, evidence, expiry | Store/UI/export | planned |
-| `learning.frozen` | Health guard | failing control, profile ID | UI/metrics | planned |
 
 Events must never contain HTTP bodies, credentials, cookies, subscription URLs, or raw TLS secrets.
 

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/firfisa/smartroute/internal/config"
+	"github.com/firfisa/smartroute/internal/health"
 	"github.com/firfisa/smartroute/internal/learning"
 	"github.com/firfisa/smartroute/internal/model"
 	"github.com/firfisa/smartroute/internal/observe"
@@ -60,6 +61,62 @@ func TestRuntimeLearningQueuesOnlyStrongEvidence(t *testing.T) {
 	}
 	if len(writer.requests) != 1 {
 		t.Fatalf("weak evidence queued: %+v", writer.requests)
+	}
+}
+
+func TestRuntimeHealthFreezeClearsPreferenceAndSuppressesDurableWrite(t *testing.T) {
+	clock := time.Unix(123, 0).UTC()
+	engine, err := learning.New(learning.Config{Mode: learning.ModeEphemeralAuto,
+		DirectPromotionWins: 2, ProxyPromotionWins: 2, TTL: time.Hour, MaxEntries: 10,
+		Clock: func() time.Time { return clock }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := health.New(health.Config{FailureThreshold: 3, RecoveryThreshold: 2,
+		FailureWindow: time.Minute, FreezeDuration: time.Minute, Clock: func() time.Time { return clock }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := &recordingDurableWriter{reason: store.ReasonDurableQueued}
+	events := make(chan health.Event, 1)
+	learner := &runtimeLearningEngine{ephemeral: engine, writer: writer, health: gate,
+		clock: func() time.Time { return clock }, onHealth: func(event health.Event) { events <- event }}
+	winner := model.Observation{Path: model.PathDirect, Success: true, StageReached: model.StageTLS}
+	failed := model.Observation{Path: model.PathProxy, StageReached: model.StageOutbound, FailureClass: "timeout"}
+	first := model.Target{NetworkProfileID: "profile", Hostname: "a.example", Port: 443, Transport: model.TransportTCP}
+	for range 2 {
+		if _, err := learner.Observe(first, winner, &failed); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if learner.PreferredPath(first) != model.PathDirect {
+		t.Fatal("expected promoted Direct preference")
+	}
+	for _, host := range []string{"b.example", "c.example"} {
+		update, err := learner.Observe(model.Target{NetworkProfileID: "profile", Hostname: host, Port: 443, Transport: model.TransportTCP}, winner, &failed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if host == "c.example" && update.ReasonCode != learning.ReasonHealthFrozen {
+			t.Fatalf("freeze update=%+v", update)
+		}
+	}
+	if len(writer.requests) != 3 {
+		t.Fatalf("durable writes=%d, want 3 before threshold-triggering evidence", len(writer.requests))
+	}
+	if learner.PreferredPath(first) != "" {
+		t.Fatal("frozen learner retained preference")
+	}
+	if _, ok := engine.Lookup(first); ok {
+		t.Fatal("freeze did not clear ephemeral policy table")
+	}
+	select {
+	case event := <-events:
+		if event.ReasonCode != health.ReasonProxyOutage {
+			t.Fatalf("event=%+v", event)
+		}
+	default:
+		t.Fatal("missing health event")
 	}
 }
 

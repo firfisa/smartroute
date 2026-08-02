@@ -28,6 +28,7 @@ const (
 	ReasonProxyPromoted          = "ephemeral_proxy_preference_promoted"
 	ReasonPreferenceRefreshed    = "ephemeral_preference_refreshed"
 	ReasonPreferenceContradicted = "ephemeral_preference_contradicted"
+	ReasonHealthFrozen           = "learning_skipped_health_frozen"
 )
 
 type Config struct {
@@ -37,6 +38,15 @@ type Config struct {
 	TTL                 time.Duration
 	MaxEntries          int
 	Clock               func() time.Time
+}
+
+// Clear removes every process-local preference and evidence counter. It is
+// used when environmental health becomes uncertain; durable evidence has a
+// separate lifecycle and is not modified here.
+func (e *Engine) Clear() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.policies = make(map[targetKey]Policy)
 }
 
 type Policy struct {

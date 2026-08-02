@@ -2,7 +2,7 @@
 
 SmartRoute 是一个面向 Mihomo/Clash 生态的“自适应分流”实验项目。它不重新实现代理协议，而是在现有静态规则与代理内核之间加入一个可观测、可解释、可撤销的决策层：对规则无法确定的目标比较 `DIRECT` 与 `PROXY` 路径，按当前网络环境积累证据，并逐渐形成个人化路由策略。
 
-当前状态：Phase 0 架构与可行性验证。已经实现实验性的可用性 Guard、TLS-over-SOCKS sidecar、无 0-RTT 的 TLS readiness 竞争、进程内临时学习闭环、可选的跨会话强证据写入与 Shadow 评估、受限本地观测记录器，以及锁定 Mihomo v1.19.29 的独立子进程测试；尚未实现跨会话自动策略、活动 Clash 配置接入或发布安装包。
+当前状态：Phase 0 架构与可行性验证。已经实现实验性的可用性 Guard、TLS-over-SOCKS sidecar、无 0-RTT 的 TLS readiness 竞争、进程内临时学习闭环、系统性故障学习冻结、可选的跨会话强证据写入与 Shadow 评估、受限本地观测记录器，以及锁定 Mihomo v1.19.29 的独立子进程测试；尚未实现跨会话自动策略、活动 Clash 配置接入或发布安装包。
 
 ## 当前结论
 
@@ -33,6 +33,7 @@ flowchart LR
     S --> D["专用 DIRECT 入口"]
     S --> P["原漏网之鱼代理策略"]
     S <--> E["可解释决策与本地学习"]
+    E <--> H["学习健康冻结"]
 ```
 
 不是所有流量都进入 SmartRoute。用户锁定、安全规则和高置信度规则保持原样；被选中的宽泛规则以及最后的 `MATCH/漏网之鱼` 才进入自适应路径。
@@ -46,6 +47,7 @@ flowchart LR
 | 运行时已完成反事实证据 | 已实现：只保留 winner 前已经终止的另一条路径；取消/未启动不算失败 |
 | 进程内学习与 TTL | 已实现：默认 `shadow`；`ephemeral-auto` 才应用偏好；重启清空 |
 | 学习后的候选启动顺序 | 已实现：Direct/Proxy 均可先启动，首选失败时另一条立即接替，不变成单路锁定 |
+| 系统性故障学习冻结 | 已实现：不同目标阈值、Proxy 专属恢复、网络/门户立即冻结、到期恢复；只冻结学习，不改变当前连接 |
 | 结构化理由、置信度和证据输出 | 实验性实现 |
 | SOCKS5 client/server、域名目标保留 | 实验性实现 |
 | Direct/Proxy 错峰竞争、取消 loser | 实验性实现 |
@@ -112,6 +114,8 @@ go run ./cmd/smartroute observations clear -config configs/smartroute.example.js
 ```
 
 这不是永久规则：策略按 `network profile + hostname + port + transport` 隔离，矛盾强证据会立即撤下偏好，TTL 到期或进程重启都会回到 Direct-first；内存表达到容量时停止接纳新目标，而不影响路由。
+
+默认启用学习健康门：30 秒内 3 个不同目标同时双路失败会冻结全局学习，3 个不同目标出现 Proxy 路径失败会冻结 Proxy 相关学习；冻结时立即清空进程内偏好并停止新的临时/SQLite 证据写入。默认由 3 个不同目标的成功恢复（Proxy 故障必须是 Proxy 成功），或 5 分钟到期恢复。这个机制不会切换已经选中的路径，也不会删除冻结前已经写入的 SQLite 行；网络切换和 captive portal 的状态机入口已经实现，自动探测源尚未接入。
 
 跨会话 SQLite 强证据写入默认关闭。要在隔离实验中启用，可在 `learning` 内设置：
 

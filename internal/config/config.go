@@ -46,6 +46,15 @@ type LearningConfig struct {
 	DirectPromotionWins int                       `json:"direct_promotion_wins"`
 	PolicyTTLHours      int                       `json:"policy_ttl_hours"`
 	Persistence         LearningPersistenceConfig `json:"persistence"`
+	Health              LearningHealthConfig      `json:"health"`
+}
+
+type LearningHealthConfig struct {
+	Enabled               bool `json:"enabled"`
+	FailureThreshold      int  `json:"failure_threshold"`
+	RecoveryThreshold     int  `json:"recovery_threshold"`
+	FailureWindowSeconds  int  `json:"failure_window_seconds"`
+	FreezeDurationSeconds int  `json:"freeze_duration_seconds"`
 }
 
 type LearningPersistenceConfig struct {
@@ -98,6 +107,8 @@ func Default() Config {
 				RetentionHours: 720, ShutdownTimeoutMS: 2000,
 				DirectSuggestionSessions: 3, ProxySuggestionSessions: 2,
 			},
+			Health: LearningHealthConfig{Enabled: true, FailureThreshold: 3,
+				RecoveryThreshold: 3, FailureWindowSeconds: 30, FreezeDurationSeconds: 300},
 		},
 		Privacy: PrivacyConfig{
 			Mode:             "explicit-opt-in",
@@ -148,6 +159,28 @@ func Load(path string) (Config, error) {
 			}
 			if _, capacityPresent := learningFields["max_entries"]; !capacityPresent {
 				cfg.Learning.MaxEntries = defaults.Learning.MaxEntries
+			}
+			if healthRaw, healthPresent := learningFields["health"]; !healthPresent {
+				cfg.Learning.Health = defaults.Learning.Health
+			} else {
+				var healthFields map[string]json.RawMessage
+				if err := json.Unmarshal(healthRaw, &healthFields); err == nil {
+					if _, present := healthFields["enabled"]; !present {
+						cfg.Learning.Health.Enabled = defaults.Learning.Health.Enabled
+					}
+					if _, present := healthFields["failure_threshold"]; !present {
+						cfg.Learning.Health.FailureThreshold = defaults.Learning.Health.FailureThreshold
+					}
+					if _, present := healthFields["recovery_threshold"]; !present {
+						cfg.Learning.Health.RecoveryThreshold = defaults.Learning.Health.RecoveryThreshold
+					}
+					if _, present := healthFields["failure_window_seconds"]; !present {
+						cfg.Learning.Health.FailureWindowSeconds = defaults.Learning.Health.FailureWindowSeconds
+					}
+					if _, present := healthFields["freeze_duration_seconds"]; !present {
+						cfg.Learning.Health.FreezeDurationSeconds = defaults.Learning.Health.FreezeDurationSeconds
+					}
+				}
 			}
 			if persistenceRaw, persistencePresent := learningFields["persistence"]; !persistencePresent {
 				cfg.Learning.Persistence = defaults.Learning.Persistence
@@ -239,6 +272,18 @@ func (c Config) Validate() error {
 	if c.Learning.PolicyTTLHours < 1 {
 		validationErrors = append(validationErrors, errors.New("policy_ttl_hours must be positive"))
 	}
+	if c.Learning.Health.FailureThreshold < 2 || c.Learning.Health.FailureThreshold > 1000 {
+		validationErrors = append(validationErrors, errors.New("learning.health.failure_threshold must be between 2 and 1000"))
+	}
+	if c.Learning.Health.RecoveryThreshold < 2 || c.Learning.Health.RecoveryThreshold > 1000 {
+		validationErrors = append(validationErrors, errors.New("learning.health.recovery_threshold must be between 2 and 1000"))
+	}
+	if c.Learning.Health.FailureWindowSeconds < 1 || c.Learning.Health.FailureWindowSeconds > 3600 {
+		validationErrors = append(validationErrors, errors.New("learning.health.failure_window_seconds must be between 1 and 3600"))
+	}
+	if c.Learning.Health.FreezeDurationSeconds < 1 || c.Learning.Health.FreezeDurationSeconds > 86400 {
+		validationErrors = append(validationErrors, errors.New("learning.health.freeze_duration_seconds must be between 1 and 86400"))
+	}
 	if c.Learning.Persistence.DatabasePath == "" {
 		validationErrors = append(validationErrors, errors.New("learning.persistence.database_path must not be empty"))
 	} else if clean := filepath.Clean(c.Learning.Persistence.DatabasePath); clean == "." || clean == string(filepath.Separator) {
@@ -298,6 +343,14 @@ func (c Config) LearningEvidenceRetention() time.Duration {
 
 func (c Config) LearningShutdownTimeout() time.Duration {
 	return time.Duration(c.Learning.Persistence.ShutdownTimeoutMS) * time.Millisecond
+}
+
+func (c Config) LearningHealthFailureWindow() time.Duration {
+	return time.Duration(c.Learning.Health.FailureWindowSeconds) * time.Second
+}
+
+func (c Config) LearningHealthFreezeDuration() time.Duration {
+	return time.Duration(c.Learning.Health.FreezeDurationSeconds) * time.Second
 }
 
 func validateLoopbackAddress(address string) error {

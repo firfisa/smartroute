@@ -18,6 +18,13 @@
     "proxy_promotion_wins": 3,
     "direct_promotion_wins": 5,
     "policy_ttl_hours": 72,
+    "health": {
+      "enabled": true,
+      "failure_threshold": 3,
+      "recovery_threshold": 3,
+      "failure_window_seconds": 30,
+      "freeze_duration_seconds": 300
+    },
     "persistence": {
       "enabled": false,
       "database_path": "data/learning.db",

@@ -204,3 +204,42 @@ func TestValidateRejectsInvalidPrivacyPattern(t *testing.T) {
 		t.Fatalf("Validate() error = %v, want privacy pattern error", err)
 	}
 }
+
+func TestValidateRejectsInvalidLearningHealthBounds(t *testing.T) {
+	cfg := Default()
+	cfg.Learning.Health.FailureThreshold = 1
+	cfg.Learning.Health.FreezeDurationSeconds = 0
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "learning.health.failure_threshold") || !strings.Contains(err.Error(), "learning.health.freeze_duration_seconds") {
+		t.Fatalf("Validate() error = %v, want health bounds", err)
+	}
+}
+
+func TestLoadDefaultsPartialLearningHealth(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	cfg := Default()
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatal(err)
+	}
+	learningFields := fields["learning"].(map[string]any)
+	learningFields["health"] = map[string]any{"failure_threshold": float64(4)}
+	data, err = json.Marshal(fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.Learning.Health.Enabled || loaded.Learning.Health.FailureThreshold != 4 || loaded.Learning.Health.RecoveryThreshold != 3 || loaded.Learning.Health.FreezeDurationSeconds != 300 {
+		t.Fatalf("health defaults=%+v", loaded.Learning.Health)
+	}
+}

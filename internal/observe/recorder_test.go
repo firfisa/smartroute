@@ -100,6 +100,36 @@ func TestRecorderStoresDurableAssessmentWithoutCleartextTarget(t *testing.T) {
 	}
 }
 
+func TestRecorderStoresLearningHealthMetadataWithoutCleartextTarget(t *testing.T) {
+	directory := t.TempDir()
+	recorder, err := New(Options{Directory: directory, Source: SourceEngine,
+		MaxFileBytes: 4096, MaxFiles: 2, Retention: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := model.Target{NetworkProfileID: "private-network", Hostname: "secret.example", Port: 443, Transport: model.TransportTCP}
+	until := time.Unix(300, 0).UTC()
+	if err := recorder.Record(Event{EventType: "learning_health", Target: &target,
+		ReasonCode: "learning_frozen_proxy_outage", State: "frozen", Trigger: "proxy_path_failed",
+		FrozenUntil: &until, FailureTargets: 3, RecoveryTargets: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := recorder.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data := readOnlyJSONL(t, directory)
+	if strings.Contains(data, "secret.example") || strings.Contains(data, "private-network") {
+		t.Fatalf("cleartext identity leaked: %s", data)
+	}
+	var event storedEvent
+	if err := json.Unmarshal([]byte(strings.TrimSpace(data)), &event); err != nil {
+		t.Fatal(err)
+	}
+	if event.Trigger != "proxy_path_failed" || event.FailureTargets != 3 || event.RecoveryTargets != 1 || event.FrozenUntil == nil || !event.FrozenUntil.Equal(until) {
+		t.Fatalf("stored health event=%+v", event)
+	}
+}
+
 func (e storedEvent) CommittedValue() bool { return e.Committed != nil && *e.Committed }
 
 func TestRecorderCleartextRequiresExplicitOption(t *testing.T) {

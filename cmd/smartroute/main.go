@@ -22,6 +22,7 @@ import (
 	"github.com/firfisa/smartroute/internal/config"
 	"github.com/firfisa/smartroute/internal/decision"
 	"github.com/firfisa/smartroute/internal/guard"
+	"github.com/firfisa/smartroute/internal/health"
 	"github.com/firfisa/smartroute/internal/learning"
 	"github.com/firfisa/smartroute/internal/model"
 	"github.com/firfisa/smartroute/internal/observe"
@@ -272,6 +273,18 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	stdoutWriter := &synchronizedWriter{writer: stdout}
 	stderrWriter := &synchronizedWriter{writer: stderr}
 	events := newRuntimeEventSink(stdoutWriter, stderrWriter, recorder)
+	var healthGate *health.Gate
+	if cfg.Learning.Health.Enabled {
+		healthGate, err = health.New(health.Config{
+			FailureThreshold:  cfg.Learning.Health.FailureThreshold,
+			RecoveryThreshold: cfg.Learning.Health.RecoveryThreshold,
+			FailureWindow:     cfg.LearningHealthFailureWindow(),
+			FreezeDuration:    cfg.LearningHealthFreezeDuration(),
+		})
+		if err != nil {
+			return fmt.Errorf("initialize learning health gate: %w", err)
+		}
+	}
 	var durableWarnOnce sync.Once
 	durable, err := openDurableLearning(context.Background(), cfg, func(error) {
 		durableWarnOnce.Do(func() {
@@ -301,7 +314,22 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 			}
 		}()
 	}
-	learner := &runtimeLearningEngine{ephemeral: ephemeralLearner}
+	learner := &runtimeLearningEngine{ephemeral: ephemeralLearner, health: healthGate}
+	learner.onHealth = func(event health.Event) {
+		outputMu.Lock()
+		defer outputMu.Unlock()
+		var frozenUntil *time.Time
+		if !event.FrozenUntil.IsZero() {
+			value := event.FrozenUntil
+			frozenUntil = &value
+		}
+		events.Emit(event, observe.Event{EventType: event.EventType, Target: event.Target,
+			ReasonCode: event.ReasonCode, State: event.State, Trigger: event.Trigger,
+			FrozenUntil: frozenUntil, FailureTargets: event.FailureTargets, RecoveryTargets: event.RecoveryTargets})
+	}
+	learner.onError = func(err error) {
+		fmt.Fprintf(stderrWriter, "learning health signal rejected; routing continues: %v\n", err)
+	}
 	if durable != nil {
 		learner.writer = durable.writer
 	}
@@ -356,23 +384,58 @@ type durableEvidenceWriter interface {
 }
 
 type runtimeLearningEngine struct {
+	mu        sync.Mutex
 	ephemeral *learning.Engine
 	writer    durableEvidenceWriter
 	clock     func() time.Time
+	health    *health.Gate
+	onHealth  func(health.Event)
+	onError   func(error)
 }
 
 func (e *runtimeLearningEngine) PreferredPath(target model.Target) model.Path {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.health != nil {
+		transition := e.health.Check()
+		e.handleHealthTransition(nil, transition)
+		if transition.Snapshot.State == health.StateFrozen {
+			return ""
+		}
+	}
 	return e.ephemeral.PreferredPath(target)
 }
 
 func (e *runtimeLearningEngine) Observe(target model.Target, winner model.Observation, other *model.Observation) (learning.Update, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	direction, nonAppliedReason, err := learning.ClassifyStrongPair(winner, other)
+	if err != nil {
+		return learning.Update{}, err
+	}
+	if e.health != nil {
+		transition, healthErr := e.health.ObservePathSucceeded(target, winner.Path)
+		if healthErr != nil {
+			return learning.Update{}, healthErr
+		}
+		e.handleHealthTransition(&target, transition)
+		if direction == model.PathDirect {
+			transition, healthErr = e.health.ObserveProxyPathFailed(target)
+			if healthErr != nil {
+				return learning.Update{}, healthErr
+			}
+			e.handleHealthTransition(&target, transition)
+		}
+		if e.health.Snapshot().State == health.StateFrozen {
+			return learning.Update{ReasonCode: learning.ReasonHealthFrozen}, nil
+		}
+	}
+	if direction == "" {
+		return learning.Update{ReasonCode: nonAppliedReason}, nil
+	}
 	update, err := e.ephemeral.Observe(target, winner, other)
 	if err != nil || e.writer == nil {
 		return update, err
-	}
-	direction, _, classifyErr := learning.ClassifyStrongPair(winner, other)
-	if classifyErr != nil || direction == "" {
-		return update, nil
 	}
 	now := time.Now
 	if e.clock != nil {
@@ -382,6 +445,67 @@ func (e *runtimeLearningEngine) Observe(target model.Target, winner model.Observ
 		Target: target, Winner: winner, Other: other, ObservedAt: now().UTC(),
 	})
 	return update, nil
+}
+
+func (e *runtimeLearningEngine) ObserveBothPathsFailed(target model.Target) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.health == nil {
+		return
+	}
+	transition, err := e.health.ObserveBothPathsFailed(target)
+	if err != nil {
+		e.handleHealthError(err)
+		return
+	}
+	e.handleHealthTransition(&target, transition)
+}
+
+func (e *runtimeLearningEngine) ObserveProxyPathFailed(target model.Target) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.health == nil {
+		return
+	}
+	transition, err := e.health.ObserveProxyPathFailed(target)
+	if err != nil {
+		e.handleHealthError(err)
+		return
+	}
+	e.handleHealthTransition(&target, transition)
+}
+
+func (e *runtimeLearningEngine) ObservePathSucceeded(target model.Target, path model.Path) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.health == nil {
+		return
+	}
+	transition, err := e.health.ObservePathSucceeded(target, path)
+	if err != nil {
+		e.handleHealthError(err)
+		return
+	}
+	e.handleHealthTransition(&target, transition)
+}
+
+func (e *runtimeLearningEngine) handleHealthTransition(target *model.Target, transition health.Transition) {
+	if !transition.Changed {
+		return
+	}
+	if transition.Snapshot.State == health.StateFrozen {
+		e.ephemeral.Clear()
+	}
+	if e.onHealth != nil {
+		event := health.NewEvent(target, transition)
+		e.onHealth(event)
+	}
+}
+
+func (e *runtimeLearningEngine) handleHealthError(err error) {
+	if e.onError != nil {
+		e.onError(err)
+	}
 }
 
 type durableLearningRuntime struct {
