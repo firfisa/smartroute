@@ -3,6 +3,8 @@
 package learning
 
 import (
+	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
@@ -137,23 +139,12 @@ func (e *Engine) Observe(target model.Target, winner model.Observation, other *m
 	if err != nil {
 		return Update{}, err
 	}
-	if err := winner.Validate(); err != nil {
-		return Update{}, fmt.Errorf("winner: %w", err)
+	direction, nonAppliedReason, err := ClassifyStrongPair(winner, other)
+	if err != nil {
+		return Update{}, err
 	}
-	if !winner.Success || winner.StageReached < model.StageTCP {
-		return Update{}, errors.New("winner must prove at least target TCP readiness")
-	}
-	if other == nil {
-		return Update{ReasonCode: ReasonIncompleteEvidence}, nil
-	}
-	if err := other.Validate(); err != nil {
-		return Update{}, fmt.Errorf("other observation: %w", err)
-	}
-	if other.Success || other.Path == winner.Path || !oppositePaths(winner.Path, other.Path) {
-		return Update{}, errors.New("paired evidence requires a successful winner and failed opposite path")
-	}
-	if other.StageReached < model.StageOutbound || other.FailureClass == "canceled" || other.FailureClass == "not_started" {
-		return Update{ReasonCode: ReasonWeakFailure}, nil
+	if direction == "" {
+		return Update{ReasonCode: nonAppliedReason}, nil
 	}
 
 	now := e.config.Clock().UTC()
@@ -170,7 +161,6 @@ func (e *Engine) Observe(target model.Target, winner model.Observation, other *m
 		policy = Policy{State: model.StateUnknown}
 	}
 	previous := policy.State
-	direction := winner.Path
 	contradicted := (policy.State == model.StateDirectPreferred && direction == model.PathProxy) ||
 		(policy.State == model.StateProxyPreferred && direction == model.PathDirect)
 	if direction == model.PathDirect {
@@ -221,6 +211,30 @@ func (e *Engine) Observe(target model.Target, winner model.Observation, other *m
 	return Update{Applied: true, PreviousState: previous, Policy: policy, ReasonCode: reason}, nil
 }
 
+// ClassifyStrongPair is the single evidence gate shared by ephemeral and
+// durable learning. Empty direction with a reason is a valid non-update.
+func ClassifyStrongPair(winner model.Observation, other *model.Observation) (direction model.Path, nonAppliedReason string, err error) {
+	if err := winner.Validate(); err != nil {
+		return "", "", fmt.Errorf("winner: %w", err)
+	}
+	if !winner.Success || winner.StageReached < model.StageTCP {
+		return "", "", errors.New("winner must prove at least target TCP readiness")
+	}
+	if other == nil {
+		return "", ReasonIncompleteEvidence, nil
+	}
+	if err := other.Validate(); err != nil {
+		return "", "", fmt.Errorf("other observation: %w", err)
+	}
+	if other.Success || other.Path == winner.Path || !oppositePaths(winner.Path, other.Path) {
+		return "", "", errors.New("paired evidence requires a successful winner and failed opposite path")
+	}
+	if other.StageReached < model.StageOutbound || other.FailureClass == "canceled" || other.FailureClass == "not_started" {
+		return "", ReasonWeakFailure, nil
+	}
+	return winner.Path, "", nil
+}
+
 func (e *Engine) pruneExpiredLocked(now time.Time) {
 	for key, policy := range e.policies {
 		if !now.Before(policy.ExpiresAt) {
@@ -267,4 +281,24 @@ func keyForTarget(target model.Target) (targetKey, error) {
 		NetworkProfileID: target.NetworkProfileID, Hostname: host,
 		Port: target.Port, Transport: target.Transport,
 	}, nil
+}
+
+// CanonicalTargetKey returns an unambiguous normalized representation for
+// local HMAC lookup. Callers must not persist or log the returned cleartext.
+func CanonicalTargetKey(target model.Target) ([]byte, error) {
+	key, err := keyForTarget(target)
+	if err != nil {
+		return nil, err
+	}
+	var encoded bytes.Buffer
+	for _, value := range []string{key.NetworkProfileID, key.Hostname, string(key.Transport)} {
+		if err := binary.Write(&encoded, binary.BigEndian, uint32(len(value))); err != nil {
+			return nil, err
+		}
+		_, _ = encoded.WriteString(value)
+	}
+	if err := binary.Write(&encoded, binary.BigEndian, key.Port); err != nil {
+		return nil, err
+	}
+	return encoded.Bytes(), nil
 }

@@ -28,7 +28,7 @@ flowchart TB
     MihomoLab["internal/mihomolab\nPinned child-process lab"]
     MihomoLabCLI["cmd/smartroute-mihomo-lab\nIntegration runner"]
     Mihomo["internal/upstream\nFuture active adapter"]
-    Store["internal/store\nSQLite policy store"]
+    Store["internal/store\nSQLite strong evidence"]
 
     CLI --> Config
     CLI --> Decision
@@ -42,6 +42,8 @@ flowchart TB
     Config --> Learning
     Decision --> Model
     Learning --> Model
+    Store --> Learning
+    Store --> Model
     Transport --> Model
     Transport --> SOCKS
     Transport --> TLSInspect
@@ -89,7 +91,7 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `internal/testlab` | Test | implemented | Ephemeral loopback echo target, fake Direct/Proxy gateways, deterministic faults | External network and active Clash access | `internal/testlab/lab_test.go` |
 | `internal/mihomolab` | Test | implemented | Temporary config/home, child lifecycle, synthetic DNS, forced-listener and readiness assertions | Active Clash discovery, external traffic, TUN, system proxy | `internal/mihomolab/lab_test.go`; explicit runtime command |
 | `internal/upstream` | Integration | planned | Mihomo config/API adapter and topology validation | Shipping Mihomo source | Planned integration tests |
-| `internal/store` | Persistence | planned | SQLite learned policies, promotion state, TTL, and migrations | Raw analytics uploads or JSONL observation recording | Planned migration/recovery tests |
+| `internal/store` | Persistence | experimental | HMAC target keys, sessions, strong evidence, schema migration, integrity checks, summaries, and pruning | Runtime policy application, cleartext targets, raw analytics, or JSONL recording | `internal/store/sqlite_test.go` migration/privacy/recovery/concurrency suite |
 
 ## 3. Implemented function and interface registry
 
@@ -123,6 +125,11 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `observe.New(options)` | `internal/observe` | Local directory, source and capacity/privacy limits | Source-specific recorder | Rejects unsafe paths/limits and invalid salt; initialization errors are explicit | experimental | Recorder validation/privacy tests |
 | `Recorder.Record(event)` | `internal/observe` | Typed bounded event with optional raw target | Pseudonymous JSONL record or paused no-op | Oversized/write errors return to caller; runtime caller warns once and continues routing | experimental | Hashing, pause, rotation and oversized-event tests |
 | `observe.Inspect/Pause/Resume/Clear/Export` | `internal/observe` | Observation directory and explicit destination/paused state | Lifecycle status or local file operation | Only manages engine/Guard/supervisor subdirectories; clear requires pause; export refuses nesting/existing destination and omits salt/symlinks | experimental | Control and export tests |
+| `store.Open(ctx, config)` | `internal/store` | Context, DB path, busy timeout | Migrated/integrity-checked SQLite store with local HMAC key | Rejects unsafe path, missing/invalid key, `store.ErrCorrupt`, and future schema; never replaces data | experimental | Open/reopen, corruption, permissions and future-schema tests |
+| `Store.StartSession(ctx, id, time)` | `internal/store` | Safe local session ID and timestamp | Durable independent-session row | Rejects invalid/duplicate sessions and cancellation | experimental | Session and foreign-key tests |
+| `Store.AppendStrongEvidence(...)` | `internal/store` | Target, known session, winner/opposite pair, timestamp | Whether a schema-v1 row was written | Shared learning gate skips weak/incomplete pairs; unsafe failure tokens and DB errors are explicit | experimental | Strong/weak/privacy/concurrent-write tests |
+| `Store.ListEvidence/Summarize` | `internal/store` | Target and lower timestamp bound | Ordered rows or wins/distinct-session counts | Invalid stored stages/directions fail visibly | experimental | Scope, summary and corrupt-row tests |
+| `Store.PruneEvidence/Checkpoint` | `internal/store` | Retention cutoff or context | Deleted count or compact WAL boundary | Errors never imply automatic deletion/replacement | experimental | Prune and privacy-file tests |
 | `sidecar.Server.Serve(ctx, listener)` | `internal/sidecar` | Context, listener, plain Racer or TLSRacer | Serves until cancellation/error; TLS mode requires L3 | Rejects unsafe ClientHello before dialing; never reads Clash config | experimental | Sidecar, Test Lab and Mihomo Lab |
 | `guard.Server.Serve(ctx, listener)` | `internal/guard` | Context, listener, adaptive/original dialers and bounded timeouts | Serves SOCKS targets; commits one availability lane before payload | Falls back on adaptive handshake failure; refuses when both lanes fail; never replays post-commit data | experimental | Adaptive, unavailable, wedged and dual-failure unit tests; Mihomo Lab scenarios |
 | `netrelay.Bidirectional(left, right)` | `internal/netrelay` | Two owned TCP-like connections | Relays both directions until completion | Best-effort half-close; relay errors are not routing evidence | experimental | Guard/Sidecar end-to-end tests |

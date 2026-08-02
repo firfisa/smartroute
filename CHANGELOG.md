@@ -54,6 +54,9 @@ All notable project changes are recorded here. The project has not published a r
 - Preferred-order Direct/Proxy racing where an early preferred-path failure starts the opposite path immediately; learned policy never becomes a single-path lock.
 - Capacity-bounded ephemeral policy table with expired-entry reclamation and non-disruptive refusal of new learning when full.
 - Decision/JSONL learning reason and ephemeral policy-state metadata, plus ADR-0011.
+- CGo-free SQLite strong-evidence store using `modernc.org/sqlite v1.55.0`, with schema-v1 migrations, WAL, integrity checks, explicit pruning and checkpointing.
+- HMAC-pseudonymous durable target keys backed by a separate mode-0600 key; cleartext hostname/profile never enter SQLite.
+- Durable independent-session summaries, safe failure tokens, corruption/future-schema refusal, and ADR-0012.
 
 ### Known limitations
 

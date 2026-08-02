@@ -9,6 +9,11 @@
 *.db
 *.db-shm
 *.db-wal
+*.db.key
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite.key
 *.log
 /data/
 

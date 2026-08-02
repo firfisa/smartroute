@@ -13,7 +13,18 @@ SmartRoute keeps upstream sources outside the tracked repository in `.upstream/`
 
 SmartRoute's first-party standalone source is released under MIT. The upstream projects in this table remain under GPL-3.0 and are not relicensed by SmartRoute. The current sidecar-first boundary keeps their source outside this repository; any future copying, linking, fork distribution, or bundled release requires a fresh license-boundary review and the notices/source obligations applicable to that distribution model.
 
-## 2. Mihomo source-contract evidence
+## 2. Runtime dependency inventory
+
+| Module | Locked version | License | Purpose | Compatibility/maintenance status |
+| --- | --- | --- | --- | --- |
+| `modernc.org/sqlite` | `v1.55.0` | BSD-3-Clause; embedded SQLite is public domain | CGo-free `database/sql` driver for local strong-evidence persistence | Supports darwin/arm64, linux/amd64 and Windows; experimental store tests pass |
+| `modernc.org/libc` | `v1.74.1` (indirect) | BSD-3-Clause | Exact libc dependency selected by the SQLite module | Keep aligned through `go.mod/go.sum`; never override independently without SQLite tests |
+
+The SQLite driver is a linked runtime dependency, not source copied into this repository. Its transitive modules are pinned by `go.sum`. Upgrade steps require checking the canonical release notes, license files, supported targets, SQLite/libc pairing, migration/recovery tests, and clean-checkout build size. ADR-0012 records the selection and privacy boundary.
+
+Primary references: [modernc SQLite package](https://pkg.go.dev/modernc.org/sqlite), [canonical repository](https://gitlab.com/cznic/sqlite).
+
+## 3. Mihomo source-contract evidence
 
 The following evidence was inspected at the locked v1.19.29 commit and compared with the isolated runtime lab.
 
@@ -48,7 +59,7 @@ Remaining runtime checks:
 - Re-run the new Guard engine-stop/original-fallback/restart scenarios on macOS and Linux; the implementation and unit tests are complete, but this added child-process topology has not yet been recorded as passed.
 - Run the new SmartRoute supervisor with the pinned Mihomo fault lab; the in-process lifecycle/restart contract is implemented, while host-service integration and any outer Mihomo health fallback remain pending. Neither can retry the first connection that observed Guard failure.
 
-## 3. Preparation
+## 4. Preparation
 
 ```bash
 bash scripts/prepare-upstreams.sh
@@ -69,7 +80,7 @@ SMARTRoute_UPSTREAM_ROOT=/private/tmp/smartroute-upstreams \
   bash scripts/prepare-upstreams.sh
 ```
 
-## 4. Update procedure
+## 5. Update procedure
 
 | Step | Required evidence |
 | --- | --- |

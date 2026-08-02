@@ -272,7 +272,7 @@ stateDiagram-v2
     PROXY_PREFERRED --> UNKNOWN: TTL 到期或网络画像改变
 ```
 
-`DIRECT_LOCKED`、`PROXY_LOCKED` 和 `REJECT_LOCKED` 仅由用户或管理员生成，不由算法自动生成。当前实现是进程内的 `UNKNOWN / DIRECT_PREFERRED / PROXY_PREFERRED / UNSTABLE` 子集；跨会话、SQLite 和锁定策略仍未实现。
+`DIRECT_LOCKED`、`PROXY_LOCKED` 和 `REJECT_LOCKED` 仅由用户或管理员生成，不由算法自动生成。当前实现是进程内的 `UNKNOWN / DIRECT_PREFERRED / PROXY_PREFERRED / UNSTABLE` 子集，以及尚未接入运行时的 SQLite 强证据 schema；跨会话持久策略评估和锁定策略仍未实现。
 
 ### 7.3 MVP 晋升规则
 
@@ -325,14 +325,27 @@ SSID 不是可信身份，可能重名或被伪造。画像需要相似度和版
 
 ## 9. 数据模型
 
-建议 SQLite 表：
+已实现的 SQLite schema v1 只承担跨会话强证据，不接管运行时策略：
+
+```text
+sessions
+  session_id, started_at_ms
+
+strong_evidence
+  evidence_id, target_key_hmac, session_id, direction,
+  observed_at_ms, winner_stage, other_stage, failure_class
+```
+
+`target_key_hmac` 由独立 0600 本地密钥对 `network profile + normalized hostname + port + transport` 的无歧义编码计算。数据库不保存明文 hostname/profile；数据库存在而密钥缺失时拒绝生成替代密钥。打开时执行完整性检查和事务迁移，损坏或未来 schema 不自动覆盖。详见 ADR-0012。
+
+未来持久策略、网络画像与人工规则可能扩展为：
 
 ```text
 network_profiles
   id, local_fingerprint, features_json, first_seen_at, last_seen_at
 
 targets
-  id, hostname, port, transport, process_scope, created_at
+  id, target_key_hmac, process_scope, created_at
 
 observations
   id, profile_id, target_id, path, dns_path, address_family,
@@ -350,7 +363,7 @@ exports
   policy_id, rule_type, rule_value, generated_at, revoked_at
 ```
 
-域名应原样保存在用户本机，数据库文件设置最小权限。未来若做匿名统计，不能把“直接哈希域名”称为匿名化，因为域名字典很容易反查。
+如果未来为了本地诊断增加明文 hostname，必须使用独立显式开关和迁移；默认仍是带密钥 HMAC。HMAC 只是数据库单独泄漏时的伪名化，不应称为匿名化。数据库、WAL/SHM 与密钥的备份和删除必须作为一个受保护单元处理。
 
 ## 10. 规则生成
 

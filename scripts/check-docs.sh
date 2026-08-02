@@ -15,6 +15,8 @@ matches() {
 }
 
 required_files=(
+  "go.mod"
+  "go.sum"
   "LICENSE"
   "AGENTS.md"
   "README.md"
@@ -39,6 +41,7 @@ required_files=(
   "docs/adr/0009-bounded-local-observation-recorder.md"
   "docs/adr/0010-preserve-only-completed-counterfactual-evidence.md"
   "docs/adr/0011-ephemeral-learning-and-preferred-racing.md"
+  "docs/adr/0012-sqlite-strong-evidence-store.md"
   "configs/smartroute.example.json"
   "upstreams.lock"
 )
@@ -130,6 +133,12 @@ if ! matches '"mode": "shadow"' "${project_root}/configs/smartroute.example.json
   ! matches 'ephemeral-auto' "${project_root}/docs/04-component-catalog.md" "${project_root}/docs/adr/0011-ephemeral-learning-and-preferred-racing.md" ||
   ! matches 'proxy_candidate_before_head_start' "${project_root}/docs/04-component-catalog.md"; then
   echo "ephemeral learning and preferred-race contract is missing" >&2
+  exit 1
+fi
+
+if ! matches 'modernc.org/sqlite.*v1\.55\.0' "${project_root}/go.mod" "${project_root}/docs/05-upstreams.md" "${project_root}/docs/adr/0012-sqlite-strong-evidence-store.md" ||
+  ! matches 'ErrCorrupt' "${project_root}/docs/04-component-catalog.md" "${project_root}/docs/adr/0012-sqlite-strong-evidence-store.md"; then
+  echo "SQLite strong-evidence persistence contract is missing" >&2
   exit 1
 fi
 

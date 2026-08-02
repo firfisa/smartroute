@@ -57,7 +57,7 @@ flowchart LR
 | TLS readiness gate | 已实现：结构化 ServerHello 达到 L3，预读字节无损回放 |
 | TLS ClientHello/0-RTT 安全处理 | 已实现分片重组；检测到 `early_data` 时在拨号前拒绝 |
 | Direct 探测隐私策略 | 已实现：`privacy-first`、精确/后缀 deny、缺失策略 fail-closed；禁直连时只启 Proxy 且仍要求 L3 |
-| SQLite 学习、TTL、网络画像 | 未实现 |
+| SQLite 强证据存储基础 | 已实现：HMAC 目标键、独立会话、迁移/校验/裁剪；尚未接入运行时或持久策略 |
 | 独立 Mihomo listener 拓扑 | v1.19.29 已验证强制 Direct/Proxy、域名保留和循环规避 |
 | Mihomo HTTPS/TLS 自适应路径 | macOS arm64 与 Linux amd64/v1.19.29 已验证 Direct 无 ServerHello 后由 Proxy 恢复并提交 L3 |
 | 活动 Clash Verge Rev 集成 | 尚未写入或重载；留待配合下的真实试用 |
@@ -109,6 +109,8 @@ go run ./cmd/smartroute observations clear -config configs/smartroute.example.js
 ```
 
 这不是永久规则：策略按 `network profile + hostname + port + transport` 隔离，矛盾强证据会立即撤下偏好，TTL 到期或进程重启都会回到 Direct-first；内存表达到容量时停止接纳新目标，而不影响路由。
+
+跨会话 SQLite 基础已经实现但尚未由 `serve` 打开。数据库只保存目标 HMAC 和结构化强证据，独立密钥位于 `<database>.key`；当前不会从数据库加载自动策略，也没有授权它改变路由。
 
 ## 独立测试环境
 
