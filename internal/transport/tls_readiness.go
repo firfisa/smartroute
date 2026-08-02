@@ -18,7 +18,19 @@ const (
 	FailureTLSTimeout          = "tls_timeout"
 	FailureTLSConnectionClosed = "tls_connection_closed"
 	FailureClientHelloWrite    = "client_hello_write_failed"
+	ReasonDirectPolicyOnly     = "direct_policy_only"
+	ReasonProxyPolicyOnly      = "proxy_policy_only"
 )
+
+type TLSPathError struct {
+	Observation model.Observation
+	Err         error
+}
+
+func (e *TLSPathError) Error() string {
+	return fmt.Sprintf("%s TLS path failed: %v", e.Observation.Path, e.Err)
+}
+func (e *TLSPathError) Unwrap() error { return e.Err }
 
 // TLSServerHelloGate promotes a candidate only after receiving a complete,
 // structurally valid ServerHello. Every consumed server byte is returned for
@@ -70,6 +82,53 @@ func (r TLSRacer) Race(ctx context.Context, target model.Target, hello tlsinspec
 		HeadStart: r.HeadStart,
 		Timeout:   r.Timeout,
 	}).Race(ctx, target)
+}
+
+// ConnectPath applies the same ClientHello write, L3 readiness gate, timeout,
+// and replay behavior to exactly one policy-selected path. It is used when a
+// privacy or manual policy forbids opening the counterfactual candidate.
+func (r TLSRacer) ConnectPath(ctx context.Context, target model.Target, hello tlsinspect.ClientHello, path model.Path) (RaceResult, error) {
+	if hello.Len() == 0 {
+		return RaceResult{}, errors.New("validated ClientHello is required")
+	}
+	if r.Gate == nil {
+		return RaceResult{}, errors.New("TLS readiness gate is required")
+	}
+	if r.Timeout <= 0 {
+		return RaceResult{}, errors.New("TLS path timeout must be positive")
+	}
+	var base CandidateDialer
+	reason := ReasonProxyPolicyOnly
+	switch path {
+	case model.PathDirect:
+		base = r.Direct
+		reason = ReasonDirectPolicyOnly
+	case model.PathProxy:
+		base = r.Proxy
+	default:
+		return RaceResult{}, fmt.Errorf("unsupported TLS path %q", path)
+	}
+	if base == nil {
+		return RaceResult{}, fmt.Errorf("%s TLS candidate is required", path)
+	}
+	pathCtx, cancel := context.WithTimeout(ctx, r.Timeout)
+	defer cancel()
+	conn, observation, err := (tlsReadyDialer{base: base, gate: r.Gate, clientHello: hello.WireBytes()}).Dial(pathCtx, target)
+	if observation.Path == "" {
+		observation.Path = path
+	}
+	if observation.Path != path {
+		if conn != nil {
+			_ = conn.Close()
+		}
+		observation.Success = false
+		observation.FailureClass = "candidate_path_mismatch"
+		return RaceResult{}, &TLSPathError{Observation: observation, Err: fmt.Errorf("candidate reported path %q, want %q", observation.Path, path)}
+	}
+	if err != nil {
+		return RaceResult{}, &TLSPathError{Observation: observation, Err: err}
+	}
+	return RaceResult{Conn: conn, Observation: observation, ReasonCode: reason}, nil
 }
 
 type tlsReadyDialer struct {

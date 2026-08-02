@@ -50,6 +50,7 @@ The first two lanes remain the default development path. Read-only inspection ma
 | `current_rule_lane` | On | Compare static baseline and SmartRoute | Category/reason, not full rule-provider content |
 | Candidate path/stage/latency/failure | On | Explain Direct/Proxy evidence | Structured enum and duration |
 | Selected path/reason code | On | Audit automatic decisions | Structured enum |
+| Privacy policy reason | On when policy changes candidate set | Prove why Direct was skipped | Structured enum; never include the configured pattern text |
 | Client-visible outcome | On when measurable | Detect refresh/retry/regression | Success/failure/timing only |
 | Process identity | Off | Diagnose application-specific behavior | Separate opt-in; normalize locally |
 | Aggregate byte counts | Off initially | Estimate avoidable proxy traffic | Enable only after validation |
@@ -77,9 +78,11 @@ The first recorder should use local JSONL for schema iteration before SQLite mig
 
 Raw observations must never be committed to GitHub. Analysis artifacts intended for the repository must contain aggregates or synthetic fixtures only.
 
+The Phase 0 stdout `DecisionEvent` and `DiagnosticEvent` gained an optional `policy_reason` field in ADR-0007. This is an additive experimental-schema change; consumers must tolerate its absence on non-TLS or pre-policy failures. No persistent migration exists yet because the recorder remains unimplemented.
+
 ## 5. Coordinated replacement procedure
 
-The isolated Mihomo listener topology and minimal L3 TLS readiness recovery have passed on macOS/v1.19.29. A separate Guard now implements pre-payload fallback when the adaptive engine is unavailable, but its new Mihomo stop/restart scenarios still need a permitted platform run and Guard-process failure remains unprotected. Configuration replacement will begin only after those availability checks, privacy-policy enforcement, rollback tests, and a broader real-TLS compatibility matrix pass.
+The isolated Mihomo listener topology and minimal L3 TLS readiness recovery have passed on macOS/v1.19.29. Runtime Direct-probe privacy enforcement is implemented and tested locally. A separate Guard implements pre-payload fallback when the adaptive engine is unavailable, but its new Mihomo stop/restart scenarios still need a permitted platform run and Guard-process failure remains unprotected. Configuration replacement will begin only after those availability checks, recorder privacy controls, rollback tests, and a broader real-TLS compatibility matrix pass.
 
 1. Agree on the trial network, time window, target traffic, and stop conditions.
 2. Resolve the active profile plus merge/script layers read-only.

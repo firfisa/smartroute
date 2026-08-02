@@ -38,9 +38,21 @@ func TestRunServeRejectsEmptyNetworkProfileBeforeListening(t *testing.T) {
 
 func TestRunServeRequiresDirectProbeAcknowledgmentBeforeListening(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	err := run([]string{"serve"}, &stdout, &stderr)
+	err := run([]string{"serve", "-config", "../../configs/smartroute.example.json"}, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "acknowledge-direct-probes") {
 		t.Fatalf("run(serve) error = %v", err)
+	}
+}
+
+func TestPrivacyFirstDoesNotRequireDirectProbeAcknowledgment(t *testing.T) {
+	if err := validateDirectProbeAcknowledgement("privacy-first", false); err != nil {
+		t.Fatalf("privacy-first acknowledgment error = %v", err)
+	}
+}
+
+func TestExplicitOptInRequiresDirectProbeAcknowledgment(t *testing.T) {
+	if err := validateDirectProbeAcknowledgement("explicit-opt-in", false); err == nil {
+		t.Fatal("explicit-opt-in acknowledgment error = nil")
 	}
 }
 

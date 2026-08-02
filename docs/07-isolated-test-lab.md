@@ -49,7 +49,7 @@ The gateways map the reserved test hostname `echo.test` to the local echo target
 | `proxy_recovers_slow_direct` | Direct stalls; Proxy becomes ready after stagger | Proxy selected; Direct canceled; payload echoed |
 | `both_paths_fail` | Both gateways reject CONNECT | Client receives failure; no route is promoted |
 
-Additional in-memory TLS tests use `net.Pipe`: one completes a real Go `crypto/tls` 1.3 handshake and encrypted echo through the Proxy winner; another proves an `early_data` ClientHello opens zero candidates.
+Additional in-memory TLS tests use `net.Pipe`: one completes a real Go `crypto/tls` 1.3 handshake and encrypted echo through the Proxy winner; another proves an `early_data` ClientHello opens zero candidates. Privacy tests prove exact/suffix-denied, privacy-first, invalid-target, and missing-policy paths open zero Direct candidates while a selected Proxy must still return a valid ServerHello.
 
 Run the lab:
 

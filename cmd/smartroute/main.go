@@ -20,6 +20,7 @@ import (
 	"github.com/firfisa/smartroute/internal/decision"
 	"github.com/firfisa/smartroute/internal/guard"
 	"github.com/firfisa/smartroute/internal/model"
+	"github.com/firfisa/smartroute/internal/privacy"
 	"github.com/firfisa/smartroute/internal/sidecar"
 	"github.com/firfisa/smartroute/internal/transport"
 )
@@ -110,19 +111,22 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	flags.SetOutput(stderr)
 	path := flags.String("config", "configs/smartroute.example.json", "path to SmartRoute JSON config")
 	profileID := flags.String("network-profile", "manual-experimental", "local network profile label for decision events")
-	allowDirectProbes := flags.Bool("acknowledge-direct-probes", false, "explicitly allow this experimental process to open Direct candidates")
+	allowDirectProbes := flags.Bool("acknowledge-direct-probes", false, "acknowledge Direct candidates in explicit-opt-in privacy mode")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if *profileID == "" {
 		return errors.New("network-profile must not be empty")
 	}
-	if !*allowDirectProbes {
-		return errors.New("serve requires -acknowledge-direct-probes because privacy allowlists are not implemented yet")
-	}
-
 	cfg, err := config.Load(*path)
 	if err != nil {
+		return err
+	}
+	privacyPolicy, err := privacy.New(cfg.Privacy.Mode, cfg.Privacy.NeverDirectProbe)
+	if err != nil {
+		return fmt.Errorf("compile privacy policy: %w", err)
+	}
+	if err := validateDirectProbeAcknowledgement(cfg.Privacy.Mode, *allowDirectProbes); err != nil {
 		return err
 	}
 	listener, err := net.Listen("tcp", cfg.ListenAddress)
@@ -135,8 +139,9 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	defer cancel()
 	var outputMu sync.Mutex
 	server := sidecar.Server{
-		NetworkProfileID: *profileID,
-		HandshakeTimeout: cfg.CandidateTimeout(),
+		NetworkProfileID:  *profileID,
+		DirectProbePolicy: privacyPolicy,
+		HandshakeTimeout:  cfg.CandidateTimeout(),
 		TLSRacer: &transport.TLSRacer{
 			Direct:    transport.SOCKS5Dialer{Path: model.PathDirect, Endpoint: cfg.DirectEndpoint},
 			Proxy:     transport.SOCKS5Dialer{Path: model.PathProxy, Endpoint: cfg.ProxyEndpoint},
@@ -155,8 +160,15 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 			_ = json.NewEncoder(stdout).Encode(event)
 		},
 	}
-	fmt.Fprintf(stderr, "experimental TLS sidecar listening on %s; no Clash files are read or modified\n", listener.Addr())
+	fmt.Fprintf(stderr, "experimental TLS sidecar listening on %s; privacy=%s; no Clash files are read or modified\n", listener.Addr(), cfg.Privacy.Mode)
 	return server.Serve(ctx, listener)
+}
+
+func validateDirectProbeAcknowledgement(mode string, acknowledged bool) error {
+	if mode == privacy.ModeExplicitOptIn && !acknowledged {
+		return errors.New("serve requires -acknowledge-direct-probes in explicit-opt-in privacy mode")
+	}
+	return nil
 }
 
 func runValidate(args []string, stdout, stderr io.Writer) error {
@@ -258,8 +270,8 @@ Usage:
 
 The trace command evaluates one synthetic paired observation. The experimental
 serve command accepts TLS-over-SOCKS on the configured loopback listener and
-does not read or modify Clash configuration. It requires an explicit Direct-
-probe acknowledgment and does not persist learned policy yet. The guard command
+does not read or modify Clash configuration. Explicit-opt-in privacy mode
+requires a Direct-probe acknowledgment; privacy-first opens Proxy only. The guard command
 runs as a separate availability process and falls back to the configured original
 SOCKS listener if the adaptive engine cannot accept a target connection.`)
 }

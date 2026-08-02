@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/firfisa/smartroute/internal/model"
+	"github.com/firfisa/smartroute/internal/privacy"
 )
 
 const CurrentVersion = 1
@@ -156,8 +157,8 @@ func (c Config) Validate() error {
 	if c.Learning.PolicyTTLHours < 1 {
 		validationErrors = append(validationErrors, errors.New("policy_ttl_hours must be positive"))
 	}
-	if c.Privacy.Mode != "explicit-opt-in" && c.Privacy.Mode != "privacy-first" {
-		validationErrors = append(validationErrors, errors.New("privacy mode must be explicit-opt-in or privacy-first"))
+	if _, err := privacy.New(c.Privacy.Mode, c.Privacy.NeverDirectProbe); err != nil {
+		validationErrors = append(validationErrors, fmt.Errorf("privacy: %w", err))
 	}
 
 	return errors.Join(validationErrors...)

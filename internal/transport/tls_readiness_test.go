@@ -135,6 +135,46 @@ func TestTLSRacerRequiresBothCandidates(t *testing.T) {
 	}
 }
 
+func TestTLSRacerConnectPathUsesOnlySelectedProxyAndReplaysPrefix(t *testing.T) {
+	hello, wire := parsedClientHello(t)
+	serverWire := syntheticServerHelloRecord()
+	direct := &pipeCandidateDialer{path: model.PathDirect, handler: func(net.Conn) {}}
+	proxy := &pipeCandidateDialer{path: model.PathProxy, handler: func(conn net.Conn) {
+		received := make([]byte, len(wire))
+		if _, err := io.ReadFull(conn, received); err == nil && bytes.Equal(received, wire) {
+			_, _ = conn.Write(serverWire)
+		}
+	}}
+	result, err := (TLSRacer{
+		Direct: direct, Proxy: proxy, Gate: TLSServerHelloGate{}, Timeout: time.Second,
+	}).ConnectPath(context.Background(), testTarget(), hello, model.PathProxy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Conn.Close()
+	if direct.attempts.Load() != 0 || proxy.attempts.Load() != 1 || result.ReasonCode != ReasonProxyPolicyOnly {
+		t.Fatalf("attempts direct=%d proxy=%d result=%+v", direct.attempts.Load(), proxy.attempts.Load(), result)
+	}
+	replayed := make([]byte, len(serverWire))
+	if _, err := io.ReadFull(result.Conn, replayed); err != nil || !bytes.Equal(replayed, serverWire) {
+		t.Fatalf("prefetched ServerHello replay error=%v bytes=%x", err, replayed)
+	}
+}
+
+func TestTLSRacerConnectPathReportsSelectedFailure(t *testing.T) {
+	hello, wire := parsedClientHello(t)
+	proxy := &pipeCandidateDialer{path: model.PathProxy, handler: func(conn net.Conn) {
+		_, _ = io.CopyN(io.Discard, conn, int64(len(wire)))
+	}}
+	_, err := (TLSRacer{Proxy: proxy, Gate: TLSServerHelloGate{}, Timeout: time.Second}).ConnectPath(
+		context.Background(), testTarget(), hello, model.PathProxy,
+	)
+	var pathError *TLSPathError
+	if !errors.As(err, &pathError) || pathError.Observation.Path != model.PathProxy || pathError.Observation.FailureClass != FailureTLSConnectionClosed {
+		t.Fatalf("ConnectPath() error = %#v", err)
+	}
+}
+
 func parsedClientHello(t *testing.T) (tlsinspect.ClientHello, []byte) {
 	t.Helper()
 	body := []byte{0x03, 0x03}

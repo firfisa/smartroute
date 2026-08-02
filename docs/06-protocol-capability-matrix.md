@@ -35,6 +35,7 @@ flowchart TD
 | --- | --- | --- |
 | TCP before application bytes | Staggered candidate attempts with an explicit readiness contract | Treating Mihomo SOCKS success as target TCP or HTTPS success |
 | TLS without early data | Buffer/parse complete ClientHello; compare safe handshake readiness | Assuming ClientHello arrives in one read |
+| TLS denied by privacy policy | Open Proxy only and still require ServerHello L3 | Opening Direct for measurement or treating Proxy SOCKS ACK as target readiness |
 | TLS 1.3 early data | Use history or one selected path | Duplicating early application data |
 | ServerHello observed | Commit the winner and replay every consumed record byte | Calling this certificate validation or full-handshake success |
 | Plain HTTP | Connection-level routing; explicit application integration may add safe methods | Generic payload replay based only on method name |

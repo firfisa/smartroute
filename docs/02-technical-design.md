@@ -111,9 +111,12 @@ flowchart LR
     Guard -->|"engine available"| Inbound["internal/sidecar\nlocal SOCKS admission"]
     Guard -->|"engine unavailable"| Original["Mihomo original-policy listener"]
     Inbound --> Inspect["internal/tlsinspect\ncomplete ClientHello; reject early_data"]
-    Inspect --> Racer["internal/transport.TLSRacer\nDirect-first stagger"]
+    Inspect --> Privacy{"internal/privacy\nDirect probe allowed?"}
+    Privacy -->|"yes"| Racer["internal/transport.TLSRacer\nDirect-first stagger"]
+    Privacy -->|"no"| ProxyOnly["Proxy-only TLS path"]
     Racer --> D["SOCKS5Dialer: Direct endpoint"]
     Racer --> P["SOCKS5Dialer: Proxy endpoint"]
+    ProxyOnly --> P
     D --> Candidate["Candidate admitted at declared readiness stage"]
     P --> Candidate
     Candidate --> Gate{"Structurally valid ServerHello?"}
@@ -121,7 +124,7 @@ flowchart LR
     Gate -->|"no"| Reject["Close and fail safely"]
 ```
 
-这一切片已能通过带显式 `-acknowledge-direct-probes` 的 `smartroute serve` 接收 TLS-over-SOCKS。sidecar 先回复本地 SOCKS admission，再跨 TLS record/TCP read 重组完整 ClientHello；畸形、过大、尾随首航字节或 `early_data` 会在候选拨号前拒绝。安全 ClientHello 可以复制到两条候选，首个返回结构合法 ServerHello 的路径达到 L3；gate 消耗的所有服务端字节都会原样回放给客户端，loser 被取消。
+这一切片已能通过 `smartroute serve` 接收 TLS-over-SOCKS。sidecar 先回复本地 SOCKS admission，再跨 TLS record/TCP read 重组完整 ClientHello；畸形、过大、尾随首航字节或 `early_data` 会在候选拨号前拒绝。随后运行时隐私策略先于候选创建执行：`privacy-first`、deny 条目、无效目标或缺失策略只启动 Proxy；`explicit-opt-in` 只有带进程级 `-acknowledge-direct-probes` 且目标未命中 deny 时才能复制安全 ClientHello 到 Direct/Proxy。两种路径都要求结构合法 ServerHello 达到 L3，gate 消耗的所有服务端字节都会原样回放给客户端。匹配契约与 fail-closed 语义见 ADR-0007。
 
 普通 TCP fake gateway 仍可通过显式契约声明 L2；真实 Mihomo listener 的 SOCKS ACK 只能声明 L1。`smartroute-mihomo-lab` 已验证 L1 Direct 无 ServerHello 时，Proxy 可凭 L3 ServerHello 赢得首连接。该结论不等于证书验证、Finished 或应用成功；活动配置接入仍需真实 TLS 兼容矩阵和回滚门槛。
 

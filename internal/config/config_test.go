@@ -88,3 +88,13 @@ func TestLoadRejectsUnknownFields(t *testing.T) {
 		t.Fatalf("Load() error = %v, want unknown field error", err)
 	}
 }
+
+func TestValidateRejectsInvalidPrivacyPattern(t *testing.T) {
+	cfg := Default()
+	cfg.Privacy.NeverDirectProbe = []string{"https://example.com/private"}
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "never_direct_probe") {
+		t.Fatalf("Validate() error = %v, want privacy pattern error", err)
+	}
+}

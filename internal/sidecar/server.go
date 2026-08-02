@@ -11,6 +11,7 @@ import (
 
 	"github.com/firfisa/smartroute/internal/model"
 	"github.com/firfisa/smartroute/internal/netrelay"
+	"github.com/firfisa/smartroute/internal/privacy"
 	"github.com/firfisa/smartroute/internal/socks5"
 	"github.com/firfisa/smartroute/internal/tlsinspect"
 	"github.com/firfisa/smartroute/internal/transport"
@@ -23,6 +24,7 @@ type DecisionEvent struct {
 	Target       model.Target      `json:"target"`
 	SelectedPath model.Path        `json:"selected_path"`
 	ReasonCode   string            `json:"reason_code"`
+	PolicyReason string            `json:"policy_reason,omitempty"`
 	Observation  model.Observation `json:"observation"`
 	Committed    bool              `json:"committed"`
 }
@@ -34,6 +36,7 @@ type DiagnosticEvent struct {
 	FailureClass  string       `json:"failure_class"`
 	DirectFailure string       `json:"direct_failure,omitempty"`
 	ProxyFailure  string       `json:"proxy_failure,omitempty"`
+	PolicyReason  string       `json:"policy_reason,omitempty"`
 }
 
 const (
@@ -42,7 +45,12 @@ const (
 	ReasonCandidateBelowCommitStage = "candidate_below_commit_stage"
 	ReasonClientHelloRejected       = "client_hello_rejected"
 	ReasonTLSCandidatesFailed       = "tls_candidates_failed"
+	ReasonPrivacyProxyPathFailed    = "privacy_proxy_path_failed"
 )
+
+type DirectProbePolicy interface {
+	Evaluate(target model.Target) privacy.Decision
+}
 
 type Server struct {
 	Racer               transport.Racer
@@ -51,6 +59,7 @@ type Server struct {
 	HandshakeTimeout    time.Duration
 	MaxClientHelloBytes int
 	MinimumCommitStage  model.Stage
+	DirectProbePolicy   DirectProbePolicy
 	OnDecision          func(DecisionEvent)
 	OnDiagnostic        func(DiagnosticEvent)
 }
@@ -152,9 +161,37 @@ func (s Server) handleTLS(ctx context.Context, inbound net.Conn, target model.Ta
 		})
 		return
 	}
-	result, err := s.TLSRacer.Race(ctx, target, hello)
+	privacyDecision := privacy.Decision{ReasonCode: privacy.ReasonMissingRuntimePolicy}
+	if s.DirectProbePolicy != nil {
+		privacyDecision = s.DirectProbePolicy.Evaluate(target)
+	}
+	var result transport.RaceResult
+	if privacyDecision.AllowDirect {
+		result, err = s.TLSRacer.Race(ctx, target, hello)
+	} else {
+		result, err = s.TLSRacer.ConnectPath(ctx, target, hello, model.PathProxy)
+		if err == nil {
+			result.ReasonCode = privacyDecision.ReasonCode
+		}
+	}
 	if err != nil {
-		event := DiagnosticEvent{Target: target, ReasonCode: ReasonTLSCandidatesFailed, FailureClass: "all_tls_candidates_failed"}
+		if !privacyDecision.AllowDirect {
+			event := DiagnosticEvent{
+				Target: target, ReasonCode: ReasonPrivacyProxyPathFailed,
+				FailureClass: "proxy_only_tls_failed", DirectFailure: "skipped_by_privacy",
+				PolicyReason: privacyDecision.ReasonCode,
+			}
+			var pathError *transport.TLSPathError
+			if errors.As(err, &pathError) {
+				event.ProxyFailure = pathError.Observation.FailureClass
+			}
+			s.emitDiagnostic(event)
+			return
+		}
+		event := DiagnosticEvent{
+			Target: target, ReasonCode: ReasonTLSCandidatesFailed,
+			FailureClass: "all_tls_candidates_failed", PolicyReason: privacyDecision.ReasonCode,
+		}
 		var raceError *transport.RaceError
 		if errors.As(err, &raceError) {
 			event.DirectFailure = raceError.Direct.FailureClass
@@ -176,8 +213,9 @@ func (s Server) handleTLS(ctx context.Context, inbound net.Conn, target model.Ta
 		s.OnDecision(DecisionEvent{
 			EventType: EventTypeDecision,
 			Target:    target, SelectedPath: result.Observation.Path,
-			ReasonCode: result.ReasonCode, Observation: result.Observation,
-			Committed: true,
+			ReasonCode: result.ReasonCode, PolicyReason: privacyDecision.ReasonCode,
+			Observation: result.Observation,
+			Committed:   true,
 		})
 	}
 	netrelay.Bidirectional(inbound, result.Conn)

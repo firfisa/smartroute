@@ -34,6 +34,7 @@ required_files=(
   "docs/adr/0004-mihomo-socks-ack-is-not-target-readiness.md"
   "docs/adr/0005-safe-tls-first-flight-racing.md"
   "docs/adr/0006-separate-availability-guard.md"
+  "docs/adr/0007-enforce-direct-probe-privacy.md"
   "configs/smartroute.example.json"
   "upstreams.lock"
 )
@@ -94,6 +95,12 @@ fi
 if ! matches 'guard_falls_back_when_engine_unavailable' "${project_root}/docs/07-isolated-test-lab.md" ||
   ! matches 'does not dial the next member for the same connection' "${project_root}/docs/adr/0006-separate-availability-guard.md"; then
   echo "availability guard contract or Mihomo fallback evidence is missing" >&2
+  exit 1
+fi
+
+if ! matches 'privacy_first_proxy_only' "${project_root}/docs/04-component-catalog.md" ||
+  ! matches 'never_direct_probe' "${project_root}/docs/adr/0007-enforce-direct-probe-privacy.md"; then
+  echo "runtime Direct-probe privacy contract is missing" >&2
   exit 1
 fi
 

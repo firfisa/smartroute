@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/firfisa/smartroute/internal/model"
+	"github.com/firfisa/smartroute/internal/privacy"
 	"github.com/firfisa/smartroute/internal/socks5"
 	"github.com/firfisa/smartroute/internal/tlsinspect"
 	"github.com/firfisa/smartroute/internal/transport"
@@ -44,7 +45,8 @@ func TestServerNeverCommitsCandidateBelowTCP(t *testing.T) {
 	peers := make(chan net.Conn, 1)
 	events := make(chan DecisionEvent, 1)
 	server := Server{
-		HandshakeTimeout: time.Second,
+		HandshakeTimeout:  time.Second,
+		DirectProbePolicy: mustPrivacyPolicy(t, privacy.ModeExplicitOptIn, nil),
 		// An accidentally weak override must not bypass the hard L2 floor.
 		MinimumCommitStage: model.StageOutbound,
 		Racer: transport.Racer{
@@ -140,7 +142,8 @@ func TestServerTLSModeCommitsProxyAfterServerHello(t *testing.T) {
 	events := make(chan DecisionEvent, 1)
 	diagnostics := make(chan DiagnosticEvent, 1)
 	server := Server{
-		HandshakeTimeout: time.Second,
+		HandshakeTimeout:  time.Second,
+		DirectProbePolicy: mustPrivacyPolicy(t, privacy.ModeExplicitOptIn, nil),
 		TLSRacer: &transport.TLSRacer{
 			Direct: direct, Proxy: proxy, Gate: transport.TLSServerHelloGate{},
 			HeadStart: 10 * time.Millisecond, Timeout: time.Second,
@@ -244,7 +247,8 @@ func TestServerTLSModeCompletesGoTLSHandshakeThroughWinner(t *testing.T) {
 	}}
 	events := make(chan DecisionEvent, 1)
 	server := Server{
-		HandshakeTimeout: 2 * time.Second,
+		HandshakeTimeout:  2 * time.Second,
+		DirectProbePolicy: mustPrivacyPolicy(t, privacy.ModeExplicitOptIn, nil),
 		TLSRacer: &transport.TLSRacer{
 			Direct: direct, Proxy: proxy, Gate: transport.TLSServerHelloGate{},
 			HeadStart: 10 * time.Millisecond, Timeout: 2 * time.Second,
@@ -276,6 +280,121 @@ func TestServerTLSModeCompletesGoTLSHandshakeThroughWinner(t *testing.T) {
 		t.Fatal("missing real TLS decision event")
 	}
 	_ = client.Close()
+}
+
+func TestServerPrivacyDenyUsesOnlyProxyTLSPath(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	serverConn, clientConn := net.Pipe()
+	helloWire := fragmentedClientHello(false)
+	serverWire := validServerHelloRecord()
+	direct := &sidecarTLSCandidate{path: model.PathDirect, handler: func(net.Conn) {}}
+	proxy := &sidecarTLSCandidate{path: model.PathProxy, handler: func(conn net.Conn) {
+		received := make([]byte, len(helloWire))
+		if _, err := io.ReadFull(conn, received); err == nil && bytes.Equal(received, helloWire) {
+			_, _ = conn.Write(serverWire)
+		}
+	}}
+	events := make(chan DecisionEvent, 1)
+	server := Server{
+		HandshakeTimeout:  time.Second,
+		DirectProbePolicy: mustPrivacyPolicy(t, privacy.ModeExplicitOptIn, []string{"echo.test"}),
+		TLSRacer: &transport.TLSRacer{
+			Direct: direct, Proxy: proxy, Gate: transport.TLSServerHelloGate{}, Timeout: time.Second,
+		},
+		OnDecision: func(event DecisionEvent) { events <- event },
+	}
+	go server.handle(ctx, serverConn)
+	performSOCKSRequest(t, clientConn)
+	if _, err := clientConn.Write(helloWire); err != nil {
+		t.Fatal(err)
+	}
+	replayed := make([]byte, len(serverWire))
+	if _, err := io.ReadFull(clientConn, replayed); err != nil || !bytes.Equal(replayed, serverWire) {
+		t.Fatalf("server replay error=%v bytes=%x", err, replayed)
+	}
+	event := <-events
+	if direct.attempts.Load() != 0 || proxy.attempts.Load() != 1 || event.SelectedPath != model.PathProxy || event.ReasonCode != privacy.ReasonNeverDirectExact || event.PolicyReason != privacy.ReasonNeverDirectExact || !event.Committed {
+		t.Fatalf("attempts direct=%d proxy=%d event=%+v", direct.attempts.Load(), proxy.attempts.Load(), event)
+	}
+	_ = clientConn.Close()
+}
+
+func TestServerMissingPrivacyPolicyFailsClosedToProxyOnly(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	serverConn, clientConn := net.Pipe()
+	helloWire := fragmentedClientHello(false)
+	direct := &sidecarTLSCandidate{path: model.PathDirect, handler: func(net.Conn) {}}
+	proxy := &sidecarTLSCandidate{path: model.PathProxy, handler: func(conn net.Conn) {
+		_, _ = io.CopyN(io.Discard, conn, int64(len(helloWire)))
+		_, _ = conn.Write(validServerHelloRecord())
+	}}
+	events := make(chan DecisionEvent, 1)
+	server := Server{
+		HandshakeTimeout: time.Second,
+		TLSRacer: &transport.TLSRacer{
+			Direct: direct, Proxy: proxy, Gate: transport.TLSServerHelloGate{}, Timeout: time.Second,
+		},
+		OnDecision: func(event DecisionEvent) { events <- event },
+	}
+	go server.handle(ctx, serverConn)
+	performSOCKSRequest(t, clientConn)
+	if _, err := clientConn.Write(helloWire); err != nil {
+		t.Fatal(err)
+	}
+	replayed := make([]byte, len(validServerHelloRecord()))
+	if _, err := io.ReadFull(clientConn, replayed); err != nil {
+		t.Fatal(err)
+	}
+	event := <-events
+	if direct.attempts.Load() != 0 || proxy.attempts.Load() != 1 || event.ReasonCode != privacy.ReasonMissingRuntimePolicy {
+		t.Fatalf("attempts direct=%d proxy=%d event=%+v", direct.attempts.Load(), proxy.attempts.Load(), event)
+	}
+	_ = clientConn.Close()
+}
+
+func TestServerPrivacyProxyOnlyFailureIsStructured(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	serverConn, clientConn := net.Pipe()
+	helloWire := fragmentedClientHello(false)
+	direct := &sidecarTLSCandidate{path: model.PathDirect, handler: func(net.Conn) {}}
+	proxy := &sidecarTLSCandidate{path: model.PathProxy, handler: func(conn net.Conn) {
+		_, _ = io.CopyN(io.Discard, conn, int64(len(helloWire)))
+	}}
+	diagnostics := make(chan DiagnosticEvent, 1)
+	server := Server{
+		HandshakeTimeout:  time.Second,
+		DirectProbePolicy: mustPrivacyPolicy(t, privacy.ModePrivacyFirst, nil),
+		TLSRacer: &transport.TLSRacer{
+			Direct: direct, Proxy: proxy, Gate: transport.TLSServerHelloGate{}, Timeout: time.Second,
+		},
+		OnDiagnostic: func(event DiagnosticEvent) { diagnostics <- event },
+	}
+	go server.handle(ctx, serverConn)
+	performSOCKSRequest(t, clientConn)
+	if _, err := clientConn.Write(helloWire); err != nil {
+		t.Fatal(err)
+	}
+	_ = clientConn.SetReadDeadline(time.Now().Add(time.Second))
+	buffer := make([]byte, 1)
+	if _, err := clientConn.Read(buffer); err == nil {
+		t.Fatal("failed privacy-only Proxy path left connection open")
+	}
+	event := <-diagnostics
+	if event.ReasonCode != ReasonPrivacyProxyPathFailed || event.PolicyReason != privacy.ReasonPrivacyFirst || event.DirectFailure != "skipped_by_privacy" || event.ProxyFailure == "" || direct.attempts.Load() != 0 || proxy.attempts.Load() != 1 {
+		t.Fatalf("attempts direct=%d proxy=%d event=%+v", direct.attempts.Load(), proxy.attempts.Load(), event)
+	}
+}
+
+func mustPrivacyPolicy(t *testing.T, mode string, patterns []string) privacy.Policy {
+	t.Helper()
+	policy, err := privacy.New(mode, patterns)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return policy
 }
 
 func performSOCKSRequest(t *testing.T, conn net.Conn) {

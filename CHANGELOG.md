@@ -39,8 +39,11 @@ All notable project changes are recorded here. The project has not published a r
 - Bounded fallback from a refused or wedged adaptive-engine SOCKS handshake, with structured `guard_decision` reason codes.
 - Isolated Mihomo engine stop, original-policy fallback, restart, and adaptive-return scenarios; platform runtime evidence is pending because the current sandbox denied loopback bind.
 - ADR-0006 documenting why Mihomo's stock `fallback` group cannot retry the same failed connection.
+- Runtime `privacy-first` and `never_direct_probe` enforcement before Direct candidate creation, with exact/suffix matching and fail-closed target normalization.
+- Single-path TLS L3 connector used for privacy-forced Proxy traffic, preserving ServerHello readiness and prefetched-byte replay without opening Direct.
+- Structured privacy decision/failure reasons and ADR-0007 covering matching, precedence, migration and rollback semantics.
 
 ### Known limitations
 
-- TLS readiness is structural and experimental; certificate/Finished validation, learning persistence, Guard-process supervision, privacy enforcement, active configuration integration, and broad real-site compatibility are not implemented yet.
+- TLS readiness is structural and experimental; certificate/Finished validation, learning persistence, Guard-process supervision, privacy-safe persistent recording, active configuration integration, and broad real-site compatibility are not implemented yet.
 - No public release artifacts have been published yet.

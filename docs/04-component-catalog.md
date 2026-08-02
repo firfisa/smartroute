@@ -19,6 +19,7 @@ flowchart TB
     Sidecar["internal/sidecar\nInbound relay"]
     Guard["internal/guard\nPre-payload availability"]
     NetRelay["internal/netrelay\nBidirectional relay"]
+    Privacy["internal/privacy\nDirect-probe policy"]
     TestLab["internal/testlab\nIsolated fault lab"]
     LabCLI["cmd/smartroute-testlab\nJSON lab runner"]
     MihomoLab["internal/mihomolab\nPinned child-process lab"]
@@ -30,6 +31,8 @@ flowchart TB
     CLI --> Decision
     CLI --> Sidecar
     CLI --> Guard
+    CLI --> Privacy
+    Config --> Privacy
     Decision --> Model
     Transport --> Model
     Transport --> SOCKS
@@ -38,6 +41,7 @@ flowchart TB
     Sidecar --> SOCKS
     Sidecar --> Transport
     Sidecar --> NetRelay
+    Sidecar --> Privacy
     Guard --> SOCKS
     Guard --> NetRelay
     TestLab --> Sidecar
@@ -69,6 +73,7 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `internal/sidecar` | Data plane | experimental | SOCKS admission, TLS first-flight orchestration, stage enforcement, relay, decision and diagnostic events | Learning persistence or active Clash modification | Sidecar net.Pipe tests, Test Lab and Mihomo Lab |
 | `internal/guard` | Data plane | experimental | Before forwarding payload to either lane, select the adaptive engine or fall back to the original-policy SOCKS listener | Direct/Proxy evidence, learning, post-commit replay, Guard-process supervision | `internal/guard/server_test.go`; Mihomo Lab fault scenarios |
 | `internal/netrelay` | Data plane | experimental | Shared bidirectional TCP copying and half-close handling | Routing decisions or payload inspection | Consumer tests in Guard, Sidecar and Test Lab |
+| `internal/privacy` | Policy | experimental | Validate/normalize exact and suffix deny rules; decide whether a target may open Direct | Network I/O, hostname persistence, or route learning | `internal/privacy/policy_test.go`; Sidecar privacy tests |
 | `internal/testlab` | Test | implemented | Ephemeral loopback echo target, fake Direct/Proxy gateways, deterministic faults | External network and active Clash access | `internal/testlab/lab_test.go` |
 | `internal/mihomolab` | Test | implemented | Temporary config/home, child lifecycle, synthetic DNS, forced-listener and readiness assertions | Active Clash discovery, external traffic, TUN, system proxy | `internal/mihomolab/lab_test.go`; explicit runtime command |
 | `internal/upstream` | Integration | planned | Mihomo config/API adapter and topology validation | Shipping Mihomo source | Planned integration tests |
@@ -94,6 +99,9 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `tlsinspect.ReadServerHello(reader, max)` | `internal/tlsinspect` | TLS byte stream and byte limit | Structurally valid ServerHello plus exact consumed records | Classifies alerts, truncation, malformed and unexpected messages | experimental | Fragmentation/alert tests |
 | `ReadinessGate.Await(ctx, conn, target)` | `internal/transport` | Context, candidate connection, target | Stage, failure class and prefetched bytes | Must not lose or unsafely replay consumed bytes | experimental contract | TLS gate tests |
 | `TLSRacer.Race(ctx, target, hello)` | `internal/transport` | Two candidates, validated no-early-data ClientHello, gate and timing | L3 winner connection with replay prefix | Cancels loser; returns paired classified failures | experimental | `internal/transport/tls_readiness_test.go` |
+| `TLSRacer.ConnectPath(ctx, target, hello, path)` | `internal/transport` | One policy-selected candidate and validated no-early-data ClientHello | L3 connection with replay prefix | Rejects invalid/missing path; returns `TLSPathError` with classified observation | experimental | Proxy-only success/replay and failure tests |
+| `privacy.New(mode, patterns)` | `internal/privacy` | Mode and exact/suffix deny patterns | Immutable compiled local policy | Rejects unknown mode, whitespace, URL-like/invalid host syntax and suffix IP rules | experimental | Policy validation table |
+| `Policy.Evaluate(target)` | `internal/privacy` | Target hostname/IP | Allow/deny plus stable reason code | Missing policy and invalid target fail closed to Proxy-only | experimental | Exact/suffix/boundary/privacy-first tests |
 | `sidecar.Server.Serve(ctx, listener)` | `internal/sidecar` | Context, listener, plain Racer or TLSRacer | Serves until cancellation/error; TLS mode requires L3 | Rejects unsafe ClientHello before dialing; never reads Clash config | experimental | Sidecar, Test Lab and Mihomo Lab |
 | `guard.Server.Serve(ctx, listener)` | `internal/guard` | Context, listener, adaptive/original dialers and bounded timeouts | Serves SOCKS targets; commits one availability lane before payload | Falls back on adaptive handshake failure; refuses when both lanes fail; never replays post-commit data | experimental | Adaptive, unavailable, wedged and dual-failure unit tests; Mihomo Lab scenarios |
 | `netrelay.Bidirectional(left, right)` | `internal/netrelay` | Two owned TCP-like connections | Relays both directions until completion | Best-effort half-close; relay errors are not routing evidence | experimental | Guard/Sidecar end-to-end tests |
@@ -107,7 +115,7 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `smartroute version` | implemented | Print version, commit, build date | None | None |
 | `smartroute validate -config PATH` | implemented | Strictly parse and validate local JSON config | None | None |
 | `smartroute trace -direct SPEC -proxy SPEC` | implemented | Evaluate one synthetic paired observation and print JSON | None | None |
-| `smartroute serve -acknowledge-direct-probes` | experimental | Run TLS-over-SOCKS adaptive sidecar against loopback endpoints | Configured loopback listener and candidate TLS first flights | None; emits decision/diagnostic JSON only |
+| `smartroute serve [-acknowledge-direct-probes]` | experimental | Run TLS-over-SOCKS sidecar with runtime privacy policy | Privacy-first/deny targets open Proxy only; acknowledged explicit-opt-in targets may race Direct/Proxy | None; emits decision/diagnostic JSON only |
 | `smartroute guard` | experimental | Run the separate availability boundary in front of the adaptive engine | Configured loopback Guard, engine and original-policy SOCKS endpoints | None; emits `guard_decision` JSON only |
 | `smartroute policy` | planned | Inspect, lock, revoke, or export policy | None by default | Policy store |
 | `smartroute-testlab` | implemented | Run isolated deterministic data-plane scenarios | Ephemeral loopback sockets only | None |
@@ -146,8 +154,8 @@ go run ./cmd/smartroute trace \
 | `learning.proxy_promotion_wins` | integer | `3` | At least 2 | Planned paired wins before Proxy promotion |
 | `learning.direct_promotion_wins` | integer | `5` | At least 2 | Planned paired wins before Direct promotion |
 | `learning.policy_ttl_hours` | integer | `72` | Positive | Planned learned-policy expiry |
-| `privacy.mode` | enum | `explicit-opt-in` | `explicit-opt-in` or `privacy-first` | Controls whether unknown targets may be directly probed |
-| `privacy.never_direct_probe` | string list | empty | Exact/suffix semantics not implemented yet | Reserved deny list; no runtime behavior yet |
+| `privacy.mode` | enum | `explicit-opt-in` | `explicit-opt-in` or `privacy-first` | `privacy-first` opens zero Direct candidates; explicit mode also requires CLI acknowledgment |
+| `privacy.never_direct_probe` | string list | empty | Plain exact; leading `.` or `*.` suffix; normalized ASCII hostname/IP; invalid entries reject config | Matching entries override acknowledgment and use Proxy-only L3 |
 
 Fields marked planned in behavior are validated now but must not be described as active runtime features.
 
@@ -171,6 +179,18 @@ Runtime race/commit reasons:
 | `candidate_below_commit_stage` | Winning transport candidate did not prove target readiness | Close candidate, return SOCKS failure, `committed=false`, never learn |
 | `client_hello_rejected` | Client first flight was unsafe or invalid | Close after local SOCKS admission; open zero candidates |
 | `tls_candidates_failed` | Neither candidate returned a valid ServerHello | Close connection; report both classified path failures; never learn success |
+| `privacy_proxy_path_failed` | Direct was forbidden and the only Proxy path failed L3 | Close; emit policy reason, Direct skipped marker and classified Proxy failure |
+
+Direct-probe privacy reasons:
+
+| Reason code | Direct candidate | Meaning |
+| --- | ---: | --- |
+| `direct_probe_allowed_explicit_opt_in` | Allowed | Process acknowledgment is present and no deny rule matches |
+| `privacy_first_proxy_only` | Forbidden | Global privacy-first mode |
+| `never_direct_probe_exact` | Forbidden | Exact hostname/IP deny entry matched |
+| `never_direct_probe_suffix` | Forbidden | Apex or label-boundary suffix entry matched |
+| `invalid_target_proxy_only` | Forbidden | Runtime target cannot be safely normalized |
+| `missing_privacy_policy_proxy_only` | Forbidden | Sidecar was constructed without a compiled policy; fail closed |
 
 Guard availability reasons:
 
@@ -188,8 +208,8 @@ Guard availability reasons:
 | `candidate.ready` | Readiness gate | path, stage, latency | Decision engine | planned |
 | `candidate.failed` | Dialer/gate | path, stage, failure class | Decision engine | planned |
 | `candidate.canceled` | Racer | path, cancellation reason | Metrics | planned |
-| `decision` | Sidecar/decision engine | `event_type`, target, selected path, reason, observation, `committed` | CLI/store/UI | experimental `DecisionEvent`; persistent form planned |
-| `diagnostic` | Sidecar | `event_type`, target, reason, failure class, optional Direct/Proxy failures | CLI/debug | experimental `DiagnosticEvent`; no payload bytes |
+| `decision` | Sidecar/decision engine | `event_type`, target, selected path, reason, optional `policy_reason`, observation, `committed` | CLI/store/UI | experimental `DecisionEvent`; persistent form planned |
+| `diagnostic` | Sidecar | `event_type`, target, reason, failure class, optional Direct/Proxy failures and `policy_reason` | CLI/debug | experimental `DiagnosticEvent`; no payload bytes |
 | `guard_decision` | Guard | `event_type`, target, selected lane, reason, bounded failure classes, `committed` | CLI/store/UI | experimental; no payload bytes and no persistence |
 | `policy.promoted` | Learning engine | old/new state, evidence, expiry | Store/UI/export | planned |
 | `learning.frozen` | Health guard | failing control, profile ID | UI/metrics | planned |

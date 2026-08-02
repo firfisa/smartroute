@@ -10,5 +10,6 @@ ADRs are append-only decision records. Supersede an old decision with a new ADR 
 | [0004](0004-mihomo-socks-ack-is-not-target-readiness.md) | Treat Mihomo SOCKS success as outbound admission, not target readiness | Accepted | 2026-08-02 |
 | [0005](0005-safe-tls-first-flight-racing.md) | Race only a parsed TLS first flight without early data | Accepted | 2026-08-02 |
 | [0006](0006-separate-availability-guard.md) | Put a small availability guard in front of the adaptive engine | Accepted | 2026-08-02 |
+| [0007](0007-enforce-direct-probe-privacy.md) | Enforce Direct-probe privacy before opening candidates | Accepted | 2026-08-02 |
 
 Status values: `Proposed`, `Accepted`, `Superseded`, `Rejected`.

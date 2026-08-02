@@ -18,6 +18,7 @@ Current scope:
 - Deterministic loopback Test Lab plus a pinned, isolated Mihomo child-process contract lab before any active Clash integration.
 - macOS-first development while keeping platform boundaries explicit.
 - TCP and TLS observability first.
+- Direct-probe privacy policy is enforced before candidate creation; denied TLS targets use Proxy-only L3 validation.
 - DNS as a separate diagnostic path.
 - UDP/QUIC use static or historical policy until protocol-specific validators exist.
 - SQLite persistence only after the domain model and event schema are stable.
@@ -50,6 +51,7 @@ These rules must not be weakened silently:
 13. Mihomo SOCKS CONNECT success is only `StageOutbound`; it must not be committed or learned as target TCP success without a stronger readiness gate.
 14. TLS first-flight racing may duplicate only a fully parsed ClientHello without `early_data`; every consumed winner byte must be replayed exactly, and a valid ServerHello is L3 evidence rather than full-handshake success.
 15. The availability Guard must choose the original-policy lane before forwarding client payload to either lane when the adaptive engine is unavailable; post-commit failures are never transparently replayed, and Guard-process failure remains a separate protection boundary.
+16. `privacy-first`, matching `never_direct_probe` entries, invalid targets, and missing runtime policy must open zero Direct candidates; privacy denial still requires the Proxy path to meet its protocol readiness gate.
 
 ## 4. Repository map
 
@@ -68,6 +70,7 @@ Keep this map current whenever a top-level component is added, removed, or renam
 | `internal/sidecar/` | Inbound SOCKS server, path commitment, and TCP relay |
 | `internal/guard/` | Separate pre-payload availability selection between adaptive engine and original policy |
 | `internal/netrelay/` | Shared bidirectional TCP relay primitive |
+| `internal/privacy/` | Local Direct-probe policy compilation, normalization, and reason codes |
 | `internal/testlab/` | Loopback targets, fake gateways, and fault scenarios |
 | `internal/mihomolab/` | Temporary Mihomo config, child lifecycle, synthetic DNS, and topology assertions |
 | `internal/tlsinspect/` | Bounded ClientHello/ServerHello record parsing and early-data rejection |

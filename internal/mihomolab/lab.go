@@ -21,6 +21,7 @@ import (
 
 	"github.com/firfisa/smartroute/internal/guard"
 	"github.com/firfisa/smartroute/internal/model"
+	"github.com/firfisa/smartroute/internal/privacy"
 	"github.com/firfisa/smartroute/internal/sidecar"
 	"github.com/firfisa/smartroute/internal/socks5"
 	"github.com/firfisa/smartroute/internal/testlab"
@@ -175,9 +176,14 @@ func Run(parent context.Context, binaryPath string) (Report, error) {
 	var eventMu sync.Mutex
 	events := make([]sidecar.DecisionEvent, 0, 4)
 	guardEvents := make([]guard.DecisionEvent, 0, 4)
+	labPrivacyPolicy, err := privacy.New(privacy.ModeExplicitOptIn, nil)
+	if err != nil {
+		return report, fmt.Errorf("compile lab privacy policy: %w", err)
+	}
 	server := sidecar.Server{
-		NetworkProfileID: "isolated-mihomo-lab",
-		HandshakeTimeout: 2 * time.Second,
+		NetworkProfileID:  "isolated-mihomo-lab",
+		DirectProbePolicy: labPrivacyPolicy,
+		HandshakeTimeout:  2 * time.Second,
 		TLSRacer: &transport.TLSRacer{
 			Direct:    transport.SOCKS5Dialer{Path: model.PathDirect, Endpoint: loopbackAddress(ports.direct)},
 			Proxy:     transport.SOCKS5Dialer{Path: model.PathProxy, Endpoint: loopbackAddress(ports.proxy)},
