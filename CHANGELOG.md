@@ -44,8 +44,11 @@ All notable project changes are recorded here. The project has not published a r
 - Structured privacy decision/failure reasons and ADR-0007 covering matching, precedence, migration and rollback semantics.
 - `smartroute supervise` with independently monitored Guard/engine child processes, structured lifecycle events, stable-window reset and capped exponential restart backoff.
 - Graceful child interruption with a bounded kill delay, synchronized child event writers, and ADR-0008 documenting residual Guard-down and supervisor-down windows.
+- Opt-in local JSONL observations with HMAC-pseudonymous targets/profiles, per-source rotation, count/age caps, and mode-0600 state.
+- `smartroute observations` status, pause, resume, clear-confirmation, and redacted export controls, plus ADR-0009.
+- Raw runtime event suppression while persistent recording is enabled; later recorder write failures warn once without interrupting routing.
 
 ### Known limitations
 
-- TLS readiness is structural and experimental; certificate/Finished validation, OS-level supervisor service integration, privacy-safe persistent recording, active configuration integration, and broad real-site compatibility are not implemented yet.
+- TLS readiness is structural and experimental; certificate/Finished validation, learned-policy persistence, OS-level supervisor service integration, active configuration integration, and broad real-site compatibility are not implemented yet.
 - No public release artifacts have been published yet.

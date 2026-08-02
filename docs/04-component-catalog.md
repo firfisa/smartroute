@@ -1,6 +1,6 @@
 # SmartRoute Component and Interface Catalog
 
-Version: v0.3
+Version: v0.4
 Last updated: 2026-08-02
 
 This file is the maintained registry for components, interfaces, commands, configuration fields, and decision reason codes. Status is explicit: `implemented`, `experimental`, or `planned`.
@@ -21,6 +21,7 @@ flowchart TB
     NetRelay["internal/netrelay\nBidirectional relay"]
     Privacy["internal/privacy\nDirect-probe policy"]
     Supervisor["internal/supervisor\nChild lifecycle"]
+    Observe["internal/observe\nBounded local records"]
     TestLab["internal/testlab\nIsolated fault lab"]
     LabCLI["cmd/smartroute-testlab\nJSON lab runner"]
     MihomoLab["internal/mihomolab\nPinned child-process lab"]
@@ -34,6 +35,7 @@ flowchart TB
     CLI --> Guard
     CLI --> Privacy
     CLI --> Supervisor
+    CLI --> Observe
     Config --> Privacy
     Decision --> Model
     Transport --> Model
@@ -63,7 +65,7 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 
 | Component | Owner | Status | Responsibility | Explicit non-responsibility | Primary tests |
 | --- | --- | --- | --- | --- | --- |
-| `cmd/smartroute` | CLI | experimental | Command parsing, config validation, synthetic decision trace, and separate Guard/engine lifecycles | Persistence and active Clash configuration | `cmd/smartroute/main_test.go`; data plane exercised by Test Labs |
+| `cmd/smartroute` | CLI | experimental | Command parsing, config validation, synthetic decision trace, Guard/engine lifecycles, and observation controls | Learned-policy persistence and active Clash configuration | `cmd/smartroute/main_test.go`; data plane exercised by Test Labs |
 | `cmd/smartroute-testlab` | Test | implemented | Run deterministic loopback scenarios and print JSON report | Real destinations or Clash integration | `internal/testlab/lab_test.go` plus CI named step |
 | `cmd/smartroute-mihomo-lab` | Test | implemented | Run the exact pinned Mihomo binary in an isolated topology and print JSON | Discovering or operating the active Clash instance | `internal/mihomolab/lab_test.go`; `make mihomo-lab` |
 | `internal/config` | Core | implemented | Strict JSON schema, safe loopback defaults, validation | Mihomo YAML generation | `internal/config/config_test.go` |
@@ -77,10 +79,11 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `internal/netrelay` | Data plane | experimental | Shared bidirectional TCP copying and half-close handling | Routing decisions or payload inspection | Consumer tests in Guard, Sidecar and Test Lab |
 | `internal/privacy` | Policy | experimental | Validate/normalize exact and suffix deny rules; decide whether a target may open Direct | Network I/O, hostname persistence, or route learning | `internal/privacy/policy_test.go`; Sidecar privacy tests |
 | `internal/supervisor` | Runtime | experimental | Independently monitor Guard/engine child processes, cap restart backoff, and emit lifecycle events | Supervising Mihomo, replaying failed connections, or host-level service installation | `internal/supervisor/supervisor_test.go`; CLI service-spec tests |
+| `internal/observe` | Persistence | experimental | HMAC-pseudonymize typed events, write bounded per-source JSONL, and implement pause/resume/clear/export | Learned policy, payload capture, process identity, cloud upload, or active Clash access | `internal/observe/recorder_test.go`; CLI sink/control tests |
 | `internal/testlab` | Test | implemented | Ephemeral loopback echo target, fake Direct/Proxy gateways, deterministic faults | External network and active Clash access | `internal/testlab/lab_test.go` |
 | `internal/mihomolab` | Test | implemented | Temporary config/home, child lifecycle, synthetic DNS, forced-listener and readiness assertions | Active Clash discovery, external traffic, TUN, system proxy | `internal/mihomolab/lab_test.go`; explicit runtime command |
 | `internal/upstream` | Integration | planned | Mihomo config/API adapter and topology validation | Shipping Mihomo source | Planned integration tests |
-| `internal/store` | Persistence | planned | SQLite observations, policies, migrations | Analytics uploads | Planned migration/recovery tests |
+| `internal/store` | Persistence | planned | SQLite learned policies, promotion state, TTL, and migrations | Raw analytics uploads or JSONL observation recording | Planned migration/recovery tests |
 
 ## 3. Implemented function and interface registry
 
@@ -107,6 +110,9 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `Policy.Evaluate(target)` | `internal/privacy` | Target hostname/IP | Allow/deny plus stable reason code | Missing policy and invalid target fail closed to Proxy-only | experimental | Exact/suffix/boundary/privacy-first tests |
 | `Supervisor.Run(ctx)` | `internal/supervisor` | Context, service specs, starter, restart policy | Runs independent monitors until cancellation | Rejects invalid/duplicate services; runtime failures trigger capped restart rather than stopping siblings | experimental | Restart, start-error, independence, cancellation tests |
 | `CommandStarter.Start(ctx, service)` | `internal/supervisor` | Executable/args and synchronized stdout/stderr | Started child implementing `Wait()` | Parent cancellation interrupts child; `WaitDelay` kills after grace period | experimental | Supervisor consumers; platform process integration pending |
+| `observe.New(options)` | `internal/observe` | Local directory, source and capacity/privacy limits | Source-specific recorder | Rejects unsafe paths/limits and invalid salt; initialization errors are explicit | experimental | Recorder validation/privacy tests |
+| `Recorder.Record(event)` | `internal/observe` | Typed bounded event with optional raw target | Pseudonymous JSONL record or paused no-op | Oversized/write errors return to caller; runtime caller warns once and continues routing | experimental | Hashing, pause, rotation and oversized-event tests |
+| `observe.Inspect/Pause/Resume/Clear/Export` | `internal/observe` | Observation directory and explicit destination/paused state | Lifecycle status or local file operation | Only manages engine/Guard/supervisor subdirectories; clear requires pause; export refuses nesting/existing destination and omits salt/symlinks | experimental | Control and export tests |
 | `sidecar.Server.Serve(ctx, listener)` | `internal/sidecar` | Context, listener, plain Racer or TLSRacer | Serves until cancellation/error; TLS mode requires L3 | Rejects unsafe ClientHello before dialing; never reads Clash config | experimental | Sidecar, Test Lab and Mihomo Lab |
 | `guard.Server.Serve(ctx, listener)` | `internal/guard` | Context, listener, adaptive/original dialers and bounded timeouts | Serves SOCKS targets; commits one availability lane before payload | Falls back on adaptive handshake failure; refuses when both lanes fail; never replays post-commit data | experimental | Adaptive, unavailable, wedged and dual-failure unit tests; Mihomo Lab scenarios |
 | `netrelay.Bidirectional(left, right)` | `internal/netrelay` | Two owned TCP-like connections | Relays both directions until completion | Best-effort half-close; relay errors are not routing evidence | experimental | Guard/Sidecar end-to-end tests |
@@ -120,9 +126,10 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `smartroute version` | implemented | Print version, commit, build date | None | None |
 | `smartroute validate -config PATH` | implemented | Strictly parse and validate local JSON config | None | None |
 | `smartroute trace -direct SPEC -proxy SPEC` | implemented | Evaluate one synthetic paired observation and print JSON | None | None |
-| `smartroute serve [-acknowledge-direct-probes]` | experimental | Run TLS-over-SOCKS sidecar with runtime privacy policy | Privacy-first/deny targets open Proxy only; acknowledged explicit-opt-in targets may race Direct/Proxy | None; emits decision/diagnostic JSON only |
-| `smartroute guard` | experimental | Run the separate availability boundary in front of the adaptive engine | Configured loopback Guard, engine and original-policy SOCKS endpoints | None; emits `guard_decision` JSON only |
-| `smartroute supervise` | experimental | Run Guard and adaptive engine as independently restartable children | Same loopback effects as the two child commands; does not operate Mihomo | None; emits child events plus `supervisor` lifecycle JSON |
+| `smartroute serve [-acknowledge-direct-probes]` | experimental | Run TLS-over-SOCKS sidecar with runtime privacy policy | Privacy-first/deny targets open Proxy only; acknowledged explicit-opt-in targets may race Direct/Proxy | Optional bounded engine JSONL; otherwise debug stdout |
+| `smartroute guard` | experimental | Run the separate availability boundary in front of the adaptive engine | Configured loopback Guard, engine and original-policy SOCKS endpoints | Optional bounded Guard JSONL; otherwise debug stdout |
+| `smartroute supervise` | experimental | Run Guard and adaptive engine as independently restartable children | Same loopback effects as the two child commands; does not operate Mihomo | Optional bounded per-source JSONL; otherwise debug stdout |
+| `smartroute observations status\|pause\|resume\|clear\|export` | experimental | Operate the configured local recorder directory | None | Status/control, confirmed deletion, or redacted file export |
 | `smartroute policy` | planned | Inspect, lock, revoke, or export policy | None by default | Policy store |
 | `smartroute-testlab` | implemented | Run isolated deterministic data-plane scenarios | Ephemeral loopback sockets only | None |
 | `smartroute-mihomo-lab -mihomo PATH` | implemented | Run isolated pinned-Mihomo contract scenarios | Child process, temporary home, local synthetic DNS and ephemeral loopback sockets only | Temporary files removed; JSON report only |
@@ -162,6 +169,12 @@ go run ./cmd/smartroute trace \
 | `learning.policy_ttl_hours` | integer | `72` | Positive | Planned learned-policy expiry |
 | `privacy.mode` | enum | `explicit-opt-in` | `explicit-opt-in` or `privacy-first` | `privacy-first` opens zero Direct candidates; explicit mode also requires CLI acknowledgment |
 | `privacy.never_direct_probe` | string list | empty | Plain exact; leading `.` or `*.` suffix; normalized ASCII hostname/IP; invalid entries reject config | Matching entries override acknowledgment and use Proxy-only L3 |
+| `observation.enabled` | boolean | `false` | Boolean | Enables local persistence and suppresses duplicate raw runtime stdout events |
+| `observation.directory` | path | `data/observations` | Non-empty; not `.` or filesystem root | Git-ignored local salt, pause marker and source subdirectories |
+| `observation.max_file_bytes` | integer | `8388608` | 1024–1073741824 | Hard per-file bound; oversized single events are rejected |
+| `observation.max_files_per_source` | integer | `4` | 1–100 | Oldest files pruned independently for engine, Guard and supervisor |
+| `observation.retention_hours` | integer | `168` | 1–8760 | Age pruning occurs during source-file rotation |
+| `observation.include_cleartext_hostname` | boolean | `false` | Boolean | Explicitly adds hostname to persisted rows; network profile remains HMAC-only |
 
 Fields marked planned in behavior are validated now but must not be described as active runtime features.
 
@@ -214,10 +227,10 @@ Guard availability reasons:
 | `candidate.ready` | Readiness gate | path, stage, latency | Decision engine | planned |
 | `candidate.failed` | Dialer/gate | path, stage, failure class | Decision engine | planned |
 | `candidate.canceled` | Racer | path, cancellation reason | Metrics | planned |
-| `decision` | Sidecar/decision engine | `event_type`, target, selected path, reason, optional `policy_reason`, observation, `committed` | CLI/store/UI | experimental `DecisionEvent`; persistent form planned |
+| `decision` | Sidecar/decision engine | `event_type`, target, selected path, reason, optional `policy_reason`, observation, `committed` | CLI/recorder/UI | experimental `DecisionEvent`; JSONL schema v1 implemented |
 | `diagnostic` | Sidecar | `event_type`, target, reason, failure class, optional Direct/Proxy failures and `policy_reason` | CLI/debug | experimental `DiagnosticEvent`; no payload bytes |
-| `guard_decision` | Guard | `event_type`, target, selected lane, reason, bounded failure classes, `committed` | CLI/store/UI | experimental; no payload bytes and no persistence |
-| `supervisor` | Supervisor | `event_type`, service, state, attempt, bounded failure class, optional `backoff_ms` | CLI/operator | experimental; states include `started`, `start_failed`, `exited`, `restart_scheduled`, `stopped` |
+| `guard_decision` | Guard | `event_type`, target, selected lane, reason, bounded failure classes, `committed` | CLI/recorder/UI | experimental; JSONL schema v1 implemented, no payload bytes |
+| `supervisor` | Supervisor | `event_type`, service, state, attempt, bounded failure class, optional `backoff_ms` | CLI/recorder/operator | experimental; states include `started`, `start_failed`, `exited`, `restart_scheduled`, `stopped` |
 | `policy.promoted` | Learning engine | old/new state, evidence, expiry | Store/UI/export | planned |
 | `learning.frozen` | Health guard | failing control, profile ID | UI/metrics | planned |
 

@@ -21,6 +21,7 @@ import (
 	"github.com/firfisa/smartroute/internal/decision"
 	"github.com/firfisa/smartroute/internal/guard"
 	"github.com/firfisa/smartroute/internal/model"
+	"github.com/firfisa/smartroute/internal/observe"
 	"github.com/firfisa/smartroute/internal/privacy"
 	"github.com/firfisa/smartroute/internal/sidecar"
 	"github.com/firfisa/smartroute/internal/supervisor"
@@ -60,6 +61,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return runGuard(args[1:], stdout, stderr)
 	case "supervise":
 		return runSupervise(args[1:], stdout, stderr)
+	case "observations":
+		return runObservations(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return nil
@@ -95,6 +98,13 @@ func runSupervise(args []string, stdout, stderr io.Writer) error {
 	if err := validateDirectProbeAcknowledgement(cfg.Privacy.Mode, *allowDirectProbes); err != nil {
 		return err
 	}
+	recorder, err := openObservationRecorder(cfg, observe.SourceSupervisor)
+	if err != nil {
+		return err
+	}
+	if recorder != nil {
+		defer recorder.Close()
+	}
 	absoluteConfig, err := filepath.Abs(*path)
 	if err != nil {
 		return fmt.Errorf("resolve config path: %w", err)
@@ -108,6 +118,7 @@ func runSupervise(args []string, stdout, stderr io.Writer) error {
 	defer cancel()
 	stdoutWriter := &synchronizedWriter{writer: stdout}
 	stderrWriter := &synchronizedWriter{writer: stderr}
+	events := newRuntimeEventSink(stdoutWriter, stderrWriter, recorder)
 	monitor := supervisor.Supervisor{
 		Services: supervisedServices(executable, absoluteConfig, *profileID, *allowDirectProbes),
 		Starter: supervisor.CommandStarter{
@@ -115,7 +126,10 @@ func runSupervise(args []string, stdout, stderr io.Writer) error {
 		},
 		MinBackoff: *minBackoff, MaxBackoff: *maxBackoff, StableAfter: *stableAfter,
 		OnEvent: func(event supervisor.Event) {
-			_ = json.NewEncoder(stdoutWriter).Encode(event)
+			events.Emit(event, observe.Event{
+				EventType: event.EventType, Service: event.Service, State: event.State,
+				Attempt: event.Attempt, FailureClass: event.FailureClass, BackoffMS: event.BackoffMS,
+			})
 		},
 	}
 	fmt.Fprintln(stderrWriter, "supervising separate adaptive-engine and guard child processes; no Clash files are read or modified")
@@ -170,6 +184,13 @@ func runGuard(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	recorder, err := openObservationRecorder(cfg, observe.SourceGuard)
+	if err != nil {
+		return err
+	}
+	if recorder != nil {
+		defer recorder.Close()
+	}
 	listener, err := net.Listen("tcp", cfg.GuardListenAddress)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", cfg.GuardListenAddress, err)
@@ -179,6 +200,7 @@ func runGuard(args []string, stdout, stderr io.Writer) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	var outputMu sync.Mutex
+	events := newRuntimeEventSink(&synchronizedWriter{writer: stdout}, &synchronizedWriter{writer: stderr}, recorder)
 	server := guard.Server{
 		Adaptive:         guard.SOCKS5Dialer{Endpoint: cfg.ListenAddress},
 		Original:         guard.SOCKS5Dialer{Endpoint: cfg.OriginalEndpoint},
@@ -188,7 +210,12 @@ func runGuard(args []string, stdout, stderr io.Writer) error {
 		OnDecision: func(event guard.DecisionEvent) {
 			outputMu.Lock()
 			defer outputMu.Unlock()
-			_ = json.NewEncoder(stdout).Encode(event)
+			committed := event.Committed
+			events.Emit(event, observe.Event{
+				EventType: event.EventType, Target: &event.Target, SelectedLane: event.SelectedLane,
+				ReasonCode: event.ReasonCode, AdaptiveFailure: event.AdaptiveFailure,
+				OriginalFailure: event.OriginalFailure, Committed: &committed,
+			})
 		},
 	}
 	fmt.Fprintf(stderr, "availability guard listening on %s; adaptive=%s original=%s; no Clash files are read or modified\n", listener.Addr(), cfg.ListenAddress, cfg.OriginalEndpoint)
@@ -218,6 +245,13 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	if err := validateDirectProbeAcknowledgement(cfg.Privacy.Mode, *allowDirectProbes); err != nil {
 		return err
 	}
+	recorder, err := openObservationRecorder(cfg, observe.SourceEngine)
+	if err != nil {
+		return err
+	}
+	if recorder != nil {
+		defer recorder.Close()
+	}
 	listener, err := net.Listen("tcp", cfg.ListenAddress)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", cfg.ListenAddress, err)
@@ -227,6 +261,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	var outputMu sync.Mutex
+	events := newRuntimeEventSink(&synchronizedWriter{writer: stdout}, &synchronizedWriter{writer: stderr}, recorder)
 	server := sidecar.Server{
 		NetworkProfileID:  *profileID,
 		DirectProbePolicy: privacyPolicy,
@@ -241,16 +276,109 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 		OnDecision: func(event sidecar.DecisionEvent) {
 			outputMu.Lock()
 			defer outputMu.Unlock()
-			_ = json.NewEncoder(stdout).Encode(event)
+			committed := event.Committed
+			observation := event.Observation
+			events.Emit(event, observe.Event{
+				EventType: event.EventType, Target: &event.Target, SelectedPath: event.SelectedPath,
+				ReasonCode: event.ReasonCode, PolicyReason: event.PolicyReason,
+				Observation: &observation, Committed: &committed,
+			})
 		},
 		OnDiagnostic: func(event sidecar.DiagnosticEvent) {
 			outputMu.Lock()
 			defer outputMu.Unlock()
-			_ = json.NewEncoder(stdout).Encode(event)
+			events.Emit(event, observe.Event{
+				EventType: event.EventType, Target: &event.Target, ReasonCode: event.ReasonCode,
+				PolicyReason: event.PolicyReason, FailureClass: event.FailureClass,
+				DirectFailure: event.DirectFailure, ProxyFailure: event.ProxyFailure,
+			})
 		},
 	}
 	fmt.Fprintf(stderr, "experimental TLS sidecar listening on %s; privacy=%s; no Clash files are read or modified\n", listener.Addr(), cfg.Privacy.Mode)
 	return server.Serve(ctx, listener)
+}
+
+type runtimeEventSink struct {
+	output   io.Writer
+	warnings io.Writer
+	recorder *observe.Recorder
+	warnOnce sync.Once
+}
+
+func newRuntimeEventSink(output, warnings io.Writer, recorder *observe.Recorder) *runtimeEventSink {
+	return &runtimeEventSink{output: output, warnings: warnings, recorder: recorder}
+}
+
+func (s *runtimeEventSink) Emit(raw any, persistent observe.Event) {
+	if s.recorder == nil {
+		_ = json.NewEncoder(s.output).Encode(raw)
+		return
+	}
+	if err := s.recorder.Record(persistent); err != nil {
+		s.warnOnce.Do(func() {
+			fmt.Fprintf(s.warnings, "observation write failed; routing continues: %v\n", err)
+		})
+	}
+}
+
+func openObservationRecorder(cfg config.Config, source string) (*observe.Recorder, error) {
+	if !cfg.Observation.Enabled {
+		return nil, nil
+	}
+	recorder, err := observe.New(observe.Options{
+		Directory: cfg.Observation.Directory, Source: source,
+		MaxFileBytes: cfg.Observation.MaxFileBytes, MaxFiles: cfg.Observation.MaxFilesPerSource,
+		Retention:                time.Duration(cfg.Observation.RetentionHours) * time.Hour,
+		IncludeCleartextHostname: cfg.Observation.IncludeCleartextHostname,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("initialize observation recorder: %w", err)
+	}
+	return recorder, nil
+}
+
+func runObservations(args []string, stdout, stderr io.Writer) error {
+	if len(args) == 0 {
+		return errors.New("observations requires status, pause, resume, clear, or export")
+	}
+	action := args[0]
+	flags := flag.NewFlagSet("observations "+action, flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	path := flags.String("config", "configs/smartroute.example.json", "path to SmartRoute JSON config")
+	confirmClear := flags.Bool("confirm-clear", false, "confirm deletion of all local observation JSONL files")
+	destination := flags.String("destination", "", "new directory for a redacted observation export")
+	if err := flags.Parse(args[1:]); err != nil {
+		return err
+	}
+	cfg, err := config.Load(*path)
+	if err != nil {
+		return err
+	}
+	directory := cfg.Observation.Directory
+	switch action {
+	case "status":
+		status, err := observe.Inspect(directory)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(stdout).Encode(status)
+	case "pause":
+		return observe.Pause(directory)
+	case "resume":
+		return observe.Resume(directory)
+	case "clear":
+		if !*confirmClear {
+			return errors.New("clear requires -confirm-clear and recording must already be paused")
+		}
+		return observe.Clear(directory)
+	case "export":
+		if *destination == "" {
+			return errors.New("export requires -destination")
+		}
+		return observe.Export(directory, *destination)
+	default:
+		return fmt.Errorf("unknown observations action %q", action)
+	}
 }
 
 func validateDirectProbeAcknowledgement(mode string, acknowledged bool) error {
@@ -357,6 +485,7 @@ Usage:
   smartroute serve -acknowledge-direct-probes [-config path] [-network-profile label]
   smartroute guard [-config path] [-network-profile label]
   smartroute supervise [-acknowledge-direct-probes] [-config path] [-network-profile label]
+  smartroute observations status|pause|resume|clear|export [-config path]
 
 The trace command evaluates one synthetic paired observation. The experimental
 serve command accepts TLS-over-SOCKS on the configured loopback listener and

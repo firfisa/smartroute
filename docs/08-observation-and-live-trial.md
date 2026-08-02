@@ -1,7 +1,7 @@
 # Observation and Live-Trial Plan
 
 Version: v0.1
-Status: design accepted; persistent recorder and live configuration writes are not implemented
+Status: bounded recorder implemented; live configuration writes are not implemented
 
 ## 1. Read-only baseline found on 2026-08-02
 
@@ -42,16 +42,16 @@ The first two lanes remain the default development path. Read-only inspection ma
 | Field | Default | Purpose | Privacy treatment |
 | --- | --- | --- | --- |
 | `timestamp` | On | Order events and measure duration | Timezone-independent timestamp |
-| `trial_session_id` | On | Group one controlled trial | Random per trial; no account identifier |
-| `network_profile_id` | On | Separate home/campus/hotspot behavior | Locally derived pseudonymous ID |
-| `target_id` | On | Join repeated observations | Local keyed digest by default |
-| `hostname` | Off | Human diagnosis when digest is insufficient | Cleartext only with explicit diagnostic switch |
+| `trial_session_id` | Planned | Group one controlled trial | Random per trial; no account identifier |
+| `network_profile_id` | Implemented | Separate home/campus/hotspot behavior | HMAC with local salt; cleartext never persisted |
+| `target_id` | Implemented | Join repeated observations | HMAC with the same local salt |
+| `hostname` | Off by default; implemented switch | Human diagnosis when digest is insufficient | Cleartext only with `include_cleartext_hostname=true` |
 | `destination_port` / `transport` | On | Scope learned policy correctly | Required routing metadata |
-| `current_rule_lane` | On | Compare static baseline and SmartRoute | Category/reason, not full rule-provider content |
-| Candidate path/stage/latency/failure | On | Explain Direct/Proxy evidence | Structured enum and duration |
-| Selected path/reason code | On | Audit automatic decisions | Structured enum |
-| Privacy policy reason | On when policy changes candidate set | Prove why Direct was skipped | Structured enum; never include the configured pattern text |
-| Client-visible outcome | On when measurable | Detect refresh/retry/regression | Success/failure/timing only |
+| `current_rule_lane` | Planned | Compare static baseline and SmartRoute | Category/reason, not full rule-provider content |
+| Candidate path/stage/latency/failure | Implemented for emitted decision events | Explain Direct/Proxy evidence | Structured enum and duration |
+| Selected path/reason code | Implemented | Audit automatic decisions | Structured enum |
+| Privacy policy reason | Implemented when policy changes candidate set | Prove why Direct was skipped | Structured enum; never include the configured pattern text |
+| Client-visible outcome | Planned | Detect refresh/retry/regression | Success/failure/timing only |
 | Process identity | Off | Diagnose application-specific behavior | Separate opt-in; normalize locally |
 | Aggregate byte counts | Off initially | Estimate avoidable proxy traffic | Enable only after validation |
 
@@ -64,27 +64,39 @@ Never record:
 
 ## 4. Storage and retention requirements
 
-The first recorder should use local JSONL for schema iteration before SQLite migrations are frozen.
+The Phase 0 recorder uses local JSONL for schema iteration before learned-policy SQLite migrations are frozen.
 
 | Control | Initial requirement |
 | --- | --- |
 | Default state | Off |
 | Storage | Git-ignored local runtime directory |
 | Default retention | 7 days for diagnostic records |
-| Rotation | Size and day limits |
-| User controls | Pause, resume, clear, export redacted summary |
-| Export | Aggregate or explicitly reviewed rows only |
+| Rotation | Per-source size/count limits plus age pruning at rotation |
+| User controls | `observations status`, `pause`, `resume`, paused plus confirmed `clear`, and `export` |
+| Export | Already-pseudonymized JSONL only; excludes salt, markers and symlinks |
 | Failure behavior | Recorder failure must not interrupt routing |
 
 Raw observations must never be committed to GitHub. Analysis artifacts intended for the repository must contain aggregates or synthetic fixtures only.
 
-The Phase 0 stdout `DecisionEvent` and `DiagnosticEvent` gained an optional `policy_reason` field in ADR-0007. This is an additive experimental-schema change; consumers must tolerate its absence on non-TLS or pre-policy failures. No persistent migration exists yet because the recorder remains unimplemented.
+The Phase 0 stdout `DecisionEvent` and `DiagnosticEvent` gained an optional `policy_reason` field in ADR-0007. This is an additive experimental-schema change; consumers must tolerate its absence on non-TLS or pre-policy failures. JSONL schema v1 stores the bounded form. It is not a learned-policy database and has no SQLite migration.
 
 ADR-0008 adds an independent `supervisor` lifecycle event. It contains service state, attempt, bounded failure class and backoff only—never a target, hostname or child error string—and is not part of learned routing evidence.
 
+ADR-0009 implements the recorder. When enabled, raw runtime events are not duplicated to stdout; target and network-profile identity default to HMAC-SHA-256 with a local random salt. The salt remains local and is excluded from export. A later write failure emits at most one warning per process and routing continues.
+
+Operational commands:
+
+```bash
+smartroute observations status -config PATH
+smartroute observations pause -config PATH
+smartroute observations resume -config PATH
+smartroute observations export -config PATH -destination NEW_DIRECTORY
+smartroute observations clear -config PATH -confirm-clear
+```
+
 ## 5. Coordinated replacement procedure
 
-The isolated Mihomo listener topology and minimal L3 TLS readiness recovery have passed on macOS/v1.19.29. Runtime Direct-probe privacy enforcement and independent Guard/engine supervision are implemented and tested locally. The new Mihomo stop/restart scenarios still need a permitted platform run, and supervisor failure itself still requires an OS service boundary. Configuration replacement will begin only after those availability checks, recorder privacy controls, rollback tests, and a broader real-TLS compatibility matrix pass.
+The isolated Mihomo listener topology and minimal L3 TLS readiness recovery have passed on macOS/v1.19.29. Runtime Direct-probe privacy enforcement, independent Guard/engine supervision, and recorder privacy/lifecycle controls are implemented and tested locally. The new Mihomo stop/restart scenarios still need a permitted platform run, and supervisor failure itself still requires an OS service boundary. Configuration replacement will begin only after those availability checks, rollback tests, and a broader real-TLS compatibility matrix pass.
 
 1. Agree on the trial network, time window, target traffic, and stop conditions.
 2. Resolve the active profile plus merge/script layers read-only.

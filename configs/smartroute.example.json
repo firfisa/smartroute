@@ -20,5 +20,13 @@
   "privacy": {
     "mode": "explicit-opt-in",
     "never_direct_probe": []
+  },
+  "observation": {
+    "enabled": false,
+    "directory": "data/observations",
+    "max_file_bytes": 8388608,
+    "max_files_per_source": 4,
+    "retention_hours": 168,
+    "include_cleartext_hostname": false
   }
 }

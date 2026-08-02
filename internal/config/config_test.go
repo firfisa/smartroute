@@ -57,6 +57,7 @@ func TestLoadAppliesGuardDefaultsToLegacyConfig(t *testing.T) {
 	delete(fields, "guard_listen_address")
 	delete(fields, "original_endpoint")
 	delete(fields, "guard_adaptive_timeout_ms")
+	delete(fields, "observation")
 	encoded, err = json.Marshal(fields)
 	if err != nil {
 		t.Fatal(err)
@@ -73,6 +74,20 @@ func TestLoadAppliesGuardDefaultsToLegacyConfig(t *testing.T) {
 	defaults := Default()
 	if cfg.GuardListenAddress != defaults.GuardListenAddress || cfg.OriginalEndpoint != defaults.OriginalEndpoint || cfg.GuardAdaptiveTimeoutMS != defaults.GuardAdaptiveTimeoutMS {
 		t.Fatalf("legacy guard defaults = %q %q %d", cfg.GuardListenAddress, cfg.OriginalEndpoint, cfg.GuardAdaptiveTimeoutMS)
+	}
+	if cfg.Observation != defaults.Observation {
+		t.Fatalf("legacy observation defaults = %+v", cfg.Observation)
+	}
+}
+
+func TestValidateRejectsUnsafeObservationBounds(t *testing.T) {
+	cfg := Default()
+	cfg.Observation.Directory = "."
+	cfg.Observation.MaxFilesPerSource = 0
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "observation.directory") || !strings.Contains(err.Error(), "max_files_per_source") {
+		t.Fatalf("Validate() error = %v, want observation errors", err)
 	}
 }
 

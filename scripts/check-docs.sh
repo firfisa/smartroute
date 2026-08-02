@@ -36,6 +36,7 @@ required_files=(
   "docs/adr/0006-separate-availability-guard.md"
   "docs/adr/0007-enforce-direct-probe-privacy.md"
   "docs/adr/0008-supervise-guard-and-engine.md"
+  "docs/adr/0009-bounded-local-observation-recorder.md"
   "configs/smartroute.example.json"
   "upstreams.lock"
 )
@@ -108,6 +109,12 @@ fi
 if ! matches 'smartroute supervise' "${project_root}/README.md" "${project_root}/docs/adr/0008-supervise-guard-and-engine.md" ||
   ! matches 'restart_scheduled' "${project_root}/docs/04-component-catalog.md"; then
   echo "supervisor lifecycle contract is missing" >&2
+  exit 1
+fi
+
+if ! matches 'smartroute observations' "${project_root}/README.md" "${project_root}/docs/adr/0009-bounded-local-observation-recorder.md" ||
+  ! matches 'include_cleartext_hostname' "${project_root}/configs/smartroute.example.json" "${project_root}/docs/04-component-catalog.md"; then
+  echo "bounded local observation contract is missing" >&2
   exit 1
 fi
 

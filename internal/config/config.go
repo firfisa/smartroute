@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -17,17 +18,18 @@ import (
 const CurrentVersion = 1
 
 type Config struct {
-	Version                int            `json:"version"`
-	ListenAddress          string         `json:"listen_address"`
-	DirectEndpoint         string         `json:"direct_endpoint"`
-	ProxyEndpoint          string         `json:"proxy_endpoint"`
-	GuardListenAddress     string         `json:"guard_listen_address"`
-	OriginalEndpoint       string         `json:"original_endpoint"`
-	GuardAdaptiveTimeoutMS int            `json:"guard_adaptive_timeout_ms"`
-	OriginalFallback       model.Path     `json:"original_fallback"`
-	Decision               DecisionConfig `json:"decision"`
-	Learning               LearningConfig `json:"learning"`
-	Privacy                PrivacyConfig  `json:"privacy"`
+	Version                int               `json:"version"`
+	ListenAddress          string            `json:"listen_address"`
+	DirectEndpoint         string            `json:"direct_endpoint"`
+	ProxyEndpoint          string            `json:"proxy_endpoint"`
+	GuardListenAddress     string            `json:"guard_listen_address"`
+	OriginalEndpoint       string            `json:"original_endpoint"`
+	GuardAdaptiveTimeoutMS int               `json:"guard_adaptive_timeout_ms"`
+	OriginalFallback       model.Path        `json:"original_fallback"`
+	Decision               DecisionConfig    `json:"decision"`
+	Learning               LearningConfig    `json:"learning"`
+	Privacy                PrivacyConfig     `json:"privacy"`
+	Observation            ObservationConfig `json:"observation"`
 }
 
 type DecisionConfig struct {
@@ -45,6 +47,15 @@ type LearningConfig struct {
 type PrivacyConfig struct {
 	Mode             string   `json:"mode"`
 	NeverDirectProbe []string `json:"never_direct_probe"`
+}
+
+type ObservationConfig struct {
+	Enabled                  bool   `json:"enabled"`
+	Directory                string `json:"directory"`
+	MaxFileBytes             int64  `json:"max_file_bytes"`
+	MaxFilesPerSource        int    `json:"max_files_per_source"`
+	RetentionHours           int    `json:"retention_hours"`
+	IncludeCleartextHostname bool   `json:"include_cleartext_hostname"`
 }
 
 func Default() Config {
@@ -70,6 +81,11 @@ func Default() Config {
 		Privacy: PrivacyConfig{
 			Mode:             "explicit-opt-in",
 			NeverDirectProbe: []string{},
+		},
+		Observation: ObservationConfig{
+			Enabled: false, Directory: "data/observations",
+			MaxFileBytes: 8 << 20, MaxFilesPerSource: 4, RetentionHours: 168,
+			IncludeCleartextHostname: false,
 		},
 	}
 }
@@ -99,6 +115,9 @@ func Load(path string) (Config, error) {
 	}
 	if _, present := fields["guard_adaptive_timeout_ms"]; !present {
 		cfg.GuardAdaptiveTimeoutMS = defaults.GuardAdaptiveTimeoutMS
+	}
+	if _, present := fields["observation"]; !present {
+		cfg.Observation = defaults.Observation
 	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -159,6 +178,20 @@ func (c Config) Validate() error {
 	}
 	if _, err := privacy.New(c.Privacy.Mode, c.Privacy.NeverDirectProbe); err != nil {
 		validationErrors = append(validationErrors, fmt.Errorf("privacy: %w", err))
+	}
+	if c.Observation.Directory == "" {
+		validationErrors = append(validationErrors, errors.New("observation.directory must not be empty"))
+	} else if clean := filepath.Clean(c.Observation.Directory); clean == "." || clean == string(filepath.Separator) {
+		validationErrors = append(validationErrors, errors.New("observation.directory must not be the working directory or filesystem root"))
+	}
+	if c.Observation.MaxFileBytes < 1024 || c.Observation.MaxFileBytes > 1<<30 {
+		validationErrors = append(validationErrors, errors.New("observation.max_file_bytes must be between 1024 and 1073741824"))
+	}
+	if c.Observation.MaxFilesPerSource < 1 || c.Observation.MaxFilesPerSource > 100 {
+		validationErrors = append(validationErrors, errors.New("observation.max_files_per_source must be between 1 and 100"))
+	}
+	if c.Observation.RetentionHours < 1 || c.Observation.RetentionHours > 8760 {
+		validationErrors = append(validationErrors, errors.New("observation.retention_hours must be between 1 and 8760"))
 	}
 
 	return errors.Join(validationErrors...)

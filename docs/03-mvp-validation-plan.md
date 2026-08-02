@@ -65,6 +65,7 @@ MVP 不是为了证明“能够自动写 YAML”，而是回答五个可证伪�
 | adaptive engine 可用性 Guard | 单元与拓扑代码完成；隔离运行待复验 | 引擎拒绝/握手卡死时同连接回原策略；停止、回退、重启、恢复场景 |
 | Direct 探测隐私门控 | 实验性完成 | privacy-first、精确/后缀 deny、无效/缺失策略 fail-closed；Proxy-only 仍需 L3 |
 | Guard/engine 进程 supervisor | 实验性完成 | 独立启动/退出故障、连续失败退避、封顶、稳定窗口重置、父进程取消 |
+| 受限本地观测记录器 | 实验性完成 | 默认 HMAC、明文显式开关、暂停/恢复、容量与时间裁剪、确认清空、无盐导出、stdout 去重 |
 | 系统代理与 TUN | 待执行且仅手动 opt-in | 不使用活动 Clash 实例 |
 
 退出条件：

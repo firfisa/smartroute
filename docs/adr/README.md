@@ -12,5 +12,6 @@ ADRs are append-only decision records. Supersede an old decision with a new ADR 
 | [0006](0006-separate-availability-guard.md) | Put a small availability guard in front of the adaptive engine | Accepted | 2026-08-02 |
 | [0007](0007-enforce-direct-probe-privacy.md) | Enforce Direct-probe privacy before opening candidates | Accepted | 2026-08-02 |
 | [0008](0008-supervise-guard-and-engine.md) | Supervise Guard and adaptive engine as independent child processes | Accepted | 2026-08-02 |
+| [0009](0009-bounded-local-observation-recorder.md) | Use a bounded local observation recorder for live trials | Accepted | 2026-08-02 |
 
 Status values: `Proposed`, `Accepted`, `Superseded`, `Rejected`.

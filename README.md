@@ -2,7 +2,7 @@
 
 SmartRoute 是一个面向 Mihomo/Clash 生态的“自适应分流”实验项目。它不重新实现代理协议，而是在现有静态规则与代理内核之间加入一个可观测、可解释、可撤销的决策层：对规则无法确定的目标比较 `DIRECT` 与 `PROXY` 路径，按当前网络环境积累证据，并逐渐形成个人化路由策略。
 
-当前状态：Phase 0 架构与可行性验证。已经实现实验性的可用性 Guard、TLS-over-SOCKS sidecar、分片 ClientHello 检查、无 0-RTT 的 Direct/Proxy TLS readiness 竞争，以及锁定 Mihomo v1.19.29 的独立子进程测试；尚未实现学习持久化、活动 Clash 配置接入或发布安装包。
+当前状态：Phase 0 架构与可行性验证。已经实现实验性的可用性 Guard、TLS-over-SOCKS sidecar、分片 ClientHello 检查、无 0-RTT 的 Direct/Proxy TLS readiness 竞争、受限本地观测记录器，以及锁定 Mihomo v1.19.29 的独立子进程测试；尚未实现学习策略持久化、活动 Clash 配置接入或发布安装包。
 
 ## 当前结论
 
@@ -49,6 +49,7 @@ flowchart LR
 | TCP sidecar relay 与 `serve` 命令 | 实验性实现 |
 | 独立 availability Guard 与 `guard` 命令 | 已实现单元测试；隔离 Mihomo 故障/恢复运行待复验 |
 | Guard/engine 独立进程 supervisor | 已实现本地 `supervise` 命令、独立重启和封顶退避；OS 服务集成待实现 |
+| 隐私安全的本地观测记录 | 已实现：默认关闭、目标 HMAC、容量/时间上限、暂停/清空/导出；真实试用尚未开启 |
 | 独立回环 Test Lab 与故障注入 | 已实现第一批场景 |
 | TLS readiness gate | 已实现：结构化 ServerHello 达到 L3，预读字节无损回放 |
 | TLS ClientHello/0-RTT 安全处理 | 已实现分片重组；检测到 `early_data` 时在拨号前拒绝 |
@@ -81,6 +82,17 @@ go run ./cmd/smartroute supervise \
 
 `privacy-first` 模式不需要 Direct 探测确认。Supervisor 只管理 SmartRoute Guard 与 adaptive engine，不管理 Mihomo，也不能透明恢复恰好撞上 Guard 崩溃窗口的连接。
 
+观测记录默认关闭。启用后，engine、Guard 和 supervisor 分源写入受限 JSONL，且不再把同一原始目标事件重复到 stdout：
+
+```bash
+go run ./cmd/smartroute observations status -config configs/smartroute.example.json
+go run ./cmd/smartroute observations pause -config configs/smartroute.example.json
+go run ./cmd/smartroute observations export -config configs/smartroute.example.json -destination /tmp/smartroute-export
+go run ./cmd/smartroute observations clear -config configs/smartroute.example.json -confirm-clear
+```
+
+`clear` 必须先 `pause`。默认记录不含明文 hostname，导出不包含本地 HMAC 盐值；记录器不是学习策略库。
+
 ## 独立测试环境
 
 日常开发和 CI 不使用本机正在运行的 Clash。进程内 Test Lab 只创建 `127.0.0.1:0` 随机端口；Mihomo Lab 则构建锁定版本，启动专属子进程、临时 home、随机回环端口和合成 DNS。两者都不会读取活动 Clash 配置、访问外网、修改系统代理或启动 TUN。
@@ -93,7 +105,7 @@ make mihomo-lab
 
 进程内场景覆盖 TCP 候选竞争、分片 ClientHello、early-data 拒绝、TLS loser 取消、ServerHello 预读回放、隐私禁止 Direct 时的 Proxy-only L3，以及自适应引擎不可用时的同连接原策略回退。既有 Mihomo 运行结果验证了强制 Direct/Proxy、域名保留、无递归、L1 ACK 假阳性，以及 HTTPS/TLS 从不可达 Direct 自动恢复到 Proxy 的 L3 提交；新增的 Guard 停止/恢复场景已进入隔离实验代码，仍需在允许环回子进程的 macOS/Linux 环境复验。这里的 L3 只证明收到了结构合法的 ServerHello，不代表证书或完整握手成功。详见 [独立测试环境](docs/07-isolated-test-lab.md)、[ADR-0006](docs/adr/0006-separate-availability-guard.md) 和 [ADR-0007](docs/adr/0007-enforce-direct-probe-privacy.md)。
 
-为适配真实环境，可以对活动 Clash Verge Rev 目录进行只读、脱敏的结构检查；现阶段仍禁止自动写入或重载。待隔离 Mihomo 测试、备份和回滚验证完成后，再在用户配合下进入短时真实试用，并使用默认关闭、本地保存、可清空的结构化观测记录。详见 [观测与真实试用计划](docs/08-observation-and-live-trial.md)。
+为适配真实环境，可以对活动 Clash Verge Rev 目录进行只读、脱敏的结构检查；现阶段仍禁止自动写入或重载。本地观测记录器已经就绪，但尚未对活动环境启用。待隔离 Mihomo 测试、备份和回滚验证完成后，再在用户配合下进入短时真实试用。详见 [观测与真实试用计划](docs/08-observation-and-live-trial.md) 和 [ADR-0009](docs/adr/0009-bounded-local-observation-recorder.md)。
 
 准备锁定版本的上游源码到被忽略的 `.upstream/`：
 
