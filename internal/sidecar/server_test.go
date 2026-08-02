@@ -462,10 +462,18 @@ func TestServerPrivacyDenyUsesOnlyProxyTLSPath(t *testing.T) {
 	}}
 	events := make(chan DecisionEvent, 1)
 	learner := &stubLearningEngine{}
+	decisionStart := time.Unix(100, 0)
+	var clockCalls atomic.Int32
 	server := Server{
 		HandshakeTimeout:  time.Second,
 		DirectProbePolicy: mustPrivacyPolicy(t, privacy.ModeExplicitOptIn, []string{"echo.test"}),
 		Learning:          learner,
+		Clock: func() time.Time {
+			if clockCalls.Add(1) == 1 {
+				return decisionStart
+			}
+			return decisionStart.Add(125 * time.Millisecond)
+		},
 		TLSRacer: &transport.TLSRacer{
 			Direct: direct, Proxy: proxy, Gate: transport.TLSServerHelloGate{}, Timeout: time.Second,
 		},
@@ -481,7 +489,7 @@ func TestServerPrivacyDenyUsesOnlyProxyTLSPath(t *testing.T) {
 		t.Fatalf("server replay error=%v bytes=%x", err, replayed)
 	}
 	event := <-events
-	if direct.attempts.Load() != 0 || proxy.attempts.Load() != 1 || event.SelectedPath != model.PathProxy || event.ReasonCode != privacy.ReasonNeverDirectExact || event.PolicyReason != privacy.ReasonNeverDirectExact || !event.Committed {
+	if direct.attempts.Load() != 0 || proxy.attempts.Load() != 1 || event.SelectedPath != model.PathProxy || event.ReasonCode != privacy.ReasonNeverDirectExact || event.PolicyReason != privacy.ReasonNeverDirectExact || !event.Committed || event.DecisionLatencyMS == nil || *event.DecisionLatencyMS != 125 {
 		t.Fatalf("attempts direct=%d proxy=%d event=%+v", direct.attempts.Load(), proxy.attempts.Load(), event)
 	}
 	if learner.pathSucceeded.Load() != 1 {

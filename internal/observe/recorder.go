@@ -70,6 +70,7 @@ type Event struct {
 	FrozenUntil       *time.Time
 	FailureTargets    int
 	RecoveryTargets   int
+	DecisionLatencyMS *int64
 }
 
 type Recorder struct {
@@ -120,6 +121,7 @@ type storedEvent struct {
 	FrozenUntil       *time.Time                  `json:"frozen_until,omitempty"`
 	FailureTargets    int                         `json:"failure_targets,omitempty"`
 	RecoveryTargets   int                         `json:"recovery_targets,omitempty"`
+	DecisionLatencyMS *int64                      `json:"decision_latency_ms,omitempty"`
 }
 
 func New(opts Options) (*Recorder, error) {
@@ -189,6 +191,7 @@ func (r *Recorder) Record(event Event) error {
 		Service: event.Service, State: event.State, Attempt: event.Attempt, BackoffMS: event.BackoffMS,
 		Trigger: event.Trigger, FrozenUntil: event.FrozenUntil,
 		FailureTargets: event.FailureTargets, RecoveryTargets: event.RecoveryTargets,
+		DecisionLatencyMS: event.DecisionLatencyMS,
 	}
 	if event.Target != nil {
 		stored.Target = r.transformTarget(*event.Target)

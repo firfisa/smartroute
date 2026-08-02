@@ -289,6 +289,52 @@ func TestRunObservationsPauseAndStatus(t *testing.T) {
 	}
 }
 
+func TestRunObservationsReportIsIdentityFree(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "observations")
+	configPath := writeObservationConfig(t, directory)
+	recorder, err := observe.New(observe.Options{Directory: directory, Source: observe.SourceEngine,
+		MaxFileBytes: 4096, MaxFiles: 2, Retention: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	committed := true
+	latency := int64(25)
+	target := model.Target{NetworkProfileID: "private-profile", Hostname: "secret.example", Port: 443, Transport: model.TransportTCP}
+	if err := recorder.Record(observe.Event{EventType: "decision", Target: &target, SelectedPath: model.PathDirect,
+		ReasonCode: "direct_candidate_won", Committed: &committed, DecisionLatencyMS: &latency,
+		Observation: &model.Observation{Path: model.PathDirect, Success: true, StageReached: model.StageTLS, Latency: 20 * time.Millisecond}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := recorder.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"observations", "report", "-config", configPath, "-hours", "1"}, &stdout, &stderr); err == nil || !strings.Contains(err.Error(), "paused") {
+		t.Fatalf("unpaused report error=%v", err)
+	}
+	if err := observe.Pause(directory); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if err := run([]string{"observations", "report", "-config", configPath, "-hours", "1"}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	var report observe.Report
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if !report.RecordingPaused || report.Adaptive.Ready != 1 || report.Adaptive.DecisionReadinessLatencyMS.P50 == nil || *report.Adaptive.DecisionReadinessLatencyMS.P50 != 25 {
+		t.Fatalf("report=%+v", report)
+	}
+	if strings.Contains(stdout.String(), target.Hostname) || strings.Contains(stdout.String(), target.NetworkProfileID) {
+		t.Fatalf("identity leaked: %s", stdout.String())
+	}
+	if err := run([]string{"observations", "report", "-config", configPath, "-hours", "1", "-since", time.Now().Format(time.RFC3339)}, &stdout, &stderr); err == nil {
+		t.Fatal("conflicting report window accepted")
+	}
+}
+
 func TestRunLearningStatusDoesNotCreateDisabledStore(t *testing.T) {
 	databasePath := filepath.Join(t.TempDir(), "learning.db")
 	cfg := config.Default()

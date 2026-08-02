@@ -363,6 +363,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 				ReasonCode: event.ReasonCode, PolicyReason: event.PolicyReason,
 				Observation: &observation, OtherObservation: event.OtherObservation, Committed: &committed,
 				LearningReason: event.LearningReason, DurableReason: event.DurableReason, PolicyState: event.PolicyState,
+				DecisionLatencyMS: event.DecisionLatencyMS,
 			})
 		},
 		OnDiagnostic: func(event sidecar.DiagnosticEvent) {
@@ -630,7 +631,7 @@ func openObservationRecorder(cfg config.Config, source string) (*observe.Recorde
 
 func runObservations(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("observations requires status, pause, resume, clear, or export")
+		return errors.New("observations requires status, report, pause, resume, clear, or export")
 	}
 	action := args[0]
 	flags := flag.NewFlagSet("observations "+action, flag.ContinueOnError)
@@ -638,6 +639,8 @@ func runObservations(args []string, stdout, stderr io.Writer) error {
 	path := flags.String("config", "configs/smartroute.example.json", "path to SmartRoute JSON config")
 	confirmClear := flags.Bool("confirm-clear", false, "confirm deletion of all local observation JSONL files")
 	destination := flags.String("destination", "", "new directory for a redacted observation export")
+	sinceValue := flags.String("since", "", "RFC3339 lower bound for an identity-free observation report")
+	hours := flags.Int("hours", 0, "whole hours to include in an observation report; defaults to configured retention")
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -653,6 +656,41 @@ func runObservations(args []string, stdout, stderr io.Writer) error {
 			return err
 		}
 		return json.NewEncoder(stdout).Encode(status)
+	case "report":
+		status, err := observe.Inspect(directory)
+		if err != nil {
+			return err
+		}
+		if !status.Paused {
+			return errors.New("observations report requires recording to be paused")
+		}
+		if *sinceValue != "" && *hours != 0 {
+			return errors.New("observations report accepts either -since or -hours, not both")
+		}
+		var since time.Time
+		if *sinceValue != "" {
+			parsed, err := time.Parse(time.RFC3339, *sinceValue)
+			if err != nil {
+				return fmt.Errorf("parse observations report since: %w", err)
+			}
+			since = parsed.UTC()
+		} else {
+			windowHours := *hours
+			if windowHours == 0 {
+				windowHours = cfg.Observation.RetentionHours
+			}
+			if windowHours < 1 || windowHours > 8760 {
+				return errors.New("observations report hours must be between 1 and 8760")
+			}
+			since = time.Now().UTC().Add(-time.Duration(windowHours) * time.Hour)
+		}
+		report, err := observe.BuildReport(directory, observe.ReportOptions{Since: since})
+		if err != nil {
+			return err
+		}
+		encoder := json.NewEncoder(stdout)
+		encoder.SetIndent("", "  ")
+		return encoder.Encode(report)
 	case "pause":
 		return observe.Pause(directory)
 	case "resume":
@@ -1032,7 +1070,7 @@ Usage:
   smartroute serve -acknowledge-direct-probes [-config path] [-network-profile label]
   smartroute guard [-config path] [-network-profile label]
   smartroute supervise [-acknowledge-direct-probes] [-config path] [-network-profile label]
-  smartroute observations status|pause|resume|clear|export [-config path]
+  smartroute observations status|report|pause|resume|clear|export [-config path]
   smartroute learning status [-config path]
   smartroute learning evaluate -network-profile label -hostname host -port port [-transport tcp|udp] [-config path]
   smartroute learning report [-config path]

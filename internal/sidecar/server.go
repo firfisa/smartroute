@@ -21,27 +21,29 @@ import (
 // DecisionEvent is the minimum explainable runtime event emitted by the
 // Phase 0 sidecar. It contains no payload or credentials.
 type DecisionEvent struct {
-	EventType        string             `json:"event_type"`
-	Target           model.Target       `json:"target"`
-	SelectedPath     model.Path         `json:"selected_path"`
-	ReasonCode       string             `json:"reason_code"`
-	PolicyReason     string             `json:"policy_reason,omitempty"`
-	Observation      model.Observation  `json:"observation"`
-	OtherObservation *model.Observation `json:"other_observation,omitempty"`
-	Committed        bool               `json:"committed"`
-	LearningReason   string             `json:"learning_reason,omitempty"`
-	DurableReason    string             `json:"durable_reason,omitempty"`
-	PolicyState      model.PolicyState  `json:"policy_state,omitempty"`
+	EventType         string             `json:"event_type"`
+	Target            model.Target       `json:"target"`
+	SelectedPath      model.Path         `json:"selected_path"`
+	ReasonCode        string             `json:"reason_code"`
+	PolicyReason      string             `json:"policy_reason,omitempty"`
+	Observation       model.Observation  `json:"observation"`
+	OtherObservation  *model.Observation `json:"other_observation,omitempty"`
+	Committed         bool               `json:"committed"`
+	LearningReason    string             `json:"learning_reason,omitempty"`
+	DurableReason     string             `json:"durable_reason,omitempty"`
+	PolicyState       model.PolicyState  `json:"policy_state,omitempty"`
+	DecisionLatencyMS *int64             `json:"decision_latency_ms,omitempty"`
 }
 
 type DiagnosticEvent struct {
-	EventType     string       `json:"event_type"`
-	Target        model.Target `json:"target"`
-	ReasonCode    string       `json:"reason_code"`
-	FailureClass  string       `json:"failure_class"`
-	DirectFailure string       `json:"direct_failure,omitempty"`
-	ProxyFailure  string       `json:"proxy_failure,omitempty"`
-	PolicyReason  string       `json:"policy_reason,omitempty"`
+	EventType         string       `json:"event_type"`
+	Target            model.Target `json:"target"`
+	ReasonCode        string       `json:"reason_code"`
+	FailureClass      string       `json:"failure_class"`
+	DirectFailure     string       `json:"direct_failure,omitempty"`
+	ProxyFailure      string       `json:"proxy_failure,omitempty"`
+	PolicyReason      string       `json:"policy_reason,omitempty"`
+	DecisionLatencyMS *int64       `json:"decision_latency_ms,omitempty"`
 }
 
 const (
@@ -81,6 +83,7 @@ type Server struct {
 	MinimumCommitStage  model.Stage
 	DirectProbePolicy   DirectProbePolicy
 	Learning            LearningEngine
+	Clock               func() time.Time
 	OnDecision          func(DecisionEvent)
 	OnDiagnostic        func(DiagnosticEvent)
 }
@@ -188,6 +191,11 @@ func (s Server) handleTLS(ctx context.Context, inbound net.Conn, target model.Ta
 		privacyDecision = s.DirectProbePolicy.Evaluate(target)
 	}
 	var result transport.RaceResult
+	now := s.Clock
+	if now == nil {
+		now = time.Now
+	}
+	decisionStarted := now()
 	learningReason := ""
 	durableReason := ""
 	policyState := model.PolicyState("")
@@ -207,11 +215,13 @@ func (s Server) handleTLS(ctx context.Context, inbound net.Conn, target model.Ta
 		}
 	}
 	if err != nil {
+		decisionLatencyMS := nonNegativeMilliseconds(now().Sub(decisionStarted))
 		if !privacyDecision.AllowDirect {
 			event := DiagnosticEvent{
 				Target: target, ReasonCode: ReasonPrivacyProxyPathFailed,
 				FailureClass: "proxy_only_tls_failed", DirectFailure: "skipped_by_privacy",
-				PolicyReason: privacyDecision.ReasonCode,
+				PolicyReason:      privacyDecision.ReasonCode,
+				DecisionLatencyMS: &decisionLatencyMS,
 			}
 			var pathError *transport.TLSPathError
 			if errors.As(err, &pathError) {
@@ -226,6 +236,7 @@ func (s Server) handleTLS(ctx context.Context, inbound net.Conn, target model.Ta
 		event := DiagnosticEvent{
 			Target: target, ReasonCode: ReasonTLSCandidatesFailed,
 			FailureClass: "all_tls_candidates_failed", PolicyReason: privacyDecision.ReasonCode,
+			DecisionLatencyMS: &decisionLatencyMS,
 		}
 		var raceError *transport.RaceError
 		if errors.As(err, &raceError) {
@@ -238,11 +249,13 @@ func (s Server) handleTLS(ctx context.Context, inbound net.Conn, target model.Ta
 		s.emitDiagnostic(event)
 		return
 	}
+	decisionLatencyMS := nonNegativeMilliseconds(now().Sub(decisionStarted))
 	defer result.Conn.Close()
 	if result.Observation.StageReached < model.StageTLS {
 		s.emitDiagnostic(DiagnosticEvent{
 			Target: target, ReasonCode: ReasonCandidateBelowCommitStage,
-			FailureClass: "tls_candidate_below_tls_stage",
+			FailureClass:      "tls_candidate_below_tls_stage",
+			DecisionLatencyMS: &decisionLatencyMS,
 		})
 		return
 	}
@@ -269,15 +282,23 @@ func (s Server) handleTLS(ctx context.Context, inbound net.Conn, target model.Ta
 			EventType: EventTypeDecision,
 			Target:    target, SelectedPath: result.Observation.Path,
 			ReasonCode: result.ReasonCode, PolicyReason: privacyDecision.ReasonCode,
-			Observation:      result.Observation,
-			OtherObservation: result.OtherObservation,
-			Committed:        true,
-			LearningReason:   learningReason,
-			DurableReason:    durableReason,
-			PolicyState:      policyState,
+			Observation:       result.Observation,
+			OtherObservation:  result.OtherObservation,
+			Committed:         true,
+			LearningReason:    learningReason,
+			DurableReason:     durableReason,
+			PolicyState:       policyState,
+			DecisionLatencyMS: &decisionLatencyMS,
 		})
 	}
 	netrelay.Bidirectional(inbound, result.Conn)
+}
+
+func nonNegativeMilliseconds(duration time.Duration) int64 {
+	if duration < 0 {
+		return 0
+	}
+	return duration.Milliseconds()
 }
 
 func healthRelevantFailure(observation model.Observation) bool {

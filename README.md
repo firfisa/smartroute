@@ -63,6 +63,7 @@ flowchart LR
 | 持久证据生命周期 | 已实现：只读状态、一致性在线备份、临时副本验证、恢复到新路径；不覆盖、不自动激活 |
 | 跨会话 Shadow 评估 | 已实现：强证据次数 + 独立 Session 双阈值；双向证据判冲突；只发建议事件，不改变路由 |
 | 隐私安全的 Shadow 汇总 | 已实现：按精确目标在库内分组，只输出不足/冲突/Direct/Proxy 数量与阈值，不输出目标 HMAC |
+| 连接级 readiness 汇总 | 已实现：暂停后只读汇总成功门槛、选路比例、Guard 回退和 p50/p95/p99；不输出目标 HMAC，不冒充应用成功率 |
 | 独立 Mihomo listener 拓扑 | v1.19.29 已验证强制 Direct/Proxy、域名保留和循环规避 |
 | Mihomo HTTPS/TLS 自适应路径 | macOS arm64 与 Linux amd64/v1.19.29 已验证 Direct 无 ServerHello 后由 Proxy 恢复并提交 L3 |
 | 活动 Clash Verge Rev 集成 | 尚未写入或重载；留待配合下的真实试用 |
@@ -95,11 +96,12 @@ go run ./cmd/smartroute supervise \
 ```bash
 go run ./cmd/smartroute observations status -config configs/smartroute.example.json
 go run ./cmd/smartroute observations pause -config configs/smartroute.example.json
+go run ./cmd/smartroute observations report -config configs/smartroute.example.json -hours 168
 go run ./cmd/smartroute observations export -config configs/smartroute.example.json -destination /tmp/smartroute-export
 go run ./cmd/smartroute observations clear -config configs/smartroute.example.json -confirm-clear
 ```
 
-`clear` 必须先 `pause`。默认记录不含明文 hostname，导出不包含本地 HMAC 盐值；记录器不是学习策略库。
+`report` 和 `clear` 必须先 `pause`。报告只输出事件、readiness、Direct/Proxy、Guard、健康冻结及延迟聚合，不输出目标/profile HMAC。这里的 `readiness_success_ratio` 只表示达到当前 TCP/TLS 提交门槛，不是网页成功、证书验证完成或用户可感知成功率。默认记录不含明文 hostname，导出不包含本地 HMAC 盐值；记录器不是学习策略库。
 
 学习默认处于 `shadow`：会计算临时建议，但始终保持 Direct-first。要在独立测试或后续受控试用中应用进程内偏好，需要显式修改本地配置：
 

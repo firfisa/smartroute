@@ -1,6 +1,6 @@
 # Observation and Live-Trial Plan
 
-Version: v0.1
+Version: v0.2
 Status: bounded recorder implemented; live configuration writes are not implemented
 
 ## 1. Read-only baseline found on 2026-08-02
@@ -49,6 +49,7 @@ The first two lanes remain the default development path. Read-only inspection ma
 | `destination_port` / `transport` | On | Scope learned policy correctly | Required routing metadata |
 | `current_rule_lane` | Planned | Compare static baseline and SmartRoute | Category/reason, not full rule-provider content |
 | Candidate path/stage/latency/failure | Implemented for emitted decision events | Explain Direct/Proxy evidence | Structured enum and duration |
+| Adaptive decision-to-readiness latency | Implemented for successful TLS decisions | Include stagger and fallback time from post-ClientHello decision start to L3 | Integer milliseconds; no wall-clock correlation |
 | Selected path/reason code | Implemented | Audit automatic decisions | Structured enum |
 | Privacy policy reason | Implemented when policy changes candidate set | Prove why Direct was skipped | Structured enum; never include the configured pattern text |
 | Client-visible outcome | Planned | Detect refresh/retry/regression | Success/failure/timing only |
@@ -72,7 +73,7 @@ The Phase 0 recorder uses local JSONL for schema iteration before learned-policy
 | Storage | Git-ignored local runtime directory |
 | Default retention | 7 days for diagnostic records |
 | Rotation | Per-source size/count limits plus age pruning at rotation |
-| User controls | `observations status`, `pause`, `resume`, paused plus confirmed `clear`, and `export` |
+| User controls | `observations status`, paused `report`, `pause`, `resume`, paused plus confirmed `clear`, and `export` |
 | Export | Already-pseudonymized JSONL only; excludes salt, markers and symlinks |
 | Failure behavior | Recorder failure must not interrupt routing |
 
@@ -98,11 +99,16 @@ ADR-0015 adds `durable_learning_assessment` after a strong row is written. Its t
 
 ADR-0016 adds identity-free `learning report`. It groups inside SQLite and never returns target keys. Record `generated_at`, `since`, retention and thresholds with every captured report. The trial worksheet must label `targets_with_evidence` as a selected strong-pair sample; do not divide it by all visited domains unless an independently measured total-target denominator exists. Report suggestion/conflict counts alongside connection success, latency and proxy-usage baselines, never as a substitute for them.
 
+ADR-0017 adds process-local systemic-health transitions. `learning_health` rows contain a pseudonymized optional triggering target plus safe trigger/reason/state, freeze deadline, and bounded distinct-target counts. They do not mean the current route was changed and do not remove earlier SQLite evidence.
+
+ADR-0018 adds paused `observations report`. It strictly reads managed JSONL and emits only counts, ratios, p50/p95/p99 readiness timing, distinct target/profile counts, and explicit interpretation flags—never hashes. `readiness_success_ratio` is the fraction of recorded adaptive attempts reaching the current TCP/TLS commit gate, not application or client-visible success. `decision_readiness_latency_ms` starts after the safe ClientHello and privacy decision and includes candidate staggering/fallback; `winner_candidate_latency_ms` starts later at the winner candidate itself. The current report has no static-rule lane, client outcome, or bytes, so it cannot calculate `avoidable_proxy_ratio`, end-to-end success, or traffic savings.
+
 Operational commands:
 
 ```bash
 smartroute observations status -config PATH
 smartroute observations pause -config PATH
+smartroute observations report -config PATH -hours 168
 smartroute observations resume -config PATH
 smartroute observations export -config PATH -destination NEW_DIRECTORY
 smartroute observations clear -config PATH -confirm-clear
@@ -121,6 +127,6 @@ The isolated Mihomo listener topology and minimal L3 TLS readiness recovery have
 7. After owner confirmation, replace only the approved durable layer and reload once.
 8. Run a short connectivity smoke test and begin bounded local recording.
 9. Roll back immediately on connectivity loss, recursive routing, abnormal CPU, unexpected domain exposure, or sidecar instability.
-10. Stop recording, preserve a sanitized analysis bundle, and remove expired raw observations.
+10. Stop the trial processes, pause recording, generate both observation and learning reports, preserve a sanitized analysis bundle, and remove expired raw observations.
 
 Until this procedure reaches step 7 with explicit confirmation, SmartRoute must not write to or reload the active Clash environment.

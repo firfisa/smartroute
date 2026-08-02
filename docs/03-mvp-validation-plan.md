@@ -74,6 +74,7 @@ MVP 不是为了证明“能够自动写 YAML”，而是回答五个可证伪�
 | Direct 探测隐私门控 | 实验性完成 | privacy-first、精确/后缀 deny、无效/缺失策略 fail-closed；Proxy-only 仍需 L3 |
 | Guard/engine 进程 supervisor | 实验性完成 | 独立启动/退出故障、连续失败退避、封顶、稳定窗口重置、父进程取消 |
 | 受限本地观测记录器 | 实验性完成 | 默认 HMAC、明文显式开关、暂停/恢复、容量与时间裁剪、确认清空、无盐导出、stdout 去重 |
+| 连接级 readiness 报告 | 实验性完成 | paused 严格读取、无身份聚合、Direct/Proxy 与 Guard 分母、decision/candidate p50/p95/p99；静态基线/应用结果/字节仍缺失 |
 | 系统代理与 TUN | 待执行且仅手动 opt-in | 不使用活动 Clash 实例 |
 
 退出条件：
@@ -93,7 +94,7 @@ MVP 不是为了证明“能够自动写 YAML”，而是回答五个可证伪�
 
 目标是先证明“次优路由比例”足够大。
 
-跨会话证据初步使用 `learning report` 统计强证据目标中的 suggestion coverage 与 conflict rate，但它不能替代全连接基线。最终判断仍必须将 bounded observation 中的连接成功率、端到端延迟、代理使用比例与静态基线配对比较。
+跨会话证据初步使用 `learning report` 统计强证据目标中的 suggestion coverage 与 conflict rate；`observations report` 补充所有已记录 adaptive attempt 的 readiness 比例、选路比例、Guard 回退和 readiness 延迟。两者仍不能替代静态基线或应用结果：最终判断必须继续加入 current-rule lane、client-visible outcome、端到端延迟和可选聚合字节，并与静态基线配对比较。
 
 ### Phase 2：TCP/TLS Adaptive（2–4 周）
 

@@ -1,6 +1,6 @@
 # SmartRoute 总体技术设计
 
-版本：v0.3
+版本：v0.4
 状态：供原型验证，不是最终实现规范
 
 ## 1. 设计目标
@@ -348,6 +348,8 @@ ADR-0014 增加独立运维面：`learning status` 只读打开且拒绝迁移�
 ADR-0015 在强证据异步写入成功后生成跨会话 Shadow assessment：Direct/Proxy 分别同时满足 win 阈值与 distinct-session 阈值才产生 exact-target 建议；保留期内双向证据一律 `conflicting`。评估查询位于 writer goroutine，不进入连接关键路径，结果只进入事件/受限记录器和只读 `learning evaluate`，不进入 `PreferredPath` 或规则生成。
 
 ADR-0016 增加只读 `learning report`：SQLite 内按 target HMAC 分组，但接口不返回 HMAC，仅把每个精确目标的方向 wins/session counts 交给同一 evaluator，再输出不足、冲突、Direct/Proxy 建议及 reason counts。报告分母明确是“保留期内拥有强配对证据的目标”，不是全部流量。
+
+ADR-0018 增加暂停态只读 `observations report`：严格校验受管 JSONL 的 schema/source/token 后，在内存中使用 HMAC 目标/profile 仅做 distinct set，输出 readiness 结果、Direct/Proxy 选择、Guard 回退、强配对方向以及 p50/p95/p99。成功 TLS `decision_latency_ms` 从安全 ClientHello 与隐私决策之后开始，覆盖偏好查询、head-start 和失败接替，结束于 L3 winner；candidate latency 仍只从单候选启动计时。报告显式声明 readiness 不是应用成功，并且没有静态基线、client outcome 或 byte volume。
 
 未来持久策略、网络画像与人工规则可能扩展为：
 
