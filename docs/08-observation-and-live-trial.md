@@ -1,6 +1,6 @@
 # Observation and Live-Trial Plan
 
-Version: v0.2
+Version: v0.3
 Status: bounded recorder implemented; live configuration writes are not implemented
 
 ## 1. Read-only baseline found on 2026-08-02
@@ -42,7 +42,7 @@ The first two lanes remain the default development path. Read-only inspection ma
 | Field | Default | Purpose | Privacy treatment |
 | --- | --- | --- | --- |
 | `timestamp` | On | Order events and measure duration | Timezone-independent timestamp |
-| `trial_session_id` | Planned | Group one controlled trial | Random per trial; no account identifier |
+| `trial_session_id` | Implemented | Group supervisor, Guard, engine and child restarts within one controlled trial | Random `trial-` + 128-bit hex; arbitrary labels rejected; aggregate reports omit IDs |
 | `network_profile_id` | Implemented | Separate home/campus/hotspot behavior | HMAC with local salt; cleartext never persisted |
 | `target_id` | Implemented | Join repeated observations | HMAC with the same local salt |
 | `hostname` | Off by default; implemented switch | Human diagnosis when digest is insufficient | Cleartext only with `include_cleartext_hostname=true` |
@@ -103,6 +103,8 @@ ADR-0017 adds process-local systemic-health transitions. `learning_health` rows 
 
 ADR-0018 adds paused `observations report`. It strictly reads managed JSONL and emits only counts, ratios, p50/p95/p99 readiness timing, distinct target/profile counts, and explicit interpretation flags—never hashes. `readiness_success_ratio` is the fraction of recorded adaptive attempts reaching the current TCP/TLS commit gate, not application or client-visible success. `decision_readiness_latency_ms` starts after the safe ClientHello and privacy decision and includes candidate staggering/fallback; `winner_candidate_latency_ms` starts later at the winner candidate itself. The current report has no static-rule lane, client outcome, or bytes, so it cannot calculate `avoidable_proxy_ratio`, end-to-end success, or traffic savings.
 
+ADR-0019 adds random trial scoping. When recording is enabled, `supervise` generates one `trial-<128-bit hex>` identifier and passes it to Guard and engine; restarts retain it. Human-readable labels are rejected. The ID remains in pseudonymous JSONL/export for within-trial joining, but aggregate reports output only `trial_sessions_observed` and `unscoped_events`. It is not the network profile and is not the SQLite evidence session. Standalone Guard/engine processes generate separate IDs unless the operator explicitly passes one shared generated-format value.
+
 Operational commands:
 
 ```bash
@@ -118,7 +120,7 @@ smartroute observations clear -config PATH -confirm-clear
 
 The isolated Mihomo listener topology and minimal L3 TLS readiness recovery have passed on macOS/v1.19.29. Runtime Direct-probe privacy enforcement, shadow/ephemeral learning, preferred-order recovery, independent Guard/engine supervision, and recorder privacy/lifecycle controls are implemented and tested locally. The new Mihomo stop/restart scenarios still need a permitted platform run, and supervisor failure itself still requires an OS service boundary. Configuration replacement will begin only after those availability checks, rollback tests, and a broader real-TLS compatibility matrix pass.
 
-1. Agree on the trial network, time window, target traffic, and stop conditions.
+1. Agree on the trial network, time window, target traffic, stop conditions, and whether supervisor-managed automatic session scope will be used.
 2. Resolve the active profile plus merge/script layers read-only.
 3. Create a fresh full backup without deleting existing backups.
 4. Generate candidate files outside the Clash application directory.

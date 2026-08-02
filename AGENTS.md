@@ -26,6 +26,7 @@ Current scope:
 - Cross-session durable assessment is shadow-only and requires both strong-win and independent-session thresholds; any retained opposite-direction evidence is conflicting.
 - Aggregate Shadow reports omit target keys and identities and use only targets with retained strong paired evidence as their explicit denominator.
 - Paused observation reports aggregate readiness, path selection, Guard fallback, and timing without returning target/profile hashes; readiness must not be labeled application success.
+- Enabled runtime observation uses a random trial session shared by supervisor children and restarts; human-readable session labels are rejected and aggregate reports omit concrete IDs.
 
 Out of scope until an ADR changes it:
 
@@ -69,6 +70,7 @@ These rules must not be weakened silently:
 27. Aggregate reports must never expose target keys or imply that targets with strong evidence represent all traffic; suggestion coverage alone is not proof of latency, reliability, or proxy-usage improvement.
 28. Systemic-health freezing affects learning inputs and process-local preferences only. It must not change an in-flight route, replay application data, delete durable evidence, or bypass the original-policy Guard.
 29. Observation reports must omit target/profile identifiers, reject corrupt or incompatible rows, and label TCP/TLS readiness separately from application or client-visible success.
+30. Trial-session identifiers must be random non-semantic scopes, never account/network/user labels; supervisor children share one ID across restarts, while aggregate reports expose only counts.
 
 ## 4. Repository map
 

@@ -60,6 +60,8 @@ type Report struct {
 	ReasonCounts            map[string]int       `json:"reason_counts"`
 	TargetScopesObserved    int                  `json:"target_scopes_observed"`
 	NetworkProfilesObserved int                  `json:"network_profiles_observed"`
+	TrialSessionsObserved   int                  `json:"trial_sessions_observed"`
+	UnscopedEvents          int                  `json:"unscoped_events"`
 	Adaptive                AdaptiveReport       `json:"adaptive"`
 	Guard                   GuardReport          `json:"guard"`
 	HealthTransitions       int                  `json:"health_transitions"`
@@ -103,6 +105,7 @@ type ReportInterpretation struct {
 	NoStaticBaseline               bool `json:"no_static_baseline"`
 	NoByteVolume                   bool `json:"no_byte_volume"`
 	TargetIdentitiesOmitted        bool `json:"target_identities_omitted"`
+	TrialSessionIDsOmitted         bool `json:"trial_session_ids_omitted"`
 }
 
 func BuildReport(directory string, options ReportOptions) (Report, error) {
@@ -119,7 +122,8 @@ func BuildReport(directory string, options ReportOptions) (Report, error) {
 	report := Report{ReportVersion: ReportVersion, GeneratedAt: now().UTC(), Since: options.Since.UTC(),
 		SourceCounts: map[string]int{}, EventCounts: map[string]int{}, ReasonCounts: map[string]int{},
 		Interpretation: ReportInterpretation{ReadinessNotApplicationSuccess: true,
-			LatencyStartsAfterClientHello: true, NoStaticBaseline: true, NoByteVolume: true, TargetIdentitiesOmitted: true}}
+			LatencyStartsAfterClientHello: true, NoStaticBaseline: true, NoByteVolume: true,
+			TargetIdentitiesOmitted: true, TrialSessionIDsOmitted: true}}
 	status, err := Inspect(directory)
 	if err != nil {
 		return Report{}, fmt.Errorf("inspect observation report source: %w", err)
@@ -127,6 +131,7 @@ func BuildReport(directory string, options ReportOptions) (Report, error) {
 	report.RecordingPaused = status.Paused
 	targets := map[string]struct{}{}
 	profiles := map[string]struct{}{}
+	trialSessions := map[string]struct{}{}
 	var decisionLatencies, winnerLatencies []int64
 	for _, source := range managedSources {
 		err := walkManagedJSONL(directory, source, func(path string, _ fs.DirEntry) error {
@@ -135,6 +140,11 @@ func BuildReport(directory string, options ReportOptions) (Report, error) {
 				report.EventsIncluded++
 				report.SourceCounts[event.Source]++
 				report.EventCounts[event.EventType]++
+				if event.TrialSessionID == "" {
+					report.UnscopedEvents++
+				} else {
+					trialSessions[event.TrialSessionID] = struct{}{}
+				}
 				if event.ReasonCode != "" {
 					report.ReasonCounts[event.ReasonCode]++
 				}
@@ -165,6 +175,7 @@ func BuildReport(directory string, options ReportOptions) (Report, error) {
 	}
 	report.TargetScopesObserved = len(targets)
 	report.NetworkProfilesObserved = len(profiles)
+	report.TrialSessionsObserved = len(trialSessions)
 	if report.Adaptive.ReadinessOutcomes > 0 {
 		report.Adaptive.ReadinessSuccessRatio = float64(report.Adaptive.Ready) / float64(report.Adaptive.ReadinessOutcomes)
 	}
@@ -234,6 +245,11 @@ func scanReportFile(path, expectedSource string, since time.Time, consume func(s
 }
 
 func validateReportEvent(event storedEvent) error {
+	if event.TrialSessionID != "" {
+		if err := ValidateTrialSessionID(event.TrialSessionID); err != nil {
+			return err
+		}
+	}
 	if event.Target != nil {
 		if !hexDigest(event.Target.NetworkProfileHash) || !hexDigest(event.Target.HostnameHash) || event.Target.Port == 0 || !event.Target.Transport.Valid() {
 			return errors.New("target requires two SHA-256 hashes, a non-zero port, and valid transport")

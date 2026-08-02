@@ -22,6 +22,7 @@ import (
 )
 
 const schemaVersion = 1
+const trialSessionPrefix = "trial-"
 
 const (
 	SourceEngine     = "engine"
@@ -39,6 +40,7 @@ type Options struct {
 	Retention                time.Duration
 	IncludeCleartextHostname bool
 	Clock                    func() time.Time
+	TrialSessionID           string
 }
 
 // Event contains only the bounded routing metadata approved for persistence.
@@ -95,6 +97,7 @@ type storedEvent struct {
 	SchemaVersion     int                         `json:"schema_version"`
 	RecordedAt        time.Time                   `json:"recorded_at"`
 	Source            string                      `json:"source"`
+	TrialSessionID    string                      `json:"trial_session_id,omitempty"`
 	EventType         string                      `json:"event_type"`
 	Target            *storedTarget               `json:"target,omitempty"`
 	SelectedPath      model.Path                  `json:"selected_path,omitempty"`
@@ -156,6 +159,32 @@ func validateOptions(opts Options) error {
 	if opts.MaxFileBytes < 1024 || opts.MaxFiles < 1 || opts.Retention <= 0 {
 		return errors.New("positive bounded observation limits are required")
 	}
+	if opts.TrialSessionID != "" {
+		if err := ValidateTrialSessionID(opts.TrialSessionID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func NewTrialSessionID() (string, error) {
+	value := make([]byte, 16)
+	if _, err := rand.Read(value); err != nil {
+		return "", fmt.Errorf("generate observation trial session ID: %w", err)
+	}
+	return trialSessionPrefix + hex.EncodeToString(value), nil
+}
+
+func ValidateTrialSessionID(value string) error {
+	if len(value) != len(trialSessionPrefix)+32 || !strings.HasPrefix(value, trialSessionPrefix) {
+		return errors.New("observation trial session ID must be trial- followed by 32 lowercase hexadecimal characters")
+	}
+	for _, character := range value[len(trialSessionPrefix):] {
+		if (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f') {
+			continue
+		}
+		return errors.New("observation trial session ID must use lowercase hexadecimal characters")
+	}
 	return nil
 }
 
@@ -179,7 +208,7 @@ func (r *Recorder) Record(event Event) error {
 
 	now := r.opts.Clock().UTC()
 	stored := storedEvent{
-		SchemaVersion: schemaVersion, RecordedAt: now, Source: r.opts.Source,
+		SchemaVersion: schemaVersion, RecordedAt: now, Source: r.opts.Source, TrialSessionID: r.opts.TrialSessionID,
 		EventType: event.EventType, SelectedPath: event.SelectedPath,
 		SelectedLane: event.SelectedLane, ReasonCode: event.ReasonCode,
 		PolicyReason: event.PolicyReason, Observation: event.Observation, OtherObservation: event.OtherObservation,

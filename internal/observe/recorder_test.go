@@ -65,6 +65,49 @@ func TestRecorderHashesSensitiveTargetFields(t *testing.T) {
 	}
 }
 
+func TestTrialSessionIDGenerationValidationAndRecording(t *testing.T) {
+	first, err := NewTrialSessionID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewTrialSessionID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second || ValidateTrialSessionID(first) != nil || ValidateTrialSessionID(second) != nil {
+		t.Fatalf("trial IDs first=%q second=%q", first, second)
+	}
+	for _, invalid := range []string{"home-wifi", "trial-ABCDEF0123456789abcdef0123456789", "trial-0123"} {
+		if err := ValidateTrialSessionID(invalid); err == nil {
+			t.Fatalf("invalid trial ID accepted: %q", invalid)
+		}
+	}
+	directory := t.TempDir()
+	opts := testOptions(directory)
+	opts.TrialSessionID = first
+	recorder, err := New(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := recorder.Record(Event{EventType: "diagnostic"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := recorder.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var event storedEvent
+	if err := json.Unmarshal([]byte(readOnlyJSONL(t, directory)), &event); err != nil {
+		t.Fatal(err)
+	}
+	if event.TrialSessionID != first {
+		t.Fatalf("stored trial session=%q", event.TrialSessionID)
+	}
+	opts.TrialSessionID = "personal-name"
+	if _, err := New(opts); err == nil {
+		t.Fatal("recorder accepted identity-bearing trial session")
+	}
+}
+
 func TestRecorderStoresDurableAssessmentWithoutCleartextTarget(t *testing.T) {
 	directory := t.TempDir()
 	recorder, err := New(testOptions(directory))

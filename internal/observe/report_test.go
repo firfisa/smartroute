@@ -15,7 +15,8 @@ func TestBuildReportAggregatesReadinessWithoutIdentity(t *testing.T) {
 	directory := t.TempDir()
 	now := time.Unix(1000, 0).UTC()
 	clock := func() time.Time { return now }
-	engine, err := New(Options{Directory: directory, Source: SourceEngine, MaxFileBytes: 1 << 20, MaxFiles: 4, Retention: time.Hour, Clock: clock})
+	trialSession := "trial-0123456789abcdef0123456789abcdef"
+	engine, err := New(Options{Directory: directory, Source: SourceEngine, MaxFileBytes: 1 << 20, MaxFiles: 4, Retention: time.Hour, Clock: clock, TrialSessionID: trialSession})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +53,7 @@ func TestBuildReportAggregatesReadinessWithoutIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	guard, err := New(Options{Directory: directory, Source: SourceGuard, MaxFileBytes: 1 << 20, MaxFiles: 4, Retention: time.Hour, Clock: clock})
+	guard, err := New(Options{Directory: directory, Source: SourceGuard, MaxFileBytes: 1 << 20, MaxFiles: 4, Retention: time.Hour, Clock: clock, TrialSessionID: trialSession})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +68,7 @@ func TestBuildReportAggregatesReadinessWithoutIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.EventsIncluded != 6 || report.FilesScanned != 2 || report.TargetScopesObserved != 1 || report.NetworkProfilesObserved != 1 {
+	if report.EventsIncluded != 6 || report.FilesScanned != 2 || report.TargetScopesObserved != 1 || report.NetworkProfilesObserved != 1 || report.TrialSessionsObserved != 1 || report.UnscopedEvents != 0 {
 		t.Fatalf("report=%+v", report)
 	}
 	if report.Adaptive.ReadinessOutcomes != 3 || report.Adaptive.Ready != 2 || report.Adaptive.FailedBeforeReadiness != 1 || report.Adaptive.ReadinessSuccessRatio != 2.0/3.0 {
@@ -85,7 +86,7 @@ func TestBuildReportAggregatesReadinessWithoutIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(encoded), target.Hostname) || strings.Contains(string(encoded), target.NetworkProfileID) || strings.Contains(string(encoded), "hostname_hash") {
+	if strings.Contains(string(encoded), target.Hostname) || strings.Contains(string(encoded), target.NetworkProfileID) || strings.Contains(string(encoded), trialSession) || strings.Contains(string(encoded), "hostname_hash") {
 		t.Fatalf("identity leaked: %s", encoded)
 	}
 }

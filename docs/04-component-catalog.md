@@ -1,6 +1,6 @@
 # SmartRoute Component and Interface Catalog
 
-Version: v0.10
+Version: v0.11
 Last updated: 2026-08-02
 
 This file is the maintained registry for components, interfaces, commands, configuration fields, and decision reason codes. Status is explicit: `implemented`, `experimental`, or `planned`.
@@ -94,7 +94,7 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `internal/netrelay` | Data plane | experimental | Shared bidirectional TCP copying and half-close handling | Routing decisions or payload inspection | Consumer tests in Guard, Sidecar and Test Lab |
 | `internal/privacy` | Policy | experimental | Validate/normalize exact and suffix deny rules; decide whether a target may open Direct | Network I/O, hostname persistence, or route learning | `internal/privacy/policy_test.go`; Sidecar privacy tests |
 | `internal/supervisor` | Runtime | experimental | Independently monitor Guard/engine child processes, cap restart backoff, and emit lifecycle events | Supervising Mihomo, replaying failed connections, or host-level service installation | `internal/supervisor/supervisor_test.go`; CLI service-spec tests |
-| `internal/observe` | Persistence | experimental | HMAC-pseudonymize typed events, write bounded per-source JSONL, implement lifecycle controls, and aggregate identity-free readiness metrics | Learned policy, payload capture, static-baseline inference, application-success measurement, cloud upload, or active Clash access | Recorder/control/report tests; CLI sink/report tests |
+| `internal/observe` | Persistence | experimental | HMAC-pseudonymize typed events, stamp random trial scope, write bounded per-source JSONL, implement lifecycle controls, and aggregate identity-free readiness metrics | Learned policy, payload capture, static-baseline inference, application-success measurement, cloud upload, or active Clash access | Recorder/session/control/report tests; CLI sink/report tests |
 | `internal/testlab` | Test | implemented | Ephemeral loopback echo target, fake Direct/Proxy gateways, deterministic faults | External network and active Clash access | `internal/testlab/lab_test.go` |
 | `internal/mihomolab` | Test | implemented | Temporary config/home, child lifecycle, synthetic DNS, forced-listener and readiness assertions | Active Clash discovery, external traffic, TUN, system proxy | `internal/mihomolab/lab_test.go`; explicit runtime command |
 | `internal/upstream` | Integration | planned | Mihomo config/API adapter and topology validation | Shipping Mihomo source | Planned integration tests |
@@ -137,10 +137,11 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `DurableEvaluator.Report(summaries)` | `internal/learning` | Identity-free exact-target summaries | Aggregate category/evidence/reason/threshold counts | Rejects zero-evidence or invalid target summaries; never returns identity | experimental | Category matrix, empty and invalid-report tests |
 | `Supervisor.Run(ctx)` | `internal/supervisor` | Context, service specs, starter, restart policy | Runs independent monitors until cancellation | Rejects invalid/duplicate services; runtime failures trigger capped restart rather than stopping siblings | experimental | Restart, start-error, independence, cancellation tests |
 | `CommandStarter.Start(ctx, service)` | `internal/supervisor` | Executable/args and synchronized stdout/stderr | Started child implementing `Wait()` | Parent cancellation interrupts child; `WaitDelay` kills after grace period | experimental | Supervisor consumers; platform process integration pending |
-| `observe.New(options)` | `internal/observe` | Local directory, source and capacity/privacy limits | Source-specific recorder | Rejects unsafe paths/limits and invalid salt; initialization errors are explicit | experimental | Recorder validation/privacy tests |
+| `observe.New(options)` | `internal/observe` | Local directory, source, capacity/privacy limits, optional validated random trial session | Source-specific recorder | Rejects unsafe paths/limits, invalid salt, and human-readable/invalid session IDs; initialization errors are explicit | experimental | Recorder validation/privacy/session tests |
+| `observe.NewTrialSessionID/ValidateTrialSessionID` | `internal/observe` | None or candidate ID | Random `trial-` + 128-bit lowercase hex, or validation result | Random-source errors propagate; arbitrary labels/uppercase/wrong length rejected | experimental | Uniqueness, format and rejection tests |
 | `Recorder.Record(event)` | `internal/observe` | Typed bounded event with optional raw target | Pseudonymous JSONL record or paused no-op | Oversized/write errors return to caller; runtime caller warns once and continues routing | experimental | Hashing, pause, rotation and oversized-event tests |
 | `observe.Inspect/Pause/Resume/Clear/Export` | `internal/observe` | Observation directory and explicit destination/paused state | Lifecycle status or local file operation | Only manages engine/Guard/supervisor subdirectories; clear requires pause; export refuses nesting/existing destination and omits salt/symlinks | experimental | Control and export tests |
-| `observe.BuildReport(directory, options)` | `internal/observe` | Managed JSONL and explicit lower time bound | Identity-free readiness/path/Guard counts, ratios and latency distributions | Strictly rejects unknown/corrupt/wrong-source/unsafe-token rows; returns no target/profile key; does not infer application success | experimental | Mixed-source aggregation, cutoff, privacy, corruption and source-binding tests |
+| `observe.BuildReport(directory, options)` | `internal/observe` | Managed JSONL and explicit lower time bound | Identity-free readiness/path/Guard/session counts, unscoped rows, ratios and latency distributions | Strictly rejects unknown/corrupt/wrong-source/unsafe-token rows; returns no target/profile/session key; does not infer application success | experimental | Mixed-source/session aggregation, cutoff, privacy, corruption and source-binding tests |
 | `store.Open(ctx, config)` | `internal/store` | Context, DB path, busy timeout | Migrated/integrity-checked SQLite store with local HMAC key | Rejects unsafe path, missing/invalid key, `store.ErrCorrupt`, and future schema; never replaces data | experimental | Open/reopen, corruption, permissions and future-schema tests |
 | `store.OpenReadOnly(ctx, config)` | `internal/store` | Existing DB path and timeout | Integrity-checked exact-current-schema store | Never creates key/DB or migrates; rejects missing key, corruption and any schema mismatch | experimental | Missing/current/old-schema tests; CLI status tests |
 | `Store.StartSession(ctx, id, time)` | `internal/store` | Safe local session ID and timestamp | Durable independent-session row | Rejects invalid/duplicate sessions and cancellation | experimental | Session and foreign-key tests |
@@ -172,7 +173,7 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `smartroute trace -direct SPEC -proxy SPEC` | implemented | Evaluate one synthetic paired observation and print JSON | None | None |
 | `smartroute serve [-acknowledge-direct-probes]` | experimental | Run TLS-over-SOCKS sidecar with runtime privacy policy | Privacy-first/deny targets open Proxy only; acknowledged explicit-opt-in targets may race Direct/Proxy | Optional bounded engine JSONL and separately opt-in SQLite strong evidence; SQLite never supplies routes |
 | `smartroute guard` | experimental | Run the separate availability boundary in front of the adaptive engine | Configured loopback Guard, engine and original-policy SOCKS endpoints | Optional bounded Guard JSONL; otherwise debug stdout |
-| `smartroute supervise` | experimental | Run Guard and adaptive engine as independently restartable children | Same loopback effects as the two child commands; does not operate Mihomo | Optional bounded per-source JSONL; otherwise debug stdout |
+| `smartroute supervise` | experimental | Run Guard and adaptive engine as independently restartable children | Same loopback effects as the two child commands; does not operate Mihomo | Enabled recording auto-generates one random trial session shared by supervisor, children and restarts |
 | `smartroute observations status\|pause\|resume\|clear\|export` | experimental | Operate the configured local recorder directory | None | Status/control, confirmed deletion, or redacted file export |
 | `smartroute observations report` | experimental | Aggregate a paused bounded observation window | None | Strict read-only JSON; no target/profile hashes; readiness is explicitly not application success |
 | `smartroute learning status` | experimental | Inspect configured durable evidence health and aggregates | None | Missing state is not created; existing current schema is opened read-only |
@@ -338,6 +339,8 @@ Guard availability reasons:
 | `policy.promoted` | Learning engine | old/new state, evidence, expiry | Store/UI/export | planned |
 
 Events must never contain HTTP bodies, credentials, cookies, subscription URLs, or raw TLS secrets.
+
+When runtime recording is enabled, persisted events also carry an additive `trial_session_id`. It is a validated random non-semantic scope shared across a supervised trial and child restarts. Older rows may omit it; aggregate reports expose only distinct-session and unscoped counts.
 
 ## 8. Maintenance checklist
 

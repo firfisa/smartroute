@@ -85,6 +85,7 @@ func runSupervise(args []string, stdout, stderr io.Writer) error {
 	path := flags.String("config", "configs/smartroute.example.json", "path to SmartRoute JSON config")
 	profileID := flags.String("network-profile", "manual-experimental", "local network profile label for child events")
 	allowDirectProbes := flags.Bool("acknowledge-direct-probes", false, "acknowledge Direct candidates in explicit-opt-in privacy mode")
+	trialSession := flags.String("trial-session", "", "random trial-... observation session; generated when recording is enabled")
 	minBackoff := flags.Duration("restart-min-backoff", 100*time.Millisecond, "minimum child restart backoff")
 	maxBackoff := flags.Duration("restart-max-backoff", 5*time.Second, "maximum child restart backoff")
 	stableAfter := flags.Duration("restart-stable-after", 30*time.Second, "runtime that resets consecutive-failure backoff")
@@ -105,7 +106,11 @@ func runSupervise(args []string, stdout, stderr io.Writer) error {
 	if err := validateDirectProbeAcknowledgement(cfg.Privacy.Mode, *allowDirectProbes); err != nil {
 		return err
 	}
-	recorder, err := openObservationRecorder(cfg, observe.SourceSupervisor)
+	trialSessionID, err := resolveRuntimeTrialSession(cfg, *trialSession)
+	if err != nil {
+		return err
+	}
+	recorder, err := openObservationRecorder(cfg, observe.SourceSupervisor, trialSessionID)
 	if err != nil {
 		return err
 	}
@@ -127,7 +132,7 @@ func runSupervise(args []string, stdout, stderr io.Writer) error {
 	stderrWriter := &synchronizedWriter{writer: stderr}
 	events := newRuntimeEventSink(stdoutWriter, stderrWriter, recorder)
 	monitor := supervisor.Supervisor{
-		Services: supervisedServices(executable, absoluteConfig, *profileID, *allowDirectProbes),
+		Services: supervisedServices(executable, absoluteConfig, *profileID, *allowDirectProbes, trialSessionID),
 		Starter: supervisor.CommandStarter{
 			Stdout: stdoutWriter, Stderr: stderrWriter, ShutdownGrace: *shutdownGrace,
 		},
@@ -153,14 +158,19 @@ func validateSupervisorDurations(minimum, maximum, stableAfter, shutdownGrace ti
 	return nil
 }
 
-func supervisedServices(executable, configPath, profileID string, acknowledgeDirect bool) []supervisor.Service {
+func supervisedServices(executable, configPath, profileID string, acknowledgeDirect bool, trialSessionID string) []supervisor.Service {
 	serveArgs := []string{"serve", "-config", configPath, "-network-profile", profileID}
+	guardArgs := []string{"guard", "-config", configPath, "-network-profile", profileID}
 	if acknowledgeDirect {
 		serveArgs = append(serveArgs, "-acknowledge-direct-probes")
 	}
+	if trialSessionID != "" {
+		serveArgs = append(serveArgs, "-trial-session", trialSessionID)
+		guardArgs = append(guardArgs, "-trial-session", trialSessionID)
+	}
 	return []supervisor.Service{
 		{Name: "adaptive_engine", Executable: executable, Args: serveArgs},
-		{Name: "availability_guard", Executable: executable, Args: []string{"guard", "-config", configPath, "-network-profile", profileID}},
+		{Name: "availability_guard", Executable: executable, Args: guardArgs},
 	}
 }
 
@@ -180,6 +190,7 @@ func runGuard(args []string, stdout, stderr io.Writer) error {
 	flags.SetOutput(stderr)
 	path := flags.String("config", "configs/smartroute.example.json", "path to SmartRoute JSON config")
 	profileID := flags.String("network-profile", "manual-experimental", "local network profile label for guard events")
+	trialSession := flags.String("trial-session", "", "random trial-... observation session; generated when recording is enabled")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -191,7 +202,11 @@ func runGuard(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	recorder, err := openObservationRecorder(cfg, observe.SourceGuard)
+	trialSessionID, err := resolveRuntimeTrialSession(cfg, *trialSession)
+	if err != nil {
+		return err
+	}
+	recorder, err := openObservationRecorder(cfg, observe.SourceGuard, trialSessionID)
 	if err != nil {
 		return err
 	}
@@ -235,6 +250,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	path := flags.String("config", "configs/smartroute.example.json", "path to SmartRoute JSON config")
 	profileID := flags.String("network-profile", "manual-experimental", "local network profile label for decision events")
 	allowDirectProbes := flags.Bool("acknowledge-direct-probes", false, "acknowledge Direct candidates in explicit-opt-in privacy mode")
+	trialSession := flags.String("trial-session", "", "random trial-... observation session; generated when recording is enabled")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -252,6 +268,10 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	if err := validateDirectProbeAcknowledgement(cfg.Privacy.Mode, *allowDirectProbes); err != nil {
 		return err
 	}
+	trialSessionID, err := resolveRuntimeTrialSession(cfg, *trialSession)
+	if err != nil {
+		return err
+	}
 	ephemeralLearner, err := learning.New(learning.Config{
 		Mode:                cfg.Learning.Mode,
 		MaxEntries:          cfg.Learning.MaxEntries,
@@ -262,7 +282,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("initialize learning engine: %w", err)
 	}
-	recorder, err := openObservationRecorder(cfg, observe.SourceEngine)
+	recorder, err := openObservationRecorder(cfg, observe.SourceEngine, trialSessionID)
 	if err != nil {
 		return err
 	}
@@ -613,20 +633,40 @@ func (s *runtimeEventSink) Emit(raw any, persistent observe.Event) {
 	}
 }
 
-func openObservationRecorder(cfg config.Config, source string) (*observe.Recorder, error) {
+func openObservationRecorder(cfg config.Config, source, trialSessionID string) (*observe.Recorder, error) {
 	if !cfg.Observation.Enabled {
 		return nil, nil
+	}
+	if trialSessionID == "" {
+		return nil, errors.New("enabled observation recorder requires a trial session ID")
 	}
 	recorder, err := observe.New(observe.Options{
 		Directory: cfg.Observation.Directory, Source: source,
 		MaxFileBytes: cfg.Observation.MaxFileBytes, MaxFiles: cfg.Observation.MaxFilesPerSource,
 		Retention:                time.Duration(cfg.Observation.RetentionHours) * time.Hour,
 		IncludeCleartextHostname: cfg.Observation.IncludeCleartextHostname,
+		TrialSessionID:           trialSessionID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("initialize observation recorder: %w", err)
 	}
 	return recorder, nil
+}
+
+func resolveRuntimeTrialSession(cfg config.Config, requested string) (string, error) {
+	if !cfg.Observation.Enabled {
+		if requested != "" {
+			return "", errors.New("trial-session requires observation.enabled=true")
+		}
+		return "", nil
+	}
+	if requested != "" {
+		if err := observe.ValidateTrialSessionID(requested); err != nil {
+			return "", err
+		}
+		return requested, nil
+	}
+	return observe.NewTrialSessionID()
 }
 
 func runObservations(args []string, stdout, stderr io.Writer) error {
@@ -1067,9 +1107,9 @@ Usage:
   smartroute version
   smartroute validate [-config path]
   smartroute trace [-config path] [-direct spec] [-proxy spec]
-  smartroute serve -acknowledge-direct-probes [-config path] [-network-profile label]
-  smartroute guard [-config path] [-network-profile label]
-  smartroute supervise [-acknowledge-direct-probes] [-config path] [-network-profile label]
+  smartroute serve -acknowledge-direct-probes [-config path] [-network-profile label] [-trial-session random-id]
+  smartroute guard [-config path] [-network-profile label] [-trial-session random-id]
+  smartroute supervise [-acknowledge-direct-probes] [-config path] [-network-profile label] [-trial-session random-id]
   smartroute observations status|report|pause|resume|clear|export [-config path]
   smartroute learning status [-config path]
   smartroute learning evaluate -network-profile label -hostname host -port port [-transport tcp|udp] [-config path]

@@ -324,7 +324,7 @@ func TestRunObservationsReportIsIdentityFree(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
 		t.Fatal(err)
 	}
-	if !report.RecordingPaused || report.Adaptive.Ready != 1 || report.Adaptive.DecisionReadinessLatencyMS.P50 == nil || *report.Adaptive.DecisionReadinessLatencyMS.P50 != 25 {
+	if !report.RecordingPaused || report.UnscopedEvents != 1 || report.TrialSessionsObserved != 0 || report.Adaptive.Ready != 1 || report.Adaptive.DecisionReadinessLatencyMS.P50 == nil || *report.Adaptive.DecisionReadinessLatencyMS.P50 != 25 {
 		t.Fatalf("report=%+v", report)
 	}
 	if strings.Contains(stdout.String(), target.Hostname) || strings.Contains(stdout.String(), target.NetworkProfileID) {
@@ -585,7 +585,8 @@ func TestRunSuperviseRejectsEmptyNetworkProfileBeforeSpawning(t *testing.T) {
 }
 
 func TestSupervisedServicesKeepGuardAndEngineSeparate(t *testing.T) {
-	services := supervisedServices("/smartroute", "/config.json", "profile", true)
+	trialSession := "trial-0123456789abcdef0123456789abcdef"
+	services := supervisedServices("/smartroute", "/config.json", "profile", true, trialSession)
 	if len(services) != 2 || services[0].Name != "adaptive_engine" || services[1].Name != "availability_guard" {
 		t.Fatalf("services = %+v", services)
 	}
@@ -594,6 +595,37 @@ func TestSupervisedServicesKeepGuardAndEngineSeparate(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(services[1].Args, " "), "acknowledge-direct-probes") || services[1].Args[0] != "guard" {
 		t.Fatalf("guard args = %q", services[1].Args)
+	}
+	for _, service := range services {
+		args := strings.Join(service.Args, " ")
+		if !strings.Contains(args, "-trial-session "+trialSession) {
+			t.Fatalf("service did not share trial session: %+v", service)
+		}
+	}
+}
+
+func TestResolveRuntimeTrialSession(t *testing.T) {
+	cfg := config.Default()
+	if value, err := resolveRuntimeTrialSession(cfg, ""); err != nil || value != "" {
+		t.Fatalf("disabled value=%q err=%v", value, err)
+	}
+	if _, err := resolveRuntimeTrialSession(cfg, "trial-0123456789abcdef0123456789abcdef"); err == nil {
+		t.Fatal("disabled recording accepted trial session")
+	}
+	cfg.Observation.Enabled = true
+	generated, err := resolveRuntimeTrialSession(cfg, "")
+	if err != nil || observe.ValidateTrialSessionID(generated) != nil {
+		t.Fatalf("generated=%q err=%v", generated, err)
+	}
+	explicit := "trial-fedcba9876543210fedcba9876543210"
+	if value, err := resolveRuntimeTrialSession(cfg, explicit); err != nil || value != explicit {
+		t.Fatalf("explicit=%q err=%v", value, err)
+	}
+	if _, err := resolveRuntimeTrialSession(cfg, "home-wifi"); err == nil {
+		t.Fatal("identity-bearing session accepted")
+	}
+	if _, err := openObservationRecorder(cfg, observe.SourceEngine, ""); err == nil {
+		t.Fatal("runtime recorder accepted unscoped events")
 	}
 }
 

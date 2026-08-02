@@ -75,6 +75,7 @@ MVP 不是为了证明“能够自动写 YAML”，而是回答五个可证伪�
 | Guard/engine 进程 supervisor | 实验性完成 | 独立启动/退出故障、连续失败退避、封顶、稳定窗口重置、父进程取消 |
 | 受限本地观测记录器 | 实验性完成 | 默认 HMAC、明文显式开关、暂停/恢复、容量与时间裁剪、确认清空、无盐导出、stdout 去重 |
 | 连接级 readiness 报告 | 实验性完成 | paused 严格读取、无身份聚合、Direct/Proxy 与 Guard 分母、decision/candidate p50/p95/p99；静态基线/应用结果/字节仍缺失 |
+| 受控试用 session scope | 实验性完成 | supervisor/Guard/engine 共享随机非语义 ID，重启保持；旧行显式 unscoped，聚合不输出 ID |
 | 系统代理与 TUN | 待执行且仅手动 opt-in | 不使用活动 Clash 实例 |
 
 退出条件：

@@ -22,5 +22,6 @@ ADRs are append-only decision records. Supersede an old decision with a new ADR 
 | [0016](0016-privacy-safe-shadow-report.md) | Aggregate Shadow assessments without exposing target identity | Accepted | 2026-08-02 |
 | [0017](0017-freeze-learning-on-systemic-failure.md) | Freeze learning on systemic path failures | Accepted | 2026-08-02 |
 | [0018](0018-identity-free-observation-readiness-report.md) | Report identity-free adaptive readiness metrics | Accepted | 2026-08-02 |
+| [0019](0019-random-shared-trial-session-scope.md) | Scope observations with a random shared trial session | Accepted | 2026-08-02 |
 
 Status values: `Proposed`, `Accepted`, `Superseded`, `Rejected`.

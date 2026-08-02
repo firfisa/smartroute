@@ -35,7 +35,7 @@ The report includes:
 | timing | p50/p95/p99 adaptive decision-to-readiness and winner-candidate latency |
 | availability | Guard adaptive/original/unavailable counts |
 | learning | health-transition and durable-assessment event counts |
-| privacy-safe scope | counts of exact target scopes and network profiles, never their hashes |
+| privacy-safe scope | counts of exact target scopes, network profiles, trial sessions, and legacy unscoped events; never their identifiers |
 
 `decision_latency_ms` is added to successful TLS decisions. It starts after a complete safe ClientHello and privacy-policy evaluation, immediately before runtime preference/health lookup and candidate selection, and ends when the winning path reaches the TLS ServerHello gate. It therefore includes stagger/fallback time. The existing winner observation latency begins at that candidate's own start and may exclude head-start delay.
 
