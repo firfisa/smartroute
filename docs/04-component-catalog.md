@@ -17,6 +17,8 @@ flowchart TB
     Transport["internal/transport\nSOCKS dialers and racer"]
     TLSInspect["internal/tlsinspect\nbounded TLS first-flight parser"]
     Sidecar["internal/sidecar\nInbound relay"]
+    Guard["internal/guard\nPre-payload availability"]
+    NetRelay["internal/netrelay\nBidirectional relay"]
     TestLab["internal/testlab\nIsolated fault lab"]
     LabCLI["cmd/smartroute-testlab\nJSON lab runner"]
     MihomoLab["internal/mihomolab\nPinned child-process lab"]
@@ -27,6 +29,7 @@ flowchart TB
     CLI --> Config
     CLI --> Decision
     CLI --> Sidecar
+    CLI --> Guard
     Decision --> Model
     Transport --> Model
     Transport --> SOCKS
@@ -34,11 +37,15 @@ flowchart TB
     Sidecar --> TLSInspect
     Sidecar --> SOCKS
     Sidecar --> Transport
+    Sidecar --> NetRelay
+    Guard --> SOCKS
+    Guard --> NetRelay
     TestLab --> Sidecar
     TestLab --> SOCKS
     LabCLI --> TestLab
     MihomoLabCLI --> MihomoLab
     MihomoLab --> Sidecar
+    MihomoLab --> Guard
     MihomoLab --> TestLab
     Transport -. "planned" .-> Mihomo
     Decision -. "planned" .-> Store
@@ -50,7 +57,7 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 
 | Component | Owner | Status | Responsibility | Explicit non-responsibility | Primary tests |
 | --- | --- | --- | --- | --- | --- |
-| `cmd/smartroute` | CLI | experimental | Command parsing, config validation, synthetic decision trace, experimental sidecar lifecycle | Persistence and active Clash configuration | `cmd/smartroute/main_test.go`; sidecar exercised by Test Lab |
+| `cmd/smartroute` | CLI | experimental | Command parsing, config validation, synthetic decision trace, and separate Guard/engine lifecycles | Persistence and active Clash configuration | `cmd/smartroute/main_test.go`; data plane exercised by Test Labs |
 | `cmd/smartroute-testlab` | Test | implemented | Run deterministic loopback scenarios and print JSON report | Real destinations or Clash integration | `internal/testlab/lab_test.go` plus CI named step |
 | `cmd/smartroute-mihomo-lab` | Test | implemented | Run the exact pinned Mihomo binary in an isolated topology and print JSON | Discovering or operating the active Clash instance | `internal/mihomolab/lab_test.go`; `make mihomo-lab` |
 | `internal/config` | Core | implemented | Strict JSON schema, safe loopback defaults, validation | Mihomo YAML generation | `internal/config/config_test.go` |
@@ -60,6 +67,8 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `internal/transport` | Data plane | experimental | SOCKS5 candidate dialing, TCP and TLS racing, ServerHello gate, cancellation, exact prefetched-byte replay | Certificate/Finished/application validation | Racer and TLS readiness tests; Mihomo Lab |
 | `internal/tlsinspect` | Data plane | experimental | Bounded TLS record reassembly, ClientHello/ServerHello structure checks, early-data rejection | TLS decryption, certificate validation, payload logging | `internal/tlsinspect/tlsinspect_test.go` |
 | `internal/sidecar` | Data plane | experimental | SOCKS admission, TLS first-flight orchestration, stage enforcement, relay, decision and diagnostic events | Learning persistence or active Clash modification | Sidecar net.Pipe tests, Test Lab and Mihomo Lab |
+| `internal/guard` | Data plane | experimental | Before forwarding payload to either lane, select the adaptive engine or fall back to the original-policy SOCKS listener | Direct/Proxy evidence, learning, post-commit replay, Guard-process supervision | `internal/guard/server_test.go`; Mihomo Lab fault scenarios |
+| `internal/netrelay` | Data plane | experimental | Shared bidirectional TCP copying and half-close handling | Routing decisions or payload inspection | Consumer tests in Guard, Sidecar and Test Lab |
 | `internal/testlab` | Test | implemented | Ephemeral loopback echo target, fake Direct/Proxy gateways, deterministic faults | External network and active Clash access | `internal/testlab/lab_test.go` |
 | `internal/mihomolab` | Test | implemented | Temporary config/home, child lifecycle, synthetic DNS, forced-listener and readiness assertions | Active Clash discovery, external traffic, TUN, system proxy | `internal/mihomolab/lab_test.go`; explicit runtime command |
 | `internal/upstream` | Integration | planned | Mihomo config/API adapter and topology validation | Shipping Mihomo source | Planned integration tests |
@@ -86,6 +95,8 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `ReadinessGate.Await(ctx, conn, target)` | `internal/transport` | Context, candidate connection, target | Stage, failure class and prefetched bytes | Must not lose or unsafely replay consumed bytes | experimental contract | TLS gate tests |
 | `TLSRacer.Race(ctx, target, hello)` | `internal/transport` | Two candidates, validated no-early-data ClientHello, gate and timing | L3 winner connection with replay prefix | Cancels loser; returns paired classified failures | experimental | `internal/transport/tls_readiness_test.go` |
 | `sidecar.Server.Serve(ctx, listener)` | `internal/sidecar` | Context, listener, plain Racer or TLSRacer | Serves until cancellation/error; TLS mode requires L3 | Rejects unsafe ClientHello before dialing; never reads Clash config | experimental | Sidecar, Test Lab and Mihomo Lab |
+| `guard.Server.Serve(ctx, listener)` | `internal/guard` | Context, listener, adaptive/original dialers and bounded timeouts | Serves SOCKS targets; commits one availability lane before payload | Falls back on adaptive handshake failure; refuses when both lanes fail; never replays post-commit data | experimental | Adaptive, unavailable, wedged and dual-failure unit tests; Mihomo Lab scenarios |
+| `netrelay.Bidirectional(left, right)` | `internal/netrelay` | Two owned TCP-like connections | Relays both directions until completion | Best-effort half-close; relay errors are not routing evidence | experimental | Guard/Sidecar end-to-end tests |
 | `testlab.RunAll(ctx)` | `internal/testlab` | Context | Isolation and scenario JSON model | Fails if any scenario invariant fails | implemented | `internal/testlab/lab_test.go` |
 | `mihomolab.Run(ctx, binaryPath)` | `internal/mihomolab` | Context and explicit pinned binary path | Isolation, topology, readiness and scenario report | Rejects wrong version/config; owns and stops only its child | implemented | `internal/mihomolab/lab_test.go`; `make mihomo-lab` |
 
@@ -97,6 +108,7 @@ Solid edges are implemented imports. Dashed edges are planned Phase 0–2 relati
 | `smartroute validate -config PATH` | implemented | Strictly parse and validate local JSON config | None | None |
 | `smartroute trace -direct SPEC -proxy SPEC` | implemented | Evaluate one synthetic paired observation and print JSON | None | None |
 | `smartroute serve -acknowledge-direct-probes` | experimental | Run TLS-over-SOCKS adaptive sidecar against loopback endpoints | Configured loopback listener and candidate TLS first flights | None; emits decision/diagnostic JSON only |
+| `smartroute guard` | experimental | Run the separate availability boundary in front of the adaptive engine | Configured loopback Guard, engine and original-policy SOCKS endpoints | None; emits `guard_decision` JSON only |
 | `smartroute policy` | planned | Inspect, lock, revoke, or export policy | None by default | Policy store |
 | `smartroute-testlab` | implemented | Run isolated deterministic data-plane scenarios | Ephemeral loopback sockets only | None |
 | `smartroute-mihomo-lab -mihomo PATH` | implemented | Run isolated pinned-Mihomo contract scenarios | Child process, temporary home, local synthetic DNS and ephemeral loopback sockets only | Temporary files removed; JSON report only |
@@ -124,7 +136,10 @@ go run ./cmd/smartroute trace \
 | `listen_address` | host:port | `127.0.0.1:17890` | Literal loopback, non-zero, unique | Experimental `serve` SOCKS listener |
 | `direct_endpoint` | host:port | `127.0.0.1:17891` | Literal loopback, non-zero, unique | Experimental Direct SOCKS candidate endpoint |
 | `proxy_endpoint` | host:port | `127.0.0.1:17892` | Literal loopback, non-zero, unique | Experimental Proxy SOCKS candidate endpoint |
-| `original_fallback` | enum | `proxy` | `direct` or `proxy` | Used by synthetic paired evaluator; runtime fallback integration is planned |
+| `guard_listen_address` | host:port | `127.0.0.1:17893` | Literal loopback, non-zero, unique | Experimental `guard` SOCKS listener |
+| `original_endpoint` | host:port | `127.0.0.1:17894` | Literal loopback, non-zero, unique | Mihomo listener forced to the user's original catch-all policy |
+| `guard_adaptive_timeout_ms` | integer | `250` | 10–2000 | Maximum local adaptive-engine SOCKS handshake time before same-connection fallback |
+| `original_fallback` | enum | `proxy` | `direct` or `proxy` | Used by synthetic paired evaluator; Guard runtime uses `original_endpoint` instead |
 | `decision.direct_head_start_ms` | integer | `200` | 10–2000 | Delay before starting Proxy for an unknown target |
 | `decision.max_direct_penalty_ms` | integer | `150` | 0–5000 | Direct may be this much slower and still win when both succeed |
 | `decision.candidate_timeout_ms` | integer | `5000` | Must exceed head start | Overall candidate deadline |
@@ -157,6 +172,14 @@ Runtime race/commit reasons:
 | `client_hello_rejected` | Client first flight was unsafe or invalid | Close after local SOCKS admission; open zero candidates |
 | `tls_candidates_failed` | Neither candidate returned a valid ServerHello | Close connection; report both classified path failures; never learn success |
 
+Guard availability reasons:
+
+| Reason code | Selected lane | Meaning |
+| --- | --- | --- |
+| `adaptive_available` | Adaptive | Adaptive engine completed its local SOCKS handshake before the bounded timeout |
+| `adaptive_unavailable_use_original` | Original | Adaptive engine refused/timed out before payload; the same client connection uses the original-policy listener |
+| `adaptive_and_original_unavailable` | None | Neither local lane accepted the target; return SOCKS failure |
+
 ## 7. Event catalog
 
 | Event | Producer | Minimum fields | Consumer | Status |
@@ -167,6 +190,7 @@ Runtime race/commit reasons:
 | `candidate.canceled` | Racer | path, cancellation reason | Metrics | planned |
 | `decision` | Sidecar/decision engine | `event_type`, target, selected path, reason, observation, `committed` | CLI/store/UI | experimental `DecisionEvent`; persistent form planned |
 | `diagnostic` | Sidecar | `event_type`, target, reason, failure class, optional Direct/Proxy failures | CLI/debug | experimental `DiagnosticEvent`; no payload bytes |
+| `guard_decision` | Guard | `event_type`, target, selected lane, reason, bounded failure classes, `committed` | CLI/store/UI | experimental; no payload bytes and no persistence |
 | `policy.promoted` | Learning engine | old/new state, evidence, expiry | Store/UI/export | planned |
 | `learning.frozen` | Health guard | failing control, profile ID | UI/metrics | planned |
 

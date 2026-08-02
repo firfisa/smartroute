@@ -18,6 +18,7 @@ import (
 
 	"github.com/firfisa/smartroute/internal/config"
 	"github.com/firfisa/smartroute/internal/decision"
+	"github.com/firfisa/smartroute/internal/guard"
 	"github.com/firfisa/smartroute/internal/model"
 	"github.com/firfisa/smartroute/internal/sidecar"
 	"github.com/firfisa/smartroute/internal/transport"
@@ -52,6 +53,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return runTrace(args[1:], stdout, stderr)
 	case "serve":
 		return runServe(args[1:], stdout, stderr)
+	case "guard":
+		return runGuard(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return nil
@@ -59,6 +62,47 @@ func run(args []string, stdout, stderr io.Writer) error {
 		printUsage(stderr)
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+func runGuard(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("guard", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	path := flags.String("config", "configs/smartroute.example.json", "path to SmartRoute JSON config")
+	profileID := flags.String("network-profile", "manual-experimental", "local network profile label for guard events")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *profileID == "" {
+		return errors.New("network-profile must not be empty")
+	}
+
+	cfg, err := config.Load(*path)
+	if err != nil {
+		return err
+	}
+	listener, err := net.Listen("tcp", cfg.GuardListenAddress)
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", cfg.GuardListenAddress, err)
+	}
+	defer listener.Close()
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	var outputMu sync.Mutex
+	server := guard.Server{
+		Adaptive:         guard.SOCKS5Dialer{Endpoint: cfg.ListenAddress},
+		Original:         guard.SOCKS5Dialer{Endpoint: cfg.OriginalEndpoint},
+		NetworkProfileID: *profileID,
+		AdaptiveTimeout:  cfg.GuardAdaptiveTimeout(),
+		HandshakeTimeout: cfg.CandidateTimeout(),
+		OnDecision: func(event guard.DecisionEvent) {
+			outputMu.Lock()
+			defer outputMu.Unlock()
+			_ = json.NewEncoder(stdout).Encode(event)
+		},
+	}
+	fmt.Fprintf(stderr, "availability guard listening on %s; adaptive=%s original=%s; no Clash files are read or modified\n", listener.Addr(), cfg.ListenAddress, cfg.OriginalEndpoint)
+	return server.Serve(ctx, listener)
 }
 
 func runServe(args []string, stdout, stderr io.Writer) error {
@@ -210,9 +254,12 @@ Usage:
   smartroute validate [-config path]
   smartroute trace [-config path] [-direct spec] [-proxy spec]
   smartroute serve -acknowledge-direct-probes [-config path] [-network-profile label]
+  smartroute guard [-config path] [-network-profile label]
 
 The trace command evaluates one synthetic paired observation. The experimental
 serve command accepts TLS-over-SOCKS on the configured loopback listener and
 does not read or modify Clash configuration. It requires an explicit Direct-
-probe acknowledgment and does not persist learned policy yet.`)
+probe acknowledgment and does not persist learned policy yet. The guard command
+runs as a separate availability process and falls back to the configured original
+SOCKS listener if the adaptive engine cannot accept a target connection.`)
 }

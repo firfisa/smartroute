@@ -35,8 +35,12 @@ All notable project changes are recorded here. The project has not published a r
 - Experimental `serve` TLS mode and `event_type`-discriminated diagnostics for rejected ClientHello or failed TLS candidates.
 - End-to-end Mihomo recovery from an unreachable Direct target to a Proxy `StageTLS` winner.
 - In-memory Go `crypto/tls` 1.3 handshake and encrypted echo through the selected sidecar path.
+- Separate `smartroute guard` process that selects the adaptive engine or the user's original-policy listener before accepting client payload.
+- Bounded fallback from a refused or wedged adaptive-engine SOCKS handshake, with structured `guard_decision` reason codes.
+- Isolated Mihomo engine stop, original-policy fallback, restart, and adaptive-return scenarios; platform runtime evidence is pending because the current sandbox denied loopback bind.
+- ADR-0006 documenting why Mihomo's stock `fallback` group cannot retry the same failed connection.
 
 ### Known limitations
 
-- TLS readiness is structural and experimental; certificate/Finished validation, learning persistence, active Mihomo adapter/fallback, and broad real-site compatibility are not implemented yet.
+- TLS readiness is structural and experimental; certificate/Finished validation, learning persistence, Guard-process supervision, privacy enforcement, active configuration integration, and broad real-site compatibility are not implemented yet.
 - No public release artifacts have been published yet.

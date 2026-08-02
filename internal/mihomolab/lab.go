@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/firfisa/smartroute/internal/guard"
 	"github.com/firfisa/smartroute/internal/model"
 	"github.com/firfisa/smartroute/internal/sidecar"
 	"github.com/firfisa/smartroute/internal/socks5"
@@ -30,17 +31,22 @@ import (
 const mappedHostname = "echo.test"
 
 type Report struct {
-	MihomoVersion        string           `json:"mihomo_version"`
-	Isolation            IsolationResult  `json:"isolation"`
-	ConfigValidated      bool             `json:"config_validated"`
-	LoopPrevented        bool             `json:"loop_prevented"`
-	ReadinessGapDetected bool             `json:"readiness_gap_detected"`
-	TLSReadinessVerified bool             `json:"tls_readiness_verified"`
-	DecisionEventCount   int              `json:"decision_event_count"`
-	DecisionEvents       []EventSummary   `json:"decision_events"`
-	GatewayLastHost      string           `json:"gateway_last_host,omitempty"`
-	Scenarios            []ScenarioResult `json:"scenarios"`
-	Passed               bool             `json:"passed"`
+	MihomoVersion           string              `json:"mihomo_version"`
+	Isolation               IsolationResult     `json:"isolation"`
+	ConfigValidated         bool                `json:"config_validated"`
+	LoopPrevented           bool                `json:"loop_prevented"`
+	ReadinessGapDetected    bool                `json:"readiness_gap_detected"`
+	TLSReadinessVerified    bool                `json:"tls_readiness_verified"`
+	GuardFallbackVerified   bool                `json:"guard_fallback_verified"`
+	GuardRecoveryVerified   bool                `json:"guard_recovery_verified"`
+	DecisionEventCount      int                 `json:"decision_event_count"`
+	DecisionEvents          []EventSummary      `json:"decision_events"`
+	GuardEventCount         int                 `json:"guard_event_count"`
+	GuardEvents             []GuardEventSummary `json:"guard_events"`
+	AdaptiveGatewayLastHost string              `json:"adaptive_gateway_last_host,omitempty"`
+	OriginalGatewayLastHost string              `json:"original_gateway_last_host,omitempty"`
+	Scenarios               []ScenarioResult    `json:"scenarios"`
+	Passed                  bool                `json:"passed"`
 }
 
 type IsolationResult struct {
@@ -77,11 +83,21 @@ type EventSummary struct {
 	Committed    bool       `json:"committed"`
 }
 
+type GuardEventSummary struct {
+	TargetHost      string `json:"target_host"`
+	SelectedLane    string `json:"selected_lane,omitempty"`
+	ReasonCode      string `json:"reason_code"`
+	AdaptiveFailure string `json:"adaptive_failure,omitempty"`
+	Committed       bool   `json:"committed"`
+}
+
 type portSet struct {
-	front   int
-	direct  int
-	proxy   int
-	sidecar int
+	front    int
+	direct   int
+	proxy    int
+	sidecar  int
+	guard    int
+	original int
 }
 
 // Run starts a separately supplied Mihomo binary. It never discovers an
@@ -126,11 +142,16 @@ func Run(parent context.Context, binaryPath string) (Report, error) {
 		return report, err
 	}
 	defer tlsTarget.Close()
-	gateway, err := testlab.StartSOCKSGateway(ctx, tlsTarget.Address())
+	adaptiveGateway, err := testlab.StartSOCKSGateway(ctx, tlsTarget.Address())
 	if err != nil {
 		return report, err
 	}
-	defer gateway.Close()
+	defer adaptiveGateway.Close()
+	originalGateway, err := testlab.StartSOCKSGateway(ctx, tlsTarget.Address())
+	if err != nil {
+		return report, err
+	}
+	defer originalGateway.Close()
 	dnsServer, err := startDNSServer(ctx)
 	if err != nil {
 		return report, err
@@ -141,14 +162,8 @@ func Run(parent context.Context, binaryPath string) (Report, error) {
 	if err != nil {
 		return report, err
 	}
-	sidecarListener, err := net.Listen("tcp", loopbackAddress(ports.sidecar))
-	if err != nil {
-		return report, fmt.Errorf("listen SmartRoute sidecar: %w", err)
-	}
-	defer sidecarListener.Close()
-
 	configPath := filepath.Join(home, "config.yaml")
-	configBytes := renderConfig(ports, gateway.Address(), dnsServer.Address())
+	configBytes := renderConfig(ports, adaptiveGateway.Address(), originalGateway.Address(), dnsServer.Address())
 	if err := os.WriteFile(configPath, configBytes, 0o600); err != nil {
 		return report, fmt.Errorf("write temporary Mihomo config: %w", err)
 	}
@@ -159,6 +174,7 @@ func Run(parent context.Context, binaryPath string) (Report, error) {
 
 	var eventMu sync.Mutex
 	events := make([]sidecar.DecisionEvent, 0, 4)
+	guardEvents := make([]guard.DecisionEvent, 0, 4)
 	server := sidecar.Server{
 		NetworkProfileID: "isolated-mihomo-lab",
 		HandshakeTimeout: 2 * time.Second,
@@ -175,8 +191,34 @@ func Run(parent context.Context, binaryPath string) (Report, error) {
 			eventMu.Unlock()
 		},
 	}
-	sidecarErrors := make(chan error, 1)
-	go func() { sidecarErrors <- server.Serve(ctx, sidecarListener) }()
+	adaptiveService, err := startSidecar(ctx, loopbackAddress(ports.sidecar), server)
+	if err != nil {
+		return report, err
+	}
+	defer func() {
+		if adaptiveService != nil {
+			_ = adaptiveService.Stop()
+		}
+	}()
+
+	guardListener, err := net.Listen("tcp", loopbackAddress(ports.guard))
+	if err != nil {
+		return report, fmt.Errorf("listen SmartRoute availability guard: %w", err)
+	}
+	defer guardListener.Close()
+	guardServer := guard.Server{
+		Adaptive:         guard.SOCKS5Dialer{Endpoint: loopbackAddress(ports.sidecar)},
+		Original:         guard.SOCKS5Dialer{Endpoint: loopbackAddress(ports.original)},
+		NetworkProfileID: "isolated-mihomo-lab",
+		HandshakeTimeout: 2 * time.Second,
+		OnDecision: func(event guard.DecisionEvent) {
+			eventMu.Lock()
+			guardEvents = append(guardEvents, event)
+			eventMu.Unlock()
+		},
+	}
+	guardErrors := make(chan error, 1)
+	go func() { guardErrors <- guardServer.Serve(ctx, guardListener) }()
 
 	child, err := startMihomo(binary, home, configPath)
 	if err != nil {
@@ -188,36 +230,81 @@ func Run(parent context.Context, binaryPath string) (Report, error) {
 	}
 
 	frontEndpoint := loopbackAddress(ports.front)
-	directResult := runScenario(ctx, loopbackAddress(ports.direct), "forced_direct_loopback", "127.0.0.1", echo.Port(), model.PathDirect, true, gateway)
+	directResult := runScenario(ctx, loopbackAddress(ports.direct), "forced_direct_loopback", "127.0.0.1", echo.Port(), model.PathDirect, true, adaptiveGateway)
 	directResult.SelectedPath = model.PathDirect
 	directResult.ReasonCode = "forced_listener_direct"
 	directResult.Passed = directResult.PayloadVerified && directResult.ProxyAttempts == 0
 	report.Scenarios = append(report.Scenarios, directResult)
-	proxyListenerResult := runTLSScenario(ctx, loopbackAddress(ports.proxy), "forced_proxy_preserves_domain", mappedHostname, tlsTarget.Port(), model.PathProxy, true, gateway)
+	proxyListenerResult := runTLSScenario(ctx, loopbackAddress(ports.proxy), "forced_proxy_preserves_domain", mappedHostname, tlsTarget.Port(), model.PathProxy, true, adaptiveGateway)
 	proxyListenerResult.SelectedPath = model.PathProxy
 	proxyListenerResult.ReasonCode = "forced_listener_proxy"
 	proxyListenerResult.Passed = proxyListenerResult.PayloadVerified && proxyListenerResult.DomainPreserved && proxyListenerResult.ProxyAttempts == 1
 	report.Scenarios = append(report.Scenarios, proxyListenerResult)
-	gapResult, gapObservation := runOutboundGap(ctx, loopbackAddress(ports.direct), "mihomo_socks_ack_is_not_target_readiness", mappedHostname, tlsTarget.Port(), gateway)
+	gapResult, gapObservation := runOutboundGap(ctx, loopbackAddress(ports.direct), "mihomo_socks_ack_is_not_target_readiness", mappedHostname, tlsTarget.Port(), adaptiveGateway)
 	gapResult.SelectedPath = model.PathDirect
 	gapResult.ReasonCode = "mihomo_socks_ack_outbound_only"
 	report.ReadinessGapDetected = !gapResult.PayloadVerified && gapObservation.Success &&
 		gapObservation.StageReached == model.StageOutbound && gapResult.ProxyAttempts == 0
 	gapResult.Passed = report.ReadinessGapDetected
 	report.Scenarios = append(report.Scenarios, gapResult)
-	adaptiveResult := runTLSScenario(ctx, frontEndpoint, "tls_proxy_recovers_unreachable_direct", mappedHostname, tlsTarget.Port(), model.PathProxy, true, gateway)
-	event, ok := waitForEvent(ctx, &eventMu, &events, adaptiveResult.TargetHost)
-	if !ok {
+	decisionStart, guardStart := eventCounts(&eventMu, &events, &guardEvents)
+	adaptiveResult := runTLSScenario(ctx, frontEndpoint, "tls_proxy_recovers_unreachable_direct", mappedHostname, tlsTarget.Port(), model.PathProxy, true, adaptiveGateway)
+	event, eventOK := waitForEventAfter(ctx, &eventMu, &events, decisionStart, adaptiveResult.TargetHost)
+	guardEvent, guardOK := waitForGuardEventAfter(ctx, &eventMu, &guardEvents, guardStart, adaptiveResult.TargetHost)
+	if !eventOK || !guardOK {
 		adaptiveResult.ObservedError = "missing SmartRoute TLS decision event"
 	} else {
 		adaptiveResult.SelectedPath = event.SelectedPath
 		adaptiveResult.ReasonCode = event.ReasonCode
 		report.TLSReadinessVerified = adaptiveResult.PayloadVerified && adaptiveResult.DomainPreserved &&
 			adaptiveResult.ProxyAttempts == 1 && event.Committed && event.SelectedPath == model.PathProxy &&
-			event.Observation.StageReached == model.StageTLS
+			event.Observation.StageReached == model.StageTLS && guardEvent.Committed &&
+			guardEvent.SelectedLane == guard.LaneAdaptive && guardEvent.ReasonCode == guard.ReasonAdaptiveAvailable
 		adaptiveResult.Passed = report.TLSReadinessVerified
 	}
 	report.Scenarios = append(report.Scenarios, adaptiveResult)
+
+	if err := adaptiveService.Stop(); err != nil {
+		return report, fmt.Errorf("stop adaptive sidecar for fallback scenario: %w", err)
+	}
+	adaptiveService = nil
+	decisionStart, guardStart = eventCounts(&eventMu, &events, &guardEvents)
+	fallbackResult := runTLSScenario(ctx, frontEndpoint, "guard_falls_back_when_engine_unavailable", mappedHostname, tlsTarget.Port(), model.PathProxy, true, originalGateway)
+	guardEvent, guardOK = waitForGuardEventAfter(ctx, &eventMu, &guardEvents, guardStart, fallbackResult.TargetHost)
+	decisionCountAfterFallback, _ := eventCounts(&eventMu, &events, &guardEvents)
+	if !guardOK {
+		fallbackResult.ObservedError = "missing SmartRoute guard fallback event"
+	} else {
+		fallbackResult.SelectedPath = model.PathProxy
+		fallbackResult.ReasonCode = guardEvent.ReasonCode
+		report.GuardFallbackVerified = fallbackResult.PayloadVerified && fallbackResult.DomainPreserved &&
+			fallbackResult.ProxyAttempts == 1 && decisionCountAfterFallback == decisionStart && guardEvent.Committed &&
+			guardEvent.SelectedLane == guard.LaneOriginal && guardEvent.ReasonCode == guard.ReasonAdaptiveUnavailableUseOriginal &&
+			guardEvent.AdaptiveFailure == "unavailable"
+		fallbackResult.Passed = report.GuardFallbackVerified
+	}
+	report.Scenarios = append(report.Scenarios, fallbackResult)
+
+	adaptiveService, err = startSidecar(ctx, loopbackAddress(ports.sidecar), server)
+	if err != nil {
+		return report, fmt.Errorf("restart adaptive sidecar: %w", err)
+	}
+	decisionStart, guardStart = eventCounts(&eventMu, &events, &guardEvents)
+	recoveryResult := runTLSScenario(ctx, frontEndpoint, "guard_returns_to_adaptive_after_restart", mappedHostname, tlsTarget.Port(), model.PathProxy, true, adaptiveGateway)
+	event, eventOK = waitForEventAfter(ctx, &eventMu, &events, decisionStart, recoveryResult.TargetHost)
+	guardEvent, guardOK = waitForGuardEventAfter(ctx, &eventMu, &guardEvents, guardStart, recoveryResult.TargetHost)
+	if !eventOK || !guardOK {
+		recoveryResult.ObservedError = "missing SmartRoute recovery events"
+	} else {
+		recoveryResult.SelectedPath = event.SelectedPath
+		recoveryResult.ReasonCode = guardEvent.ReasonCode
+		report.GuardRecoveryVerified = recoveryResult.PayloadVerified && recoveryResult.DomainPreserved &&
+			recoveryResult.ProxyAttempts == 1 && event.Committed && event.SelectedPath == model.PathProxy &&
+			event.Observation.StageReached == model.StageTLS && guardEvent.Committed &&
+			guardEvent.SelectedLane == guard.LaneAdaptive && guardEvent.ReasonCode == guard.ReasonAdaptiveAvailable
+		recoveryResult.Passed = report.GuardRecoveryVerified
+	}
+	report.Scenarios = append(report.Scenarios, recoveryResult)
 
 	time.Sleep(100 * time.Millisecond)
 	eventMu.Lock()
@@ -229,10 +316,20 @@ func Run(parent context.Context, binaryPath string) (Report, error) {
 			Committed: event.Committed,
 		})
 	}
+	report.GuardEventCount = len(guardEvents)
+	for _, event := range guardEvents {
+		report.GuardEvents = append(report.GuardEvents, GuardEventSummary{
+			TargetHost: event.Target.Hostname, SelectedLane: event.SelectedLane,
+			ReasonCode: event.ReasonCode, AdaptiveFailure: event.AdaptiveFailure,
+			Committed: event.Committed,
+		})
+	}
 	eventMu.Unlock()
-	_, report.GatewayLastHost = gateway.Snapshot()
-	report.LoopPrevented = report.DecisionEventCount == 1 && child.Running()
-	report.Passed = report.ConfigValidated && report.LoopPrevented && report.ReadinessGapDetected && report.TLSReadinessVerified
+	_, report.AdaptiveGatewayLastHost = adaptiveGateway.Snapshot()
+	_, report.OriginalGatewayLastHost = originalGateway.Snapshot()
+	report.LoopPrevented = report.DecisionEventCount == 2 && report.GuardEventCount == 3 && child.Running()
+	report.Passed = report.ConfigValidated && report.LoopPrevented && report.ReadinessGapDetected &&
+		report.TLSReadinessVerified && report.GuardFallbackVerified && report.GuardRecoveryVerified
 	for _, scenario := range report.Scenarios {
 		report.Passed = report.Passed && scenario.Passed
 	}
@@ -242,10 +339,13 @@ func Run(parent context.Context, binaryPath string) (Report, error) {
 	}
 
 	select {
-	case err := <-sidecarErrors:
-		if err != nil {
-			return report, fmt.Errorf("sidecar stopped unexpectedly: %w", err)
-		}
+	case err := <-adaptiveService.done:
+		return report, fmt.Errorf("sidecar stopped unexpectedly: %v", err)
+	default:
+	}
+	select {
+	case err := <-guardErrors:
+		return report, fmt.Errorf("guard stopped unexpectedly: %v", err)
 	default:
 	}
 	return report, nil
@@ -284,8 +384,9 @@ func binaryVersion(ctx context.Context, binary string) (string, error) {
 	return version, nil
 }
 
-func renderConfig(ports portSet, gatewayAddress, dnsAddress string) []byte {
-	gatewayHost, gatewayPort, _ := net.SplitHostPort(gatewayAddress)
+func renderConfig(ports portSet, adaptiveGatewayAddress, originalGatewayAddress, dnsAddress string) []byte {
+	adaptiveGatewayHost, adaptiveGatewayPort, _ := net.SplitHostPort(adaptiveGatewayAddress)
+	originalGatewayHost, originalGatewayPort, _ := net.SplitHostPort(originalGatewayAddress)
 	dnsHost, dnsPort, _ := net.SplitHostPort(dnsAddress)
 	return []byte(fmt.Sprintf(`mixed-port: %d
 bind-address: 127.0.0.1
@@ -314,7 +415,12 @@ proxies:
     server: %s
     port: %s
     udp: false
-  - name: SMARTROUTE-ADAPTER
+  - name: ORIGINAL-PROXY
+    type: socks5
+    server: %s
+    port: %s
+    udp: false
+  - name: SMARTROUTE-GUARD-ADAPTER
     type: socks5
     server: 127.0.0.1
     port: %d
@@ -332,15 +438,51 @@ listeners:
     port: %d
     proxy: LAB-PROXY
     udp: false
+  - name: smartroute-lab-original
+    type: mixed
+    listen: 127.0.0.1
+    port: %d
+    proxy: ORIGINAL-PROXY
+    udp: false
 rules:
-  - MATCH,SMARTROUTE-ADAPTER
-`, ports.front, dnsHost, dnsPort, gatewayHost, gatewayPort, ports.sidecar, ports.direct, ports.proxy))
+  - MATCH,SMARTROUTE-GUARD-ADAPTER
+`, ports.front, dnsHost, dnsPort,
+		adaptiveGatewayHost, adaptiveGatewayPort, originalGatewayHost, originalGatewayPort,
+		ports.guard, ports.direct, ports.proxy, ports.original))
 }
 
 func runMihomoConfigTest(ctx context.Context, binary, home, configPath string) ([]byte, error) {
 	command := exec.CommandContext(ctx, binary, "-t", "-d", home, "-f", configPath)
 	command.Env = isolatedEnvironment()
 	return command.CombinedOutput()
+}
+
+type sidecarInstance struct {
+	cancel   context.CancelFunc
+	listener net.Listener
+	done     chan error
+}
+
+func startSidecar(parent context.Context, address string, server sidecar.Server) (*sidecarInstance, error) {
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		return nil, fmt.Errorf("listen SmartRoute sidecar: %w", err)
+	}
+	ctx, cancel := context.WithCancel(parent)
+	instance := &sidecarInstance{cancel: cancel, listener: listener, done: make(chan error, 1)}
+	go func() { instance.done <- server.Serve(ctx, listener) }()
+	return instance, nil
+}
+
+func (s *sidecarInstance) Stop() error {
+	s.cancel()
+	_ = s.listener.Close()
+	select {
+	case err := <-s.done:
+		return err
+	case <-time.After(time.Second):
+		return errors.New("timed out waiting for sidecar shutdown")
+	}
 }
 
 type mihomoChild struct {
@@ -582,12 +724,18 @@ func syntheticDNSResponse(query []byte) ([]byte, bool) {
 	return response, true
 }
 
-func waitForEvent(ctx context.Context, mu *sync.Mutex, events *[]sidecar.DecisionEvent, host string) (sidecar.DecisionEvent, bool) {
+func eventCounts(mu *sync.Mutex, events *[]sidecar.DecisionEvent, guardEvents *[]guard.DecisionEvent) (int, int) {
+	mu.Lock()
+	defer mu.Unlock()
+	return len(*events), len(*guardEvents)
+}
+
+func waitForEventAfter(ctx context.Context, mu *sync.Mutex, events *[]sidecar.DecisionEvent, start int, host string) (sidecar.DecisionEvent, bool) {
 	ticker := time.NewTicker(5 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		mu.Lock()
-		for _, event := range *events {
+		for _, event := range (*events)[start:] {
 			if event.Target.Hostname == host {
 				mu.Unlock()
 				return event, true
@@ -602,15 +750,35 @@ func waitForEvent(ctx context.Context, mu *sync.Mutex, events *[]sidecar.Decisio
 	}
 }
 
+func waitForGuardEventAfter(ctx context.Context, mu *sync.Mutex, events *[]guard.DecisionEvent, start int, host string) (guard.DecisionEvent, bool) {
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		mu.Lock()
+		for _, event := range (*events)[start:] {
+			if event.Target.Hostname == host {
+				mu.Unlock()
+				return event, true
+			}
+		}
+		mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return guard.DecisionEvent{}, false
+		case <-ticker.C:
+		}
+	}
+}
+
 func allocatePorts() (portSet, error) {
-	listeners := make([]net.Listener, 0, 4)
+	listeners := make([]net.Listener, 0, 6)
 	defer func() {
 		for _, listener := range listeners {
 			_ = listener.Close()
 		}
 	}()
-	ports := make([]int, 0, 4)
-	for range 4 {
+	ports := make([]int, 0, 6)
+	for range 6 {
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			return portSet{}, fmt.Errorf("allocate isolated Mihomo port: %w", err)
@@ -618,7 +786,10 @@ func allocatePorts() (portSet, error) {
 		listeners = append(listeners, listener)
 		ports = append(ports, listener.Addr().(*net.TCPAddr).Port)
 	}
-	return portSet{front: ports[0], direct: ports[1], proxy: ports[2], sidecar: ports[3]}, nil
+	return portSet{
+		front: ports[0], direct: ports[1], proxy: ports[2], sidecar: ports[3],
+		guard: ports[4], original: ports[5],
+	}, nil
 }
 
 func loopbackAddress(port int) string {

@@ -2,7 +2,7 @@
 
 SmartRoute 是一个面向 Mihomo/Clash 生态的“自适应分流”实验项目。它不重新实现代理协议，而是在现有静态规则与代理内核之间加入一个可观测、可解释、可撤销的决策层：对规则无法确定的目标比较 `DIRECT` 与 `PROXY` 路径，按当前网络环境积累证据，并逐渐形成个人化路由策略。
 
-当前状态：Phase 0 架构与可行性验证。已经实现实验性的 TLS-over-SOCKS sidecar、分片 ClientHello 检查、无 0-RTT 的 Direct/Proxy TLS readiness 竞争，以及锁定 Mihomo v1.19.29 的独立子进程测试；尚未实现学习持久化、活动 Clash 配置接入或发布安装包。
+当前状态：Phase 0 架构与可行性验证。已经实现实验性的可用性 Guard、TLS-over-SOCKS sidecar、分片 ClientHello 检查、无 0-RTT 的 Direct/Proxy TLS readiness 竞争，以及锁定 Mihomo v1.19.29 的独立子进程测试；尚未实现学习持久化、活动 Clash 配置接入或发布安装包。
 
 ## 当前结论
 
@@ -27,7 +27,9 @@ SmartRoute 是一个面向 Mihomo/Clash 生态的“自适应分流”实验项�
 flowchart LR
     App["应用流量"] --> M["Mihomo 静态规则"]
     M -->|"高置信度规则"| Existing["现有 DIRECT / PROXY / REJECT"]
-    M -->|"低置信度规则或 MATCH"| S["SmartRoute sidecar"]
+    M -->|"低置信度规则或 MATCH"| G["SmartRoute Guard"]
+    G -->|"引擎可用"| S["SmartRoute adaptive engine"]
+    G -->|"引擎不可用，提交业务字节前"| O["原漏网之鱼策略"]
     S --> D["专用 DIRECT 入口"]
     S --> P["原漏网之鱼代理策略"]
     S <--> E["可解释决策与本地学习"]
@@ -45,6 +47,7 @@ flowchart LR
 | SOCKS5 client/server、域名目标保留 | 实验性实现 |
 | Direct/Proxy 错峰竞争、取消 loser | 实验性实现 |
 | TCP sidecar relay 与 `serve` 命令 | 实验性实现 |
+| 独立 availability Guard 与 `guard` 命令 | 已实现单元测试；隔离 Mihomo 故障/恢复运行待复验 |
 | 独立回环 Test Lab 与故障注入 | 已实现第一批场景 |
 | TLS readiness gate | 已实现：结构化 ServerHello 达到 L3，预读字节无损回放 |
 | TLS ClientHello/0-RTT 安全处理 | 已实现分片重组；检测到 `early_data` 时在拨号前拒绝 |
@@ -76,7 +79,7 @@ bash scripts/prepare-upstreams.sh mihomo  # first Mihomo Lab run only
 make mihomo-lab
 ```
 
-进程内场景覆盖 TCP 候选竞争、分片 ClientHello、early-data 拒绝、TLS loser 取消和 ServerHello 预读回放。Mihomo 场景验证了强制 Direct/Proxy、域名保留、无递归、L1 ACK 假阳性，以及 HTTPS/TLS 从不可达 Direct 自动恢复到 Proxy 的 L3 提交。这里的 L3 只证明收到了结构合法的 ServerHello，不代表证书或完整握手成功。详见 [独立测试环境](docs/07-isolated-test-lab.md)、[ADR-0004](docs/adr/0004-mihomo-socks-ack-is-not-target-readiness.md) 和 [ADR-0005](docs/adr/0005-safe-tls-first-flight-racing.md)。
+进程内场景覆盖 TCP 候选竞争、分片 ClientHello、early-data 拒绝、TLS loser 取消、ServerHello 预读回放，以及自适应引擎不可用时的同连接原策略回退。既有 Mihomo 运行结果验证了强制 Direct/Proxy、域名保留、无递归、L1 ACK 假阳性，以及 HTTPS/TLS 从不可达 Direct 自动恢复到 Proxy 的 L3 提交；新增的 Guard 停止/恢复场景已进入隔离实验代码，仍需在允许环回子进程的 macOS/Linux 环境复验。这里的 L3 只证明收到了结构合法的 ServerHello，不代表证书或完整握手成功。详见 [独立测试环境](docs/07-isolated-test-lab.md)、[ADR-0005](docs/adr/0005-safe-tls-first-flight-racing.md) 和 [ADR-0006](docs/adr/0006-separate-availability-guard.md)。
 
 为适配真实环境，可以对活动 Clash Verge Rev 目录进行只读、脱敏的结构检查；现阶段仍禁止自动写入或重载。待隔离 Mihomo 测试、备份和回滚验证完成后，再在用户配合下进入短时真实试用，并使用默认关闭、本地保存、可清空的结构化观测记录。详见 [观测与真实试用计划](docs/08-observation-and-live-trial.md)。
 

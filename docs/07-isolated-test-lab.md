@@ -86,11 +86,14 @@ The command builds the exact locked Mihomo v1.19.29 source and launches it as a 
 
 ```mermaid
 flowchart LR
-    C["Synthetic client"] --> F["Mihomo front listener\nMATCH -> SmartRoute"]
-    F --> S["SmartRoute sidecar"]
+    C["Synthetic client"] --> F["Mihomo front listener\nMATCH -> Guard"]
+    F --> A["SmartRoute Guard"]
+    A -->|"engine available"| S["SmartRoute adaptive engine"]
+    A -->|"engine unavailable"| O["Mihomo original-policy listener"]
     S --> D["Mihomo forced DIRECT listener"]
     S --> P["Mihomo forced Proxy listener"]
-    P --> G["Local fake SOCKS proxy"]
+    P --> G["Local adaptive fake SOCKS proxy"]
+    O --> OG["Local original fake SOCKS proxy"]
     D --> E["Local echo/TLS targets"]
     G --> T["Synthetic TLS target"]
 ```
@@ -101,8 +104,18 @@ flowchart LR
 | `forced_proxy_preserves_domain` | Forced Proxy preserves `echo.test` and returns the synthetic ServerHello |
 | `mihomo_socks_ack_is_not_target_readiness` | Forced Direct ACK remains L1 and no ServerHello arrives |
 | `tls_proxy_recovers_unreachable_direct` | Front adaptive flow rejects Direct as unready, commits Proxy at `StageTLS`, and replays ServerHello |
+| `guard_falls_back_when_engine_unavailable` | Lab stops only the adaptive engine; Guard sends the same client connection to the independent original-policy listener before payload |
+| `guard_returns_to_adaptive_after_restart` | Lab rebinds the engine port; the next connection returns to adaptive TLS selection without restarting Mihomo or Guard |
 
-The negative L1 scenario and positive L3 recovery are both required. Together they prove the sidecar neither learns from a SOCKS false positive nor waits for a later application retry when a safe TLS first flight can recover the connection.
+The negative L1 scenario and positive L3 recovery are both required. The two Guard scenarios additionally distinguish engine availability from Guard availability and assert that the original path does not recursively enter the adaptive engine.
+
+Evidence status:
+
+| Slice | Current evidence |
+| --- | --- |
+| Forced listeners, L1 gap, TLS L3 recovery | Passed on macOS arm64 and Linux amd64 with v1.19.29 |
+| Guard unit semantics | Passed with `net.Pipe`, including refused, wedged and dual-failure cases |
+| Guard engine stop/fallback/restart through Mihomo | Scenario code implemented; current sandbox blocked loopback bind before config validation, so a permitted macOS/Linux run is still required |
 
 System-proxy and TUN validation will be a distinct, manual opt-in suite because those operations can affect the host network even when a separate config is used.
 
@@ -116,4 +129,5 @@ The owner permits scoped, redacted read-only inspection of the active Clash Verg
 - The isolated Mihomo lab covers startup listener semantics, not active selectors, Fake-IP/TUN capture, reload behavior, or operating-system integration.
 - The TLS parser is bounded and structural: it does not validate certificates, Finished, ALPN, application success, or every real-world TLS fingerprint.
 - ClientHello duplication can expose the same handshake fingerprint from Direct and Proxy egresses; privacy-denied targets must never enter this mode.
+- A stopped adaptive engine is covered only before Guard commits a lane. Failure after payload commitment is not replayed, and failure of the Guard process itself still needs an outer supervisor/health boundary.
 - No observations are persisted or promoted into learned policies yet.

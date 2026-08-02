@@ -1,13 +1,13 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/firfisa/smartroute/internal/model"
@@ -16,14 +16,17 @@ import (
 const CurrentVersion = 1
 
 type Config struct {
-	Version          int            `json:"version"`
-	ListenAddress    string         `json:"listen_address"`
-	DirectEndpoint   string         `json:"direct_endpoint"`
-	ProxyEndpoint    string         `json:"proxy_endpoint"`
-	OriginalFallback model.Path     `json:"original_fallback"`
-	Decision         DecisionConfig `json:"decision"`
-	Learning         LearningConfig `json:"learning"`
-	Privacy          PrivacyConfig  `json:"privacy"`
+	Version                int            `json:"version"`
+	ListenAddress          string         `json:"listen_address"`
+	DirectEndpoint         string         `json:"direct_endpoint"`
+	ProxyEndpoint          string         `json:"proxy_endpoint"`
+	GuardListenAddress     string         `json:"guard_listen_address"`
+	OriginalEndpoint       string         `json:"original_endpoint"`
+	GuardAdaptiveTimeoutMS int            `json:"guard_adaptive_timeout_ms"`
+	OriginalFallback       model.Path     `json:"original_fallback"`
+	Decision               DecisionConfig `json:"decision"`
+	Learning               LearningConfig `json:"learning"`
+	Privacy                PrivacyConfig  `json:"privacy"`
 }
 
 type DecisionConfig struct {
@@ -45,11 +48,14 @@ type PrivacyConfig struct {
 
 func Default() Config {
 	return Config{
-		Version:          CurrentVersion,
-		ListenAddress:    "127.0.0.1:17890",
-		DirectEndpoint:   "127.0.0.1:17891",
-		ProxyEndpoint:    "127.0.0.1:17892",
-		OriginalFallback: model.PathProxy,
+		Version:                CurrentVersion,
+		ListenAddress:          "127.0.0.1:17890",
+		DirectEndpoint:         "127.0.0.1:17891",
+		ProxyEndpoint:          "127.0.0.1:17892",
+		GuardListenAddress:     "127.0.0.1:17893",
+		OriginalEndpoint:       "127.0.0.1:17894",
+		GuardAdaptiveTimeoutMS: 250,
+		OriginalFallback:       model.PathProxy,
 		Decision: DecisionConfig{
 			DirectHeadStartMS:  200,
 			MaxDirectPenaltyMS: 150,
@@ -74,10 +80,24 @@ func Load(path string) (Config, error) {
 	}
 
 	var cfg Config
-	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("decode config: %w", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return Config{}, fmt.Errorf("decode config fields: %w", err)
+	}
+	defaults := Default()
+	if _, present := fields["guard_listen_address"]; !present {
+		cfg.GuardListenAddress = defaults.GuardListenAddress
+	}
+	if _, present := fields["original_endpoint"]; !present {
+		cfg.OriginalEndpoint = defaults.OriginalEndpoint
+	}
+	if _, present := fields["guard_adaptive_timeout_ms"]; !present {
+		cfg.GuardAdaptiveTimeoutMS = defaults.GuardAdaptiveTimeoutMS
 	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -92,22 +112,37 @@ func (c Config) Validate() error {
 		validationErrors = append(validationErrors, fmt.Errorf("version must be %d", CurrentVersion))
 	}
 	for name, address := range map[string]string{
-		"listen_address":  c.ListenAddress,
-		"direct_endpoint": c.DirectEndpoint,
-		"proxy_endpoint":  c.ProxyEndpoint,
+		"listen_address":       c.ListenAddress,
+		"direct_endpoint":      c.DirectEndpoint,
+		"proxy_endpoint":       c.ProxyEndpoint,
+		"guard_listen_address": c.GuardListenAddress,
+		"original_endpoint":    c.OriginalEndpoint,
 	} {
 		if err := validateLoopbackAddress(address); err != nil {
 			validationErrors = append(validationErrors, fmt.Errorf("%s: %w", name, err))
 		}
 	}
-	if c.ListenAddress == c.DirectEndpoint || c.ListenAddress == c.ProxyEndpoint || c.DirectEndpoint == c.ProxyEndpoint {
-		validationErrors = append(validationErrors, errors.New("listen and candidate endpoints must use distinct addresses"))
+	seenAddresses := map[string]string{}
+	for name, address := range map[string]string{
+		"listen_address":       c.ListenAddress,
+		"direct_endpoint":      c.DirectEndpoint,
+		"proxy_endpoint":       c.ProxyEndpoint,
+		"guard_listen_address": c.GuardListenAddress,
+		"original_endpoint":    c.OriginalEndpoint,
+	} {
+		if previous, exists := seenAddresses[address]; exists {
+			validationErrors = append(validationErrors, fmt.Errorf("%s and %s must use distinct addresses", previous, name))
+		}
+		seenAddresses[address] = name
 	}
 	if c.OriginalFallback != model.PathDirect && c.OriginalFallback != model.PathProxy {
 		validationErrors = append(validationErrors, errors.New("original_fallback must be direct or proxy"))
 	}
 	if c.Decision.DirectHeadStartMS < 10 || c.Decision.DirectHeadStartMS > 2000 {
 		validationErrors = append(validationErrors, errors.New("direct_head_start_ms must be between 10 and 2000"))
+	}
+	if c.GuardAdaptiveTimeoutMS < 10 || c.GuardAdaptiveTimeoutMS > 2000 {
+		validationErrors = append(validationErrors, errors.New("guard_adaptive_timeout_ms must be between 10 and 2000"))
 	}
 	if c.Decision.MaxDirectPenaltyMS < 0 || c.Decision.MaxDirectPenaltyMS > 5000 {
 		validationErrors = append(validationErrors, errors.New("max_direct_penalty_ms must be between 0 and 5000"))
@@ -134,6 +169,10 @@ func (c Config) DirectHeadStart() time.Duration {
 
 func (c Config) CandidateTimeout() time.Duration {
 	return time.Duration(c.Decision.CandidateTimeoutMS) * time.Millisecond
+}
+
+func (c Config) GuardAdaptiveTimeout() time.Duration {
+	return time.Duration(c.GuardAdaptiveTimeoutMS) * time.Millisecond
 }
 
 func validateLoopbackAddress(address string) error {

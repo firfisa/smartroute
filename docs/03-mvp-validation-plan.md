@@ -62,6 +62,7 @@ MVP 不是为了证明“能够自动写 YAML”，而是回答五个可证伪�
 | 独立 Mihomo listener 拓扑 | macOS arm64、Linux amd64/v1.19.29 已完成 | `make mihomo-lab`；临时目录、随机端口、独立子进程 |
 | SOCKS readiness 契约 | 已识别安全缺口并封闸 | Mihomo L1 候选产生 `candidate_below_commit_stage`，不得提交或学习 |
 | TLS readiness gate | 实验性完成 | 分片 ClientHello、early-data 预拨号拒绝、ServerHello L3、精确预读回放 |
+| adaptive engine 可用性 Guard | 单元与拓扑代码完成；隔离运行待复验 | 引擎拒绝/握手卡死时同连接回原策略；停止、回退、重启、恢复场景 |
 | 系统代理与 TUN | 待执行且仅手动 opt-in | 不使用活动 Clash 实例 |
 
 退出条件：
@@ -194,7 +195,7 @@ MVP 不是为了证明“能够自动写 YAML”，而是回答五个可证伪�
 - 休眠/唤醒。
 - Wi-Fi 切换。
 - 节点切换、订阅更新和内核重启。
-- sidecar 崩溃、数据库损坏、端口被占用。
+- adaptive engine 崩溃、Guard 崩溃、数据库损坏、端口被占用。
 - 系统时间变化。
 - 规则 provider 写入失败。
 

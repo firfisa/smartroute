@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"sync"
 	"time"
 
 	"github.com/firfisa/smartroute/internal/model"
+	"github.com/firfisa/smartroute/internal/netrelay"
 	"github.com/firfisa/smartroute/internal/socks5"
 	"github.com/firfisa/smartroute/internal/tlsinspect"
 	"github.com/firfisa/smartroute/internal/transport"
@@ -135,7 +135,7 @@ func (s Server) handle(ctx context.Context, inbound net.Conn) {
 			Committed: true,
 		})
 	}
-	relay(inbound, result.Conn)
+	netrelay.Bidirectional(inbound, result.Conn)
 }
 
 func (s Server) handleTLS(ctx context.Context, inbound net.Conn, target model.Target) {
@@ -180,7 +180,7 @@ func (s Server) handleTLS(ctx context.Context, inbound net.Conn, target model.Ta
 			Committed: true,
 		})
 	}
-	relay(inbound, result.Conn)
+	netrelay.Bidirectional(inbound, result.Conn)
 }
 
 func (s Server) emitDiagnostic(event DiagnosticEvent) {
@@ -205,19 +205,4 @@ func classifyClientHelloFailure(ctx context.Context, err error) string {
 		return "client_hello_connection_closed"
 	}
 	return tlsinspect.FailureClass(err)
-}
-
-func relay(left, right net.Conn) {
-	var wait sync.WaitGroup
-	wait.Add(2)
-	copyDirection := func(dst, src net.Conn) {
-		defer wait.Done()
-		_, _ = io.Copy(dst, src)
-		if closeWriter, ok := dst.(interface{ CloseWrite() error }); ok {
-			_ = closeWriter.CloseWrite()
-		}
-	}
-	go copyDirection(right, left)
-	go copyDirection(left, right)
-	wait.Wait()
 }

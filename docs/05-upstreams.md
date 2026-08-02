@@ -26,6 +26,7 @@ The following evidence was inspected at the locked v1.19.29 commit and compared 
 | SOCKS outbound forwards a domain target | `.upstream/mihomo/adapter/outbound/util.go` | `serializesSocksAddr` emits SOCKS domain form when `metadata.Host` is present |
 | SOCKS outbound performs CONNECT to the sidecar | `.upstream/mihomo/adapter/outbound/socks5.go` | `DialContext` connects to the local SOCKS server and performs a CONNECT handshake with serialized target metadata |
 | Inbound SOCKS success precedes target dial | `.upstream/mihomo/transport/socks5/socks5.go` and tunnel handoff | `ServerHandshake` writes success before `tunnel.HandleTCPConn` resolves/dials; classify the ACK as L1 `StageOutbound` |
+| `fallback` does not retry the current connection | `.upstream/mihomo/adapter/outboundgroup/fallback.go` | `DialContext` selects one member with `findAliveProxy`, returns that member's dial error, and only calls `onDialFailed`; it does not dial the next member for the same connection |
 
 Isolated runtime results from `make mihomo-lab` on macOS arm64 and the Ubuntu amd64 GitHub runner:
 
@@ -44,7 +45,8 @@ Remaining runtime checks:
 - Confirm Fake-IP/TUN combinations preserve `metadata.Host` before the adapter boundary.
 - Confirm both forced listeners work through config reloads on macOS; startup behavior is verified.
 - Confirm the proxy listener cannot resolve to `DIRECT` through a user selector when collecting a Proxy counterfactual.
-- Implement and fault-test an automatic fallback to the user's original `MATCH` policy when the sidecar is unavailable.
+- Re-run the new Guard engine-stop/original-fallback/restart scenarios on macOS and Linux; the implementation and unit tests are complete, but this added child-process topology has not yet been recorded as passed.
+- Protect failure of the Guard process itself with a supervisor and/or an outer Mihomo health fallback, while documenting that the outer group still cannot retry the first failed connection.
 
 ## 3. Preparation
 

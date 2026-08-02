@@ -29,7 +29,9 @@ SmartRoute 只接管“现有规则无法可靠决定”的流量，并满足以
 flowchart TB
     App["应用流量"] --> M["Mihomo: TUN / 系统代理 / 静态规则"]
     M -->|"明确规则"| Fixed["DIRECT / PROXY / REJECT"]
-    M -->|"未知 TCP 目标"| S["SmartRoute Dialer Sidecar"]
+    M -->|"未知 TCP 目标"| G["SmartRoute Availability Guard"]
+    G -->|"自适应引擎可用"| S["SmartRoute Adaptive Engine"]
+    G -->|"引擎不可用"| O["Mihomo 原始兜底入口"]
     S --> D["Mihomo 专用入口: 强制 DIRECT"]
     S --> P["Mihomo 专用入口: 强制代理组"]
     D --> Net["目标网络"]
@@ -62,10 +64,10 @@ Mihomo 已支持为 listener 指定固定 `proxy`，也支持按 `IN-NAME` 等�
 
 ```yaml
 proxies:
-  - name: SMARTRoute-Adapter
+  - name: SMARTRoute-Guard
     type: socks5
     server: 127.0.0.1
-    port: 17890
+    port: 17893
 
 listeners:
   - name: smartroute-direct
@@ -80,17 +82,24 @@ listeners:
     port: 17892
     proxy: 用户选择的代理组
 
+  - name: smartroute-original
+    type: mixed
+    listen: 127.0.0.1
+    port: 17894
+    proxy: 原有漏网之鱼策略
+
 rules:
   # 用户锁定、隐私、REJECT、局域网和可靠规则仍在前面
   - RULE-SET,private,DIRECT
   - RULE-SET,known-direct,DIRECT
   - RULE-SET,known-proxy,用户选择的代理组
-  # 只有原本会落入兜底的未知 TCP 域名进入 SmartRoute
-  - AND,((NETWORK,tcp),(DOMAIN-REGEX,.+)),SMARTRoute-Adapter
-  - MATCH,原有兜底策略
+  # 可以只把指定的低置信度规则交给 Guard，也可以在试验中替换最终兜底
+  - MATCH,SMARTRoute-Guard
 ```
 
-sidecar 接收 SOCKS5 目标后，再分别通过 `17891` 和 `17892` 建立候选连接。两个专用入口固定出口，不会重新落回 `SMARTRoute-Adapter`，从而避免递归。
+Guard 在 `17893` 接收目标，先用短超时尝试 `17890` 的 adaptive engine；只有引擎完成本地 SOCKS 握手后才把该连接交给自适应逻辑。若引擎拒绝连接或握手超时，Guard 会在接收业务载荷前，把同一条客户端连接交给 `17894` 的原始策略入口。adaptive engine 再分别通过 `17891` 和 `17892` 建立候选连接；三个专用入口均固定出口，不会重新落回 Guard，从而避免递归。
+
+锁定的 Mihomo v1.19.29 `fallback` 组不能单独承担该语义：它在拨号前选一个健康成员，所选成员拨号失败后返回本次错误，只触发后续健康处理，不会为同一条连接继续拨下一个成员。因此 Phase 0 使用独立 Guard；依据和残余故障边界见 ADR-0006。
 
 MVP 可以让高置信度决策继续经过 sidecar，由本地缓存直接选择路径；这样不需要频繁重载 Mihomo。规则导出是优化和可移植功能，不是运行时依赖。
 
@@ -98,7 +107,9 @@ MVP 可以让高置信度决策继续经过 sidecar，由本地缓存直接选�
 
 ```mermaid
 flowchart LR
-    Client["TLS-over-SOCKS client"] --> Inbound["internal/sidecar\nlocal SOCKS admission"]
+    Client["TLS-over-SOCKS client"] --> Guard["internal/guard\npre-payload availability"]
+    Guard -->|"engine available"| Inbound["internal/sidecar\nlocal SOCKS admission"]
+    Guard -->|"engine unavailable"| Original["Mihomo original-policy listener"]
     Inbound --> Inspect["internal/tlsinspect\ncomplete ClientHello; reject early_data"]
     Inspect --> Racer["internal/transport.TLSRacer\nDirect-first stagger"]
     Racer --> D["SOCKS5Dialer: Direct endpoint"]

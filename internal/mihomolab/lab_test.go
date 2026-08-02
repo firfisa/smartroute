@@ -7,18 +7,23 @@ import (
 )
 
 func TestRenderConfigIsLoopbackOnlyAndDisablesTUN(t *testing.T) {
-	config := string(renderConfig(portSet{front: 31001, direct: 31002, proxy: 31003, sidecar: 31004}, "127.0.0.1:31005", "127.0.0.1:31006"))
+	config := string(renderConfig(
+		portSet{front: 31001, direct: 31002, proxy: 31003, sidecar: 31004, guard: 31005, original: 31006},
+		"127.0.0.1:31007", "127.0.0.1:31008", "127.0.0.1:31009",
+	))
 	required := []string{
 		"mixed-port: 31001",
 		"bind-address: 127.0.0.1",
 		"enable: false",
-		"127.0.0.1:31006",
-		"port: 31004",
+		"127.0.0.1:31009",
+		"port: 31005",
 		"port: 31002",
 		"proxy: DIRECT",
 		"port: 31003",
 		"proxy: LAB-PROXY",
-		"MATCH,SMARTROUTE-ADAPTER",
+		"port: 31006",
+		"proxy: ORIGINAL-PROXY",
+		"MATCH,SMARTROUTE-GUARD-ADAPTER",
 	}
 	for _, value := range required {
 		if !strings.Contains(config, value) {

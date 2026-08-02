@@ -79,7 +79,7 @@ Raw observations must never be committed to GitHub. Analysis artifacts intended 
 
 ## 5. Coordinated replacement procedure
 
-The isolated Mihomo listener topology and minimal L3 TLS readiness recovery have passed on macOS/v1.19.29. Configuration replacement will begin only after sidecar-unavailable fallback, rollback tests, and a broader real-TLS compatibility matrix pass.
+The isolated Mihomo listener topology and minimal L3 TLS readiness recovery have passed on macOS/v1.19.29. A separate Guard now implements pre-payload fallback when the adaptive engine is unavailable, but its new Mihomo stop/restart scenarios still need a permitted platform run and Guard-process failure remains unprotected. Configuration replacement will begin only after those availability checks, privacy-policy enforcement, rollback tests, and a broader real-TLS compatibility matrix pass.
 
 1. Agree on the trial network, time window, target traffic, and stop conditions.
 2. Resolve the active profile plus merge/script layers read-only.

@@ -43,3 +43,11 @@ func TestRunServeRequiresDirectProbeAcknowledgmentBeforeListening(t *testing.T) 
 		t.Fatalf("run(serve) error = %v", err)
 	}
 }
+
+func TestRunGuardRejectsEmptyNetworkProfileBeforeListening(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"guard", "-network-profile", ""}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "network-profile") {
+		t.Fatalf("run(guard) error = %v", err)
+	}
+}

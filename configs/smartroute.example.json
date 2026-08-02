@@ -3,6 +3,9 @@
   "listen_address": "127.0.0.1:17890",
   "direct_endpoint": "127.0.0.1:17891",
   "proxy_endpoint": "127.0.0.1:17892",
+  "guard_listen_address": "127.0.0.1:17893",
+  "original_endpoint": "127.0.0.1:17894",
+  "guard_adaptive_timeout_ms": 250,
   "original_fallback": "proxy",
   "decision": {
     "direct_head_start_ms": 200,

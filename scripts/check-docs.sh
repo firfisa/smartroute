@@ -33,6 +33,7 @@ required_files=(
   "docs/adr/0003-read-only-clash-inspection-and-live-rollout.md"
   "docs/adr/0004-mihomo-socks-ack-is-not-target-readiness.md"
   "docs/adr/0005-safe-tls-first-flight-racing.md"
+  "docs/adr/0006-separate-availability-guard.md"
   "configs/smartroute.example.json"
   "upstreams.lock"
 )
@@ -87,6 +88,12 @@ fi
 if ! matches 'early_data' "${project_root}/AGENTS.md" "${project_root}/docs/adr/0005-safe-tls-first-flight-racing.md" ||
   ! matches 'tls_proxy_recovers_unreachable_direct' "${project_root}/docs/07-isolated-test-lab.md"; then
   echo "TLS first-flight safety contract or runtime evidence is missing" >&2
+  exit 1
+fi
+
+if ! matches 'guard_falls_back_when_engine_unavailable' "${project_root}/docs/07-isolated-test-lab.md" ||
+  ! matches 'does not dial the next member for the same connection' "${project_root}/docs/adr/0006-separate-availability-guard.md"; then
+  echo "availability guard contract or Mihomo fallback evidence is missing" >&2
   exit 1
 fi
 
