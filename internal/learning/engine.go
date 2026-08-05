@@ -16,8 +16,10 @@ import (
 )
 
 const (
+	ModeAuto          = "auto"
 	ModeShadow        = "shadow"
 	ModeEphemeralAuto = "ephemeral-auto"
+	ModeDurableAuto   = "durable-auto"
 
 	ReasonIncompleteEvidence     = "incomplete_paired_evidence_no_update"
 	ReasonWeakFailure            = "weak_path_failure_no_update"
@@ -29,7 +31,17 @@ const (
 	ReasonPreferenceRefreshed    = "ephemeral_preference_refreshed"
 	ReasonPreferenceContradicted = "ephemeral_preference_contradicted"
 	ReasonHealthFrozen           = "learning_skipped_health_frozen"
+	ReasonAutoDirectRemembered   = "automatic_direct_path_remembered"
+	ReasonAutoProxyRemembered    = "automatic_proxy_path_remembered"
+	ReasonAutoPathUnchanged      = "automatic_path_unchanged"
 )
+
+// UsesAutomaticPolicy reports whether mode uses the persistent last-known-good
+// index. "durable-auto" remains accepted as a compatibility spelling; new
+// configurations use the shorter "auto" name.
+func UsesAutomaticPolicy(mode string) bool {
+	return mode == ModeAuto || mode == ModeDurableAuto
+}
 
 type Config struct {
 	Mode                string
@@ -81,7 +93,7 @@ type Engine struct {
 
 func New(config Config) (*Engine, error) {
 	if config.Mode != ModeShadow && config.Mode != ModeEphemeralAuto {
-		return nil, fmt.Errorf("learning mode must be %q or %q", ModeShadow, ModeEphemeralAuto)
+		return nil, fmt.Errorf("legacy learning mode must be %q or %q", ModeShadow, ModeEphemeralAuto)
 	}
 	if config.DirectPromotionWins < 2 || config.ProxyPromotionWins < 2 {
 		return nil, errors.New("learning promotion thresholds must be at least 2")

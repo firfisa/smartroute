@@ -3,6 +3,7 @@ package sidecar
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"strings"
@@ -10,7 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/firfisa/smartroute/internal/connectionid"
 	"github.com/firfisa/smartroute/internal/model"
+	"github.com/firfisa/smartroute/internal/netrelay"
 	"github.com/firfisa/smartroute/internal/transport"
 )
 
@@ -37,22 +40,37 @@ func TestServeCancellationDrainsPendingHandshake(t *testing.T) {
 	}
 }
 
+func TestServeRejectsInvalidDeclaredBaselineBeforeAccept(t *testing.T) {
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+	defer clientConn.Close()
+	listener := newOneConnectionListener(serverConn)
+	err := (Server{DeclaredBaselinePath: model.PathOriginal}).Serve(context.Background(), listener)
+	if err == nil || !strings.Contains(err.Error(), "declared baseline path") {
+		t.Fatalf("Serve() error=%v", err)
+	}
+}
+
 func TestRelayOutcomeCountsPostCommitBytesWithoutPayload(t *testing.T) {
 	serverConn, clientConn := net.Pipe()
 	peers := make(chan net.Conn, 1)
+	decisions := make(chan DecisionEvent, 1)
 	outcomes := make(chan RelayOutcomeEvent, 1)
 	times := make(chan time.Time, 2)
 	started := time.Unix(100, 0)
 	times <- started
 	times <- started.Add(250 * time.Millisecond)
 	server := Server{
-		HandshakeTimeout: time.Second,
+		HandshakeTimeout: time.Second, DeclaredBaselinePath: model.PathProxy,
 		Racer: transport.Racer{
 			Direct:    stageDialer{path: model.PathDirect, stage: model.StageTCP, peer: peers},
 			Proxy:     stageDialer{path: model.PathProxy, stage: model.StageTCP, peer: make(chan net.Conn, 1)},
 			HeadStart: 100 * time.Millisecond, Timeout: time.Second,
 		},
 		Clock: func() time.Time { return <-times },
+		OnDecision: func(event DecisionEvent) {
+			decisions <- event
+		},
 		OnRelayOutcome: func(event RelayOutcomeEvent) {
 			outcomes <- event
 		},
@@ -64,6 +82,13 @@ func TestRelayOutcomeCountsPostCommitBytesWithoutPayload(t *testing.T) {
 	}()
 	performSOCKSRequest(t, clientConn)
 	peer := <-peers
+	decision := <-decisions
+	if err := connectionid.Validate(decision.ConnectionID); err != nil {
+		t.Fatalf("decision connection ID: %v", err)
+	}
+	if decision.DeclaredBaselinePath != model.PathProxy {
+		t.Fatalf("decision baseline=%q", decision.DeclaredBaselinePath)
+	}
 
 	request := []byte("request-body")
 	requestWritten := make(chan error, 1)
@@ -99,8 +124,16 @@ func TestRelayOutcomeCountsPostCommitBytesWithoutPayload(t *testing.T) {
 	case outcome := <-outcomes:
 		if outcome.EventType != EventTypeRelayOutcome || outcome.SelectedPath != model.PathDirect ||
 			outcome.ClientToRemoteBytes != int64(len(request)) || outcome.RemoteToClientBytes != int64(len(response)) ||
+			!outcome.ClientToRemoteEnd.Valid() || !outcome.RemoteToClientEnd.Valid() ||
+			outcome.ClientToRemoteEnd == netrelay.EndCanceled || outcome.RemoteToClientEnd == netrelay.EndCanceled ||
 			outcome.RelayDurationMS != 250 || outcome.Termination != RelayTerminationEnded {
 			t.Fatalf("outcome = %+v", outcome)
+		}
+		if outcome.ConnectionID != decision.ConnectionID {
+			t.Fatalf("decision connection=%q outcome connection=%q", decision.ConnectionID, outcome.ConnectionID)
+		}
+		if outcome.DeclaredBaselinePath != decision.DeclaredBaselinePath {
+			t.Fatalf("decision baseline=%q outcome baseline=%q", decision.DeclaredBaselinePath, outcome.DeclaredBaselinePath)
 		}
 		if outcome.Target.Hostname != "echo.test" {
 			t.Fatalf("target = %+v", outcome.Target)
@@ -119,6 +152,23 @@ func TestRelayOutcomeCountsPostCommitBytesWithoutPayload(t *testing.T) {
 	case <-handled:
 	case <-time.After(time.Second):
 		t.Fatal("handler did not finish after relay endpoints closed")
+	}
+}
+
+func TestConnectionIDGenerationFailureLeavesEventsExplicitlyUnscoped(t *testing.T) {
+	server := Server{OnDecision: func(DecisionEvent) {}}
+	server.ConnectionIDGenerator = func() (string, error) { return "", errors.New("entropy unavailable") }
+	if value := server.connectionID(); value != "" {
+		t.Fatalf("failed generator returned %q", value)
+	}
+	server.ConnectionIDGenerator = func() (string, error) { return "personal-label", nil }
+	if value := server.connectionID(); value != "" {
+		t.Fatalf("invalid generator returned %q", value)
+	}
+	valid := "conn-0123456789abcdef0123456789abcdef"
+	server.ConnectionIDGenerator = func() (string, error) { return valid, nil }
+	if value := server.connectionID(); value != valid {
+		t.Fatalf("valid generator returned %q", value)
 	}
 }
 

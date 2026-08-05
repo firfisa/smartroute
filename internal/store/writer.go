@@ -15,6 +15,10 @@ const (
 	ReasonDurableQueued    = "durable_evidence_queued"
 	ReasonDurableQueueFull = "durable_evidence_queue_full"
 	ReasonDurableClosed    = "durable_evidence_writer_closed"
+
+	ReasonPolicyQueued    = "durable_policy_queued"
+	ReasonPolicyQueueFull = "durable_policy_queue_full"
+	ReasonPolicyClosed    = "durable_policy_writer_closed"
 )
 
 type EvidenceAppender interface {
@@ -37,18 +41,119 @@ type WriterStats struct {
 }
 
 type WriterOptions struct {
-	Capacity  int
-	OnError   func(error)
-	OnWritten func(WriteRequest) error
+	Capacity    int
+	OnError     func(error)
+	OnWritten   func(WriteRequest) error
+	OnProcessed func(WriteRequest, bool) error
+}
+
+type PolicyRememberer interface {
+	RememberDurablePath(context.Context, model.Target, model.Path, time.Time, int) (DurablePolicyChange, error)
+}
+
+type PolicyWriteRequest struct {
+	Target     model.Target
+	Path       model.Path
+	ObservedAt time.Time
+}
+
+// AsyncPolicyWriter is the minimal persistence path used by automatic mode.
+// It stores only the last ready path; it does not create evidence or session rows.
+type AsyncPolicyWriter struct {
+	store      PolicyRememberer
+	maxEntries int
+	queue      chan PolicyWriteRequest
+	done       chan struct{}
+	onError    func(error)
+
+	mu      sync.RWMutex
+	closed  bool
+	queued  atomic.Uint64
+	written atomic.Uint64
+	dropped atomic.Uint64
+	errors  atomic.Uint64
+}
+
+func NewAsyncPolicyWriter(store PolicyRememberer, maxEntries, capacity int, onError func(error)) (*AsyncPolicyWriter, error) {
+	if store == nil {
+		return nil, errors.New("durable policy store is required")
+	}
+	if maxEntries < 1 || maxEntries > 1000000 {
+		return nil, errors.New("durable policy capacity must be between 1 and 1000000")
+	}
+	if capacity < 1 || capacity > 65536 {
+		return nil, errors.New("durable policy queue capacity must be between 1 and 65536")
+	}
+	writer := &AsyncPolicyWriter{
+		store: store, maxEntries: maxEntries, queue: make(chan PolicyWriteRequest, capacity),
+		done: make(chan struct{}), onError: onError,
+	}
+	go writer.run()
+	return writer, nil
+}
+
+// Enqueue never blocks. A full queue drops persistence work only; the in-memory
+// choice has already been applied and the current connection is unaffected.
+func (w *AsyncPolicyWriter) Enqueue(request PolicyWriteRequest) (accepted bool, reason string) {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	if w.closed {
+		w.dropped.Add(1)
+		return false, ReasonPolicyClosed
+	}
+	select {
+	case w.queue <- request:
+		w.queued.Add(1)
+		return true, ReasonPolicyQueued
+	default:
+		w.dropped.Add(1)
+		return false, ReasonPolicyQueueFull
+	}
+}
+
+func (w *AsyncPolicyWriter) Close(ctx context.Context) error {
+	w.mu.Lock()
+	if !w.closed {
+		w.closed = true
+		close(w.queue)
+	}
+	w.mu.Unlock()
+	select {
+	case <-w.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (w *AsyncPolicyWriter) Stats() WriterStats {
+	return WriterStats{Queued: w.queued.Load(), Written: w.written.Load(), Dropped: w.dropped.Load(), Errors: w.errors.Load()}
+}
+
+func (w *AsyncPolicyWriter) run() {
+	defer close(w.done)
+	for request := range w.queue {
+		if _, err := w.store.RememberDurablePath(
+			context.Background(), request.Target, request.Path, request.ObservedAt, w.maxEntries,
+		); err != nil {
+			w.errors.Add(1)
+			if w.onError != nil {
+				w.onError(err)
+			}
+			continue
+		}
+		w.written.Add(1)
+	}
 }
 
 type AsyncWriter struct {
-	store     EvidenceAppender
-	sessionID string
-	queue     chan WriteRequest
-	done      chan struct{}
-	onError   func(error)
-	onWritten func(WriteRequest) error
+	store       EvidenceAppender
+	sessionID   string
+	queue       chan WriteRequest
+	done        chan struct{}
+	onError     func(error)
+	onWritten   func(WriteRequest) error
+	onProcessed func(WriteRequest, bool) error
 
 	mu      sync.RWMutex
 	closed  bool
@@ -75,7 +180,7 @@ func NewAsyncWriterWithOptions(store EvidenceAppender, sessionID string, options
 	}
 	writer := &AsyncWriter{
 		store: store, sessionID: sessionID, queue: make(chan WriteRequest, options.Capacity),
-		done: make(chan struct{}), onError: options.OnError, onWritten: options.OnWritten,
+		done: make(chan struct{}), onError: options.OnError, onWritten: options.OnWritten, onProcessed: options.OnProcessed,
 	}
 	go writer.run()
 	return writer, nil
@@ -148,7 +253,24 @@ func (w *AsyncWriter) run() {
 		} else {
 			w.skipped.Add(1)
 		}
+		if w.onProcessed != nil {
+			if err := invokeOnProcessed(w.onProcessed, request, written); err != nil {
+				w.errors.Add(1)
+				if w.onError != nil {
+					w.onError(err)
+				}
+			}
+		}
 	}
+}
+
+func invokeOnProcessed(callback func(WriteRequest, bool) error, request WriteRequest, written bool) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("durable post-process callback panicked")
+		}
+	}()
+	return callback(request, written)
 }
 
 func invokeOnWritten(callback func(WriteRequest) error, request WriteRequest) (err error) {

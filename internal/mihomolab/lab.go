@@ -188,9 +188,10 @@ func Run(parent context.Context, binaryPath string) (Report, error) {
 		return report, fmt.Errorf("compile lab privacy policy: %w", err)
 	}
 	server := sidecar.Server{
-		NetworkProfileID:  "isolated-mihomo-lab",
-		DirectProbePolicy: labPrivacyPolicy,
-		HandshakeTimeout:  2 * time.Second,
+		NetworkProfileID:     "isolated-mihomo-lab",
+		DeclaredBaselinePath: model.PathProxy,
+		DirectProbePolicy:    labPrivacyPolicy,
+		HandshakeTimeout:     2 * time.Second,
 		TLSRacer: &transport.TLSRacer{
 			Direct:    transport.SOCKS5Dialer{Path: model.PathDirect, Endpoint: loopbackAddress(ports.direct)},
 			Proxy:     transport.SOCKS5Dialer{Path: model.PathProxy, Endpoint: loopbackAddress(ports.proxy)},
@@ -660,15 +661,20 @@ func runOutboundGap(ctx context.Context, endpoint, name, host string, port uint1
 type dnsServer struct {
 	conn   net.PacketConn
 	cancel context.CancelFunc
+	ipv4   [4]byte
 }
 
 func startDNSServer(parent context.Context) (*dnsServer, error) {
+	return startDNSServerFor(parent, [4]byte{127, 0, 0, 2})
+}
+
+func startDNSServerFor(parent context.Context, ipv4 [4]byte) (*dnsServer, error) {
 	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("listen synthetic DNS: %w", err)
 	}
 	ctx, cancel := context.WithCancel(parent)
-	server := &dnsServer{conn: conn, cancel: cancel}
+	server := &dnsServer{conn: conn, cancel: cancel, ipv4: ipv4}
 	go server.serve(ctx)
 	return server, nil
 }
@@ -691,7 +697,7 @@ func (s *dnsServer) serve(ctx context.Context) {
 		if err != nil {
 			return
 		}
-		response, ok := syntheticDNSResponse(buffer[:n])
+		response, ok := syntheticDNSResponseFor(buffer[:n], s.ipv4)
 		if ok {
 			_, _ = s.conn.WriteTo(response, address)
 		}
@@ -699,6 +705,10 @@ func (s *dnsServer) serve(ctx context.Context) {
 }
 
 func syntheticDNSResponse(query []byte) ([]byte, bool) {
+	return syntheticDNSResponseFor(query, [4]byte{127, 0, 0, 2})
+}
+
+func syntheticDNSResponseFor(query []byte, ipv4 [4]byte) ([]byte, bool) {
 	if len(query) < 17 {
 		return nil, false
 	}
@@ -740,7 +750,7 @@ func syntheticDNSResponse(query []byte) ([]byte, bool) {
 			0x00, 0x01,
 			0x00, 0x00, 0x00, 0x01,
 			0x00, 0x04,
-			127, 0, 0, 2,
+			ipv4[0], ipv4[1], ipv4[2], ipv4[3],
 		)
 	}
 	return response, true

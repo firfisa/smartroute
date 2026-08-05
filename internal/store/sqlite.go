@@ -21,7 +21,22 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const CurrentSchemaVersion = 1
+const CurrentSchemaVersion = 2
+
+const durablePolicyKeyBytes = 32
+
+type DurablePolicy struct {
+	TargetKey [durablePolicyKeyBytes]byte `json:"-"`
+	Path      model.Path                  `json:"path"`
+	UpdatedAt time.Time                   `json:"updated_at"`
+}
+
+type DurablePolicyChange struct {
+	Applied          bool                        `json:"applied"`
+	Evicted          bool                        `json:"evicted"`
+	EvictedTargetKey [durablePolicyKeyBytes]byte `json:"-"`
+	Policy           DurablePolicy               `json:"policy"`
+}
 
 var ErrCorrupt = errors.New("learning database is corrupt or unreadable")
 
@@ -344,6 +359,139 @@ ORDER BY target_key`, since.UTC().UnixMilli())
 	return summaries, nil
 }
 
+// RememberDurablePath persists the last path that actually reached the runtime
+// readiness gate. Capacity is enforced by replacing the oldest exact target.
+func (s *Store) RememberDurablePath(ctx context.Context, target model.Target, path model.Path, now time.Time, maxEntries int) (DurablePolicyChange, error) {
+	if now.IsZero() {
+		return DurablePolicyChange{}, errors.New("durable policy time is required")
+	}
+	if path != model.PathDirect && path != model.PathProxy {
+		return DurablePolicyChange{}, errors.New("durable policy path must be direct or proxy")
+	}
+	if maxEntries < 1 || maxEntries > 1000000 {
+		return DurablePolicyChange{}, errors.New("durable policy capacity must be between 1 and 1000000")
+	}
+	key, err := s.targetKey(target)
+	if err != nil {
+		return DurablePolicyChange{}, err
+	}
+	var fixedKey [durablePolicyKeyBytes]byte
+	copy(fixedKey[:], key)
+	now = now.UTC()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return DurablePolicyChange{}, fmt.Errorf("begin durable policy update: %w", err)
+	}
+	defer tx.Rollback()
+	change := DurablePolicyChange{}
+	var exists int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM durable_policies WHERE target_key = ?`, key).Scan(&exists); err != nil {
+		return DurablePolicyChange{}, fmt.Errorf("inspect existing durable policy: %w", err)
+	}
+	if exists == 0 {
+		var count int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM durable_policies`).Scan(&count); err != nil {
+			return DurablePolicyChange{}, fmt.Errorf("count durable policies: %w", err)
+		}
+		if count >= maxEntries {
+			var evicted []byte
+			if err := tx.QueryRowContext(ctx, `
+SELECT target_key FROM durable_policies
+ORDER BY updated_at_ms, target_key
+LIMIT 1`).Scan(&evicted); err != nil {
+				return DurablePolicyChange{}, fmt.Errorf("select oldest durable policy: %w", err)
+			}
+			if _, err := tx.ExecContext(ctx, `DELETE FROM durable_policies WHERE target_key = ?`, evicted); err != nil {
+				return DurablePolicyChange{}, fmt.Errorf("evict oldest durable policy: %w", err)
+			}
+			if len(evicted) != durablePolicyKeyBytes {
+				return DurablePolicyChange{}, fmt.Errorf("%w: invalid evicted durable policy key", ErrCorrupt)
+			}
+			change.Evicted = true
+			copy(change.EvictedTargetKey[:], evicted)
+		}
+	}
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO durable_policies(target_key, path, updated_at_ms)
+VALUES(?, ?, ?)
+ON CONFLICT(target_key) DO UPDATE SET
+  path = excluded.path,
+  updated_at_ms = excluded.updated_at_ms`, key, string(path), now.UnixMilli())
+	if err != nil {
+		return DurablePolicyChange{}, fmt.Errorf("upsert durable policy: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return DurablePolicyChange{}, fmt.Errorf("commit durable policy update: %w", err)
+	}
+	change.Applied = true
+	change.Policy = DurablePolicy{TargetKey: fixedKey, Path: path, UpdatedAt: now}
+	return change, nil
+}
+
+func (s *Store) LoadDurablePolicies(ctx context.Context, maxEntries int) ([]DurablePolicy, error) {
+	if maxEntries < 1 || maxEntries > 1000000 {
+		return nil, errors.New("durable policy load requires valid capacity")
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT target_key, path, updated_at_ms
+FROM durable_policies
+ORDER BY updated_at_ms DESC, target_key
+LIMIT ?`, maxEntries+1)
+	if err != nil {
+		return nil, fmt.Errorf("load durable policies: %w", err)
+	}
+	defer rows.Close()
+	policies := make([]DurablePolicy, 0)
+	for rows.Next() {
+		var policy DurablePolicy
+		var key []byte
+		var path string
+		var updatedMS int64
+		if err := rows.Scan(&key, &path, &updatedMS); err != nil {
+			return nil, fmt.Errorf("scan durable policy: %w", err)
+		}
+		if len(key) != durablePolicyKeyBytes || (model.Path(path) != model.PathDirect && model.Path(path) != model.PathProxy) {
+			return nil, fmt.Errorf("%w: invalid durable policy row", ErrCorrupt)
+		}
+		copy(policy.TargetKey[:], key)
+		policy.Path = model.Path(path)
+		policy.UpdatedAt = time.UnixMilli(updatedMS).UTC()
+		policies = append(policies, policy)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate durable policies: %w", err)
+	}
+	if len(policies) > maxEntries {
+		return nil, errors.New("durable policy store exceeds configured in-memory capacity")
+	}
+	return policies, nil
+}
+
+func (s *Store) DurablePolicyKey(target model.Target) ([durablePolicyKeyBytes]byte, error) {
+	value, err := s.targetKey(target)
+	if err != nil {
+		return [durablePolicyKeyBytes]byte{}, err
+	}
+	var key [durablePolicyKeyBytes]byte
+	copy(key[:], value)
+	return key, nil
+}
+
+// ClearDurablePolicies removes only automatic last-known-good mappings. Strong
+// evidence is retained so the action is a reversible routing rollback rather
+// than deletion of the observation history.
+func (s *Store) ClearDurablePolicies(ctx context.Context) (int64, error) {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM durable_policies`)
+	if err != nil {
+		return 0, fmt.Errorf("clear durable policies: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count cleared durable policies: %w", err)
+	}
+	return count, nil
+}
+
 func (s *Store) PruneEvidence(ctx context.Context, before time.Time) (int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -369,6 +517,43 @@ func (s *Store) PruneEvidence(ctx context.Context, before time.Time) (int64, err
 	return count, nil
 }
 
+// TrimEvidenceTo enforces a hard logical row ceiling, retaining the newest
+// observations. SQLite may retain already allocated pages for reuse, but the
+// database cannot grow from an unbounded live evidence set.
+func (s *Store) TrimEvidenceTo(ctx context.Context, maxRows int) (int64, error) {
+	if maxRows < 1 {
+		return 0, errors.New("maximum evidence rows must be positive")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin strong evidence trim: %w", err)
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `
+DELETE FROM strong_evidence
+WHERE evidence_id IN (
+  SELECT evidence_id FROM strong_evidence
+  ORDER BY observed_at_ms DESC, evidence_id DESC
+  LIMIT -1 OFFSET ?
+)`, maxRows)
+	if err != nil {
+		return 0, fmt.Errorf("trim strong learning evidence: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count trimmed learning evidence: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE NOT EXISTS (
+    SELECT 1 FROM strong_evidence WHERE strong_evidence.session_id = sessions.session_id
+)`); err != nil {
+		return 0, fmt.Errorf("trim empty learning sessions: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit strong evidence trim: %w", err)
+	}
+	return count, nil
+}
+
 func (s *Store) SchemaVersion(ctx context.Context) (int, error) {
 	var version int
 	if err := s.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
@@ -385,15 +570,13 @@ func (s *Store) migrate(ctx context.Context) error {
 	if version > CurrentSchemaVersion {
 		return fmt.Errorf("learning database schema %d is newer than supported version %d", version, CurrentSchemaVersion)
 	}
-	if version == CurrentSchemaVersion {
-		return nil
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin learning migration: %w", err)
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `
+	if version == 0 {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin learning migration: %w", err)
+		}
+		defer tx.Rollback()
+		if _, err := tx.ExecContext(ctx, `
 CREATE TABLE sessions (
     session_id TEXT PRIMARY KEY,
     started_at_ms INTEGER NOT NULL
@@ -411,10 +594,36 @@ CREATE TABLE strong_evidence (
 CREATE INDEX strong_evidence_target_time
     ON strong_evidence(target_key, observed_at_ms, evidence_id);
 PRAGMA user_version = 1;`); err != nil {
-		return fmt.Errorf("apply learning schema v1: %w", err)
+			return fmt.Errorf("apply learning schema v1: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit learning migration: %w", err)
+		}
+		version = 1
 	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit learning migration: %w", err)
+	if version == 1 {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin durable policy migration: %w", err)
+		}
+		defer tx.Rollback()
+		if _, err := tx.ExecContext(ctx, `
+CREATE TABLE durable_policies (
+    target_key BLOB PRIMARY KEY CHECK(length(target_key) = 32),
+    path TEXT NOT NULL CHECK(path IN ('direct', 'proxy')),
+    updated_at_ms INTEGER NOT NULL
+);
+CREATE INDEX durable_policies_updated ON durable_policies(updated_at_ms);
+PRAGMA user_version = 2;`); err != nil {
+			return fmt.Errorf("apply learning schema v2: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit durable policy migration: %w", err)
+		}
+		version = 2
+	}
+	if version != CurrentSchemaVersion {
+		return fmt.Errorf("learning database schema %d could not migrate to %d", version, CurrentSchemaVersion)
 	}
 	return nil
 }

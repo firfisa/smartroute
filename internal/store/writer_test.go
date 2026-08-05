@@ -19,6 +19,29 @@ type fakeAppender struct {
 	once    sync.Once
 }
 
+type fakePolicyRememberer struct {
+	started chan struct{}
+	release chan struct{}
+	err     error
+	once    sync.Once
+
+	mu       sync.Mutex
+	requests []PolicyWriteRequest
+}
+
+func (f *fakePolicyRememberer) RememberDurablePath(_ context.Context, target model.Target, path model.Path, observedAt time.Time, _ int) (DurablePolicyChange, error) {
+	if f.started != nil {
+		f.once.Do(func() { close(f.started) })
+	}
+	if f.release != nil {
+		<-f.release
+	}
+	f.mu.Lock()
+	f.requests = append(f.requests, PolicyWriteRequest{Target: target, Path: path, ObservedAt: observedAt})
+	f.mu.Unlock()
+	return DurablePolicyChange{Applied: f.err == nil}, f.err
+}
+
 func (f *fakeAppender) AppendStrongEvidence(context.Context, model.Target, string, model.Observation, *model.Observation, time.Time) (bool, error) {
 	if f.started != nil {
 		f.once.Do(func() { close(f.started) })
@@ -35,6 +58,82 @@ func writerRequest() WriteRequest {
 		Winner: storeWinner(model.PathProxy), Other: storeFailure(model.PathDirect, model.StageOutbound, "failed"),
 		ObservedAt: time.Now(),
 	}
+}
+
+func policyWriterRequest(path model.Path) PolicyWriteRequest {
+	return PolicyWriteRequest{
+		Target: storeTarget("home", "example.com", 443), Path: path, ObservedAt: time.Now(),
+	}
+}
+
+func TestAsyncPolicyWriterPersistsOnlyPathAndIsBounded(t *testing.T) {
+	rememberer := &fakePolicyRememberer{started: make(chan struct{}), release: make(chan struct{})}
+	writer, err := NewAsyncPolicyWriter(rememberer, 10, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accepted, reason := writer.Enqueue(policyWriterRequest(model.PathDirect)); !accepted || reason != ReasonPolicyQueued {
+		t.Fatalf("first enqueue accepted=%v reason=%q", accepted, reason)
+	}
+	<-rememberer.started
+	if accepted, _ := writer.Enqueue(policyWriterRequest(model.PathProxy)); !accepted {
+		t.Fatal("buffered policy request not accepted")
+	}
+	if accepted, reason := writer.Enqueue(policyWriterRequest(model.PathDirect)); accepted || reason != ReasonPolicyQueueFull {
+		t.Fatalf("third enqueue accepted=%v reason=%q", accepted, reason)
+	}
+	close(rememberer.release)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := writer.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	stats := writer.Stats()
+	if stats.Queued != 2 || stats.Written != 2 || stats.Dropped != 1 || stats.Skipped != 0 {
+		t.Fatalf("stats=%+v", stats)
+	}
+	rememberer.mu.Lock()
+	defer rememberer.mu.Unlock()
+	if len(rememberer.requests) != 2 || rememberer.requests[0].Path != model.PathDirect || rememberer.requests[1].Path != model.PathProxy {
+		t.Fatalf("requests=%+v", rememberer.requests)
+	}
+	if accepted, reason := writer.Enqueue(policyWriterRequest(model.PathDirect)); accepted || reason != ReasonPolicyClosed {
+		t.Fatalf("closed enqueue accepted=%v reason=%q", accepted, reason)
+	}
+}
+
+func TestAsyncPolicyWriterErrorDoesNotStopLaterWrites(t *testing.T) {
+	rememberer := &sequencePolicyRememberer{errors: []error{errors.New("failed"), nil}}
+	var reported atomic.Int32
+	writer, err := NewAsyncPolicyWriter(rememberer, 10, 2, func(error) { reported.Add(1) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer.Enqueue(policyWriterRequest(model.PathDirect))
+	writer.Enqueue(policyWriterRequest(model.PathProxy))
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := writer.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if stats := writer.Stats(); stats.Errors != 1 || stats.Written != 1 || reported.Load() != 1 {
+		t.Fatalf("stats=%+v reported=%d", stats, reported.Load())
+	}
+}
+
+type sequencePolicyRememberer struct {
+	mu     sync.Mutex
+	errors []error
+}
+
+func (s *sequencePolicyRememberer) RememberDurablePath(context.Context, model.Target, model.Path, time.Time, int) (DurablePolicyChange, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var err error
+	if len(s.errors) > 0 {
+		err, s.errors = s.errors[0], s.errors[1:]
+	}
+	return DurablePolicyChange{Applied: err == nil}, err
 }
 
 func TestAsyncWriterQueueIsNonBlockingAndBounded(t *testing.T) {
@@ -143,6 +242,57 @@ func TestAsyncWriterCallsOnWrittenOnlyForPersistedEvidence(t *testing.T) {
 	defer mu.Unlock()
 	if len(written) != 1 {
 		t.Fatalf("written callbacks = %d", len(written))
+	}
+}
+
+func TestAsyncWriterCallsOnProcessedForWinnerOnlyResult(t *testing.T) {
+	var callbacks atomic.Int32
+	var observedWritten atomic.Bool
+	writer, err := NewAsyncWriterWithOptions(&fakeAppender{written: false}, "session", WriterOptions{
+		Capacity: 1,
+		OnProcessed: func(_ WriteRequest, written bool) error {
+			callbacks.Add(1)
+			observedWritten.Store(written)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer.Enqueue(writerRequest())
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := writer.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if callbacks.Load() != 1 || observedWritten.Load() || writer.Stats().Skipped != 1 {
+		t.Fatalf("callbacks=%d written=%v stats=%+v", callbacks.Load(), observedWritten.Load(), writer.Stats())
+	}
+}
+
+func TestAsyncWriterRecoversPostProcessPanicAndContinues(t *testing.T) {
+	var callbacks atomic.Int32
+	writer, err := NewAsyncWriterWithOptions(&fakeAppender{written: false}, "session", WriterOptions{
+		Capacity: 2,
+		OnProcessed: func(WriteRequest, bool) error {
+			if callbacks.Add(1) == 1 {
+				panic("synthetic panic")
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer.Enqueue(writerRequest())
+	writer.Enqueue(writerRequest())
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := writer.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if stats := writer.Stats(); stats.Skipped != 2 || stats.Errors != 1 || callbacks.Load() != 2 {
+		t.Fatalf("stats=%+v callbacks=%d", stats, callbacks.Load())
 	}
 }
 

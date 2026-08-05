@@ -3,10 +3,13 @@ package store
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -198,6 +201,156 @@ func TestListTargetSummariesOmitsIdentityAndHonorsCutoff(t *testing.T) {
 	}
 }
 
+func TestDurablePolicyRememberLoadLookupOverwriteAndCapacity(t *testing.T) {
+	evidenceStore, _ := openTestStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	first := storeTarget("home", "first.example", 443)
+	change, err := evidenceStore.RememberDurablePath(ctx, first, model.PathProxy, now, 1)
+	if err != nil || !change.Applied || change.Policy.Path != model.PathProxy {
+		t.Fatalf("change=%+v err=%v", change, err)
+	}
+	index, err := evidenceStore.NewDurablePolicyIndex(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := index.PreferredPath(first); got != model.PathProxy {
+		t.Fatalf("preferred=%q", got)
+	}
+	if stats := index.Stats(); stats.Entries != 1 || stats.Capacity != 1 {
+		t.Fatalf("stats=%+v", stats)
+	}
+	second := storeTarget("home", "second.example", 443)
+	replacement, err := evidenceStore.RememberDurablePath(ctx, second, model.PathDirect, now.Add(time.Minute), 1)
+	if err != nil || !replacement.Applied || !replacement.Evicted {
+		t.Fatalf("replacement=%+v err=%v", replacement, err)
+	}
+	policies, err := evidenceStore.LoadDurablePolicies(ctx, 1)
+	if err != nil || len(policies) != 1 || policies[0].Path != model.PathDirect {
+		t.Fatalf("policies=%+v err=%v", policies, err)
+	}
+	if got := index.PreferredPath(first); got != model.PathProxy {
+		t.Fatalf("snapshot changed before local update=%q", got)
+	}
+	localChange, err := index.Remember(second, model.PathDirect, now.Add(time.Minute))
+	if err != nil || !localChange.Applied || !localChange.Evicted {
+		t.Fatalf("local replacement=%+v err=%v", localChange, err)
+	}
+	if got := index.PreferredPath(first); got != "" {
+		t.Fatalf("evicted path=%q", got)
+	}
+	if got := index.PreferredPath(second); got != model.PathDirect {
+		t.Fatalf("replacement path=%q", got)
+	}
+	unchanged, err := index.Remember(second, model.PathDirect, now.Add(2*time.Minute))
+	if err != nil || unchanged.Applied {
+		t.Fatalf("unchanged=%+v err=%v", unchanged, err)
+	}
+	overwrite, err := index.Remember(second, model.PathProxy, now.Add(3*time.Minute))
+	if err != nil || !overwrite.Applied || index.PreferredPath(second) != model.PathProxy {
+		t.Fatalf("overwrite=%+v preferred=%q err=%v", overwrite, index.PreferredPath(second), err)
+	}
+}
+
+func TestDurablePolicyIndexScopesExactTargetAndOverwrites(t *testing.T) {
+	evidenceStore, _ := openTestStore(t)
+	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	target := storeTarget("home", "example.com", 443)
+	key, err := evidenceStore.DurablePolicyKey(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	index, err := NewDurablePolicyIndex(evidenceStore.secret, []DurablePolicy{{
+		TargetKey: key, Path: model.PathDirect, UpdatedAt: now,
+	}}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := index.PreferredPath(target); got != model.PathDirect {
+		t.Fatalf("preferred=%q", got)
+	}
+	if got := index.PreferredPath(storeTarget("office", "example.com", 443)); got != "" {
+		t.Fatalf("cross-profile preferred=%q", got)
+	}
+	if got := index.PreferredPath(storeTarget("home", "example.com", 8443)); got != "" {
+		t.Fatalf("cross-port preferred=%q", got)
+	}
+	if _, err := index.Remember(target, model.PathProxy, now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if got := index.PreferredPath(target); got != model.PathProxy {
+		t.Fatalf("overwritten preferred=%q", got)
+	}
+}
+
+func TestDurablePolicyLookupAllocationBudget(t *testing.T) {
+	evidenceStore, _ := openTestStore(t)
+	now := time.Now().UTC()
+	target := storeTarget("home", "example.com", 443)
+	key, err := evidenceStore.DurablePolicyKey(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	index, err := NewDurablePolicyIndex(evidenceStore.secret, []DurablePolicy{{
+		TargetKey: key, Path: model.PathDirect, UpdatedAt: now,
+	}}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	allocations := testing.AllocsPerRun(1000, func() {
+		if index.PreferredPath(target) != model.PathDirect {
+			panic("lookup failed")
+		}
+	})
+	if allocations > 12 {
+		t.Fatalf("durable policy lookup allocations=%f, budget=12", allocations)
+	}
+}
+
+func BenchmarkDurablePolicyLookup(b *testing.B) {
+	secret := bytes.Repeat([]byte{0x42}, 32)
+	target := storeTarget("home", "example.com", 443)
+	evidenceStore := &Store{secret: secret}
+	key, err := evidenceStore.DurablePolicyKey(target)
+	if err != nil {
+		b.Fatal(err)
+	}
+	now := time.Now().UTC()
+	index, err := NewDurablePolicyIndex(secret, []DurablePolicy{{
+		TargetKey: key, Path: model.PathDirect, UpdatedAt: now,
+	}}, 10000)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if index.PreferredPath(target) != model.PathDirect {
+			b.Fatal("lookup failed")
+		}
+	}
+}
+
+func BenchmarkDurablePolicyIndexLoadTenThousand(b *testing.B) {
+	secret := bytes.Repeat([]byte{0x42}, 32)
+	policies := make([]DurablePolicy, 10000)
+	now := time.Now().UTC()
+	for index := range policies {
+		binary.LittleEndian.PutUint64(policies[index].TargetKey[:8], uint64(index+1))
+		policies[index].Path = model.PathDirect
+		policies[index].UpdatedAt = now
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		index, err := NewDurablePolicyIndex(secret, policies, len(policies))
+		if err != nil {
+			b.Fatal(err)
+		}
+		runtime.KeepAlive(index)
+	}
+}
+
 func TestWeakEvidenceAndUnknownSessionAreNotSilentlyStored(t *testing.T) {
 	store, _ := openTestStore(t)
 	ctx := context.Background()
@@ -241,6 +394,37 @@ func TestPruneEvidenceAndContextCancellation(t *testing.T) {
 	cancel()
 	if _, err := store.ListEvidence(canceled, target, time.Time{}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled query error = %v", err)
+	}
+}
+
+func TestTrimEvidenceKeepsNewestRowsAndRemovesEmptySessions(t *testing.T) {
+	evidenceStore, _ := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	target := storeTarget("home", "example.com", 443)
+	for index := range 5 {
+		session := fmt.Sprintf("session-%d", index)
+		if err := evidenceStore.StartSession(ctx, session, now); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := evidenceStore.AppendStrongEvidence(ctx, target, session, storeWinner(model.PathProxy), storeFailure(model.PathDirect, model.StageOutbound, "failed"), now.Add(time.Duration(index)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	trimmed, err := evidenceStore.TrimEvidenceTo(ctx, 2)
+	if err != nil || trimmed != 3 {
+		t.Fatalf("trimmed=%d err=%v", trimmed, err)
+	}
+	status, err := evidenceStore.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.EvidenceCount != 2 || status.SessionCount != 2 {
+		t.Fatalf("status=%+v", status)
+	}
+	evidence, err := evidenceStore.ListEvidence(ctx, target, now.Add(-time.Hour))
+	if err != nil || len(evidence) != 2 || !evidence[0].ObservedAt.Equal(now.Add(3*time.Second).Truncate(time.Millisecond)) || !evidence[1].ObservedAt.Equal(now.Add(4*time.Second).Truncate(time.Millisecond)) {
+		t.Fatalf("evidence=%+v err=%v", evidence, err)
 	}
 }
 

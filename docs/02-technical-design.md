@@ -1,6 +1,6 @@
 # SmartRoute 总体技术设计
 
-版本：v0.8
+版本：v0.15
 状态：供原型验证，不是最终实现规范
 
 ## 1. 设计目标
@@ -27,6 +27,7 @@ SmartRoute 只接管“现有规则无法可靠决定”的流量，并满足以
 
 ```mermaid
 flowchart TB
+    OS["macOS LaunchAgent / future OS service"] --> Sup
     Sup["SmartRoute Supervisor"] -->|"独立监控/重启"| G
     Sup -->|"独立监控/重启"| S
     Sup --> Obs["受限本地 JSONL 观测"]
@@ -51,17 +52,21 @@ flowchart TB
     Labs["带版本和时间的隔离实验报告"] --> PF
 ```
 
-`smartroute supervise` 只拥有 SmartRoute 的 Guard 与 adaptive engine 子进程，不接管 Mihomo。引擎退出时 Guard 继续沿原策略兜底；Guard 退出时 supervisor 以 100ms 起、5s 封顶的指数退避恢复它。重启只改善后续连接，不能重放已经观察到 Guard/engine 故障的连接；supervisor 自身还需要未来的 launchd/systemd/Windows service 管理。详见 ADR-0008。
+`smartroute supervise` 只拥有 SmartRoute 的 Guard 与 adaptive engine 子进程，不接管 Mihomo。引擎退出时 Guard 继续沿原策略兜底；Guard 退出时 supervisor 以 100ms 起、5s 封顶的指数退避恢复它。重启只改善后续连接，不能重放已经观察到 Guard/engine 故障的连接。活动变换不能再由普通终端拥有顶层 Supervisor：macOS 试用通过生成并验证的用户 LaunchAgent 托管精确 pinned-runtime 命令；systemd、Windows service 和正式安装器仍待实现。详见 ADR-0008、ADR-0043。
 
 Sidecar 与 Guard 的 `Serve` 生命周期覆盖监听器和全部已接受连接。父 context 取消或 accept 边界退出后，服务停止接纳新连接，关闭仍在 SOCKS/TLS 握手中的 inbound，并让 context-aware relay 同时关闭两端；所有 copy 协程和 handler 结束后 `Serve` 才返回。这样上层可以随后关闭 recorder/SQLite，但意味着显式停服会终止活跃连接，不会把它重放到另一条路径。详见 ADR-0021。
 
 本地观测记录由独立的 `internal/observe` 边界负责，默认关闭。启用后目标与网络画像默认使用带本地随机盐的 HMAC，engine、Guard、supervisor 各写自己的容量/时间受限 JSONL；暂停、恢复、显式清空和脱敏导出由 `smartroute observations` 管理。运行期写失败只产生一次有界告警，不改变路由；该记录器不是 SQLite 学习策略库。详见 ADR-0009。
 
-`internal/trial` 把受控试用的分散门槛收敛为只读 JSON preflight：配置和显式风险确认、暂停的记录器、durable store 与匹配备份，以及带 schema/UTC 时间的 Test Lab 和锁定 Mihomo Lab 完整报告。它不运行实验、不更改控制文件、不打开监听器，也不读取活动 Clash。`ready` 只代表证据齐全，不能替代用户对具体写入/重载窗口的授权。详见 ADR-0020。
+`internal/trial` 把受控试用的分散门槛收敛为只读 JSON preflight：配置和显式风险确认、暂停的记录器、durable store 与匹配备份，以及带 schema/UTC 时间的 Test Lab 和锁定 Mihomo Lab 完整报告。Test Lab report v2 必须精确包含 3 个基础路由场景和 4 步 last-known-good 闭环，Preflight 逐字段校验选路、学习结果、候选次数与 readiness，不信任单独的 `passed`。它不运行实验、不更改控制文件、不打开监听器，也不读取活动 Clash。`ready` 只代表证据齐全，不能替代用户对具体写入/重载窗口的授权。详见 ADR-0020。
 
-进程内学习使用与 7.1 节一致的最小键，只接受 winner 达到 L2+ 且另一条路径先完成、达到 L1+ 的强成对证据。默认 `shadow` 只计算临时状态；`ephemeral-auto` 将活跃偏好用作候选启动顺序，但仍在 head-start 后启动另一条路径，首选提前失败时则立即启动另一条。矛盾强证据立即进入 `UNSTABLE` 并撤下偏好；TTL 到期或重启回到未知。内存表有硬容量上限，满载只停止接纳新学习，不影响连接。它不满足跨会话晋升，不能导出为永久规则。详见 ADR-0011。
+`internal/benchlab` 以 gateway 与 protocol 两个正交轴做交替配对。gateway 可为 fake SOCKS，或显式 `-mihomo PATH` 的锁定 forced-DIRECT listener（临时 home、synthetic DNS、独立子进程）；protocol 可为一字节 echo，或 `-tls` 的完整无 early-data ClientHello → 结构有效 ServerHello。TLS sidecar arm 会实际经历 ClientHello 解析、Direct candidate 写入、L3 gate 与预读精确回放。默认五轮分别统计，并以最差逐轮 paired p95 对照 5ms；延迟门槛只在显式 `-enforce` 时影响退出码。ServerHello 仍不是完整握手、证书、HTTP 或应用结果。详见 ADR-0029、ADR-0030、ADR-0031。
 
-`internal/health` 在学习入口前识别系统性故障。默认 30 秒窗口内需要 3 个不同目标，避免单一站点或重复连接触发冻结；全局双路故障可由任一路径跨 3 个不同目标成功恢复，Proxy 故障只能由 Proxy 成功恢复。网络画像切换和 captive portal 信号立即冻结；当前状态机入口已实现，但自动信号源尚未接入。冻结会清空进程内偏好并抑制新的临时/持久证据，不改变当前连接或 Guard 回退，也不回删阈值触发前的 SQLite 行。详见 ADR-0017。
+`internal/loadlab` 与 latency benchmark 分离，按 run 交替 baseline/sidecar 批次先后顺序。每批并发启动新 SOCKS 连接，每条连接以确定性 chunk 写入并逐块校验 echo；吞吐分子只使用已验证的单向 payload，另行报告双向 relay 字节和 connection completion 分布。默认 3×16×1MiB，0.70 sidecar/baseline 最差轮比率只在 `-enforce` 时影响退出码。首轮 fake/Mihomo 均保持字节正确但未达 0.70，因此不能把本地额外复制成本隐藏在 latency 结果中。详见 ADR-0032。
+
+默认 `auto` 使用与 7.1 节一致的精确键：`network profile + normalized target + port + transport`。第一次通过 TCP/TLS readiness 的路径立即写入有界内存索引并异步持久化；命中后只打开该路径，提交前失败才尝试另一条并在成功后覆盖。它没有批准、连续胜场、临时层、跨 Session 晋级或 TTL。ADR-0011 的 Shadow/ephemeral 状态机仅保留为兼容诊断，`auto` 不创建或查询它。详见 ADR-0037。
+
+`internal/health` 的系统性冻结状态机仍可用于旧的 Shadow/ephemeral 诊断路径，但不参与默认 `auto`。自动层只有 ready winner 才能写入，双路失败天然不会改写已有映射；因此核心路径不再为这一情况维护另一套冻结生命周期。详见 ADR-0037。
 
 为什么不是先做外挂探测器：
 
@@ -348,7 +353,7 @@ strong_evidence
 
 `target_key_hmac` 由独立 0600 本地密钥对 `network profile + normalized hostname + port + transport` 的无歧义编码计算。数据库不保存明文 hostname/profile；数据库存在而密钥缺失时拒绝生成替代密钥。打开时执行完整性检查和事务迁移，损坏或未来 schema 不自动覆盖。详见 ADR-0012。
 
-ADR-0013 已把它作为显式 opt-in 的 shadow 证据路径接入 `serve`：启动时创建独立 session 并按保留期裁剪，强配对证据通过非阻塞有界队列异步落库，关闭时限时排空并 checkpoint。队列满、writer 已关闭或单条写失败只形成 `durable_reason`/统计，不进入路由结果。数据库仍不在启动时加载策略，也不生成或应用规则。
+ADR-0013 已把它作为显式 opt-in 的证据路径接入 `serve`：启动时创建独立 session，并按时间与 `max_evidence_rows` 双界裁剪；强配对证据通过非阻塞有界队列异步落库，关闭时限时排空并 checkpoint。队列满、writer 已关闭或单条写失败只形成 `durable_reason`/统计，不改变当前连接。
 
 ADR-0014 增加独立运维面：`learning status` 只读打开且拒绝迁移；`backup` 使用 SQLite online-backup 生成包含数据库、HMAC key、聚合状态和 SHA-256 清单的新目录；`verify-backup` 在私有临时副本上复核；`restore` 只写入全新的数据库路径。备份因为包含 key 与在线库同等敏感，恢复结果不会自动写入配置或启用。
 
@@ -356,11 +361,21 @@ ADR-0015 在强证据异步写入成功后生成跨会话 Shadow assessment：Di
 
 ADR-0016 增加只读 `learning report`：SQLite 内按 target HMAC 分组，但接口不返回 HMAC，仅把每个精确目标的方向 wins/session counts 交给同一 evaluator，再输出不足、冲突、Direct/Proxy 建议及 reason counts。报告分母明确是“保留期内拥有强配对证据的目标”，不是全部流量。
 
-ADR-0018 增加暂停态只读 `observations report`：严格校验受管 JSONL 的 schema/source/token 后，在内存中使用 HMAC 目标/profile 仅做 distinct set，输出 readiness 结果、Direct/Proxy 选择、Guard 回退、强配对方向以及 p50/p95/p99。成功 TLS `decision_latency_ms` 从安全 ClientHello 与隐私决策之后开始，覆盖偏好查询、head-start 和失败接替，结束于 L3 winner；candidate latency 仍只从单候选启动计时。报告显式声明 readiness 不是应用成功，并且没有静态基线、client outcome 或 byte volume。
+ADR-0018 增加暂停态只读 `observations report`：严格校验受管 JSONL 的 schema/source/token 后，在内存中使用 HMAC 目标/profile 仅做 distinct set，输出 readiness 结果、Direct/Proxy 选择、Guard 回退、强配对方向以及 p50/p95/p99。成功 TLS `decision_latency_ms` 从安全 ClientHello 与隐私决策之后开始，覆盖偏好查询、head-start 和失败接替，结束于 L3 winner；candidate latency 仍只从单候选启动计时。该版本显式声明 readiness 不是应用成功，并且当时没有基线、client outcome 或 byte volume；ADR-0022 至 ADR-0024 只补入 relay、精确配对和声明基线，仍没有验证过的实时规则命中或 client outcome。
 
 ADR-0019 为一次受控试用增加随机 `trial_session_id`。`supervise` 生成 `trial-` + 128-bit hex，并传给自身 recorder、Guard、engine 及后续子进程重启；独立进程默认各自生成。字段只用于 JSONL/export 内的试用生命周期分组，不参与路由、network profile 或 SQLite session。报告只输出 distinct session 数和旧行的 unscoped 数，拒绝把可读标签写入 session 字段。
 
-未来持久策略、网络画像与人工规则可能扩展为：
+ADR-0035 增加独立的人工固定策略管理面：`smartroute policy list|lock|revoke` 使用单独 SQLite 库保存用户主动输入的明文精确 `network profile + hostname/IP + port + TCP` Direct/Proxy 锁定，支持永久或显式 TTL、事务替换留痕和撤销。该库不接收 durable suggestion 或 observation，也不被 `serve`、Guard 或候选顺序读取。把锁真正变成单路径路由仍需后续 ADR 定义隐私冲突、失败语义和 observation schema。
+
+ADR-0036 建立 last-known-good 数据路径；ADR-0037 将规范名称收敛为默认 `auto`。第一次有路径达到 TCP/TLS readiness 就立即写入有界内存索引并由专用有界队列异步持久化；自动模式不写强证据或 Session 行，不执行跨会话评估，也没有重复次数、provisional/confirmed 或 TTL。运行时只加载最多 `max_entries` 个 HMAC 键，连接热路径不查 SQLite。命中时只启所选候选；它在提交前失败才顺序尝试另一条，反向路径成功后立即覆盖。旧临时引擎、健康冻结、证据保留、跨会话评估和人工固定库都不参与这条默认路径。
+
+ADR-0039 把“提交前 fallback”从接口承诺修正为真正可执行的时间约束：固定路径最多消耗总 readiness timeout 的一半，另一半明确保留给一次反向尝试。这个修正来自真实进程 Runtime Lab：Mihomo 可先返回 SOCKS ACK，但远程 TLS 一直无 readiness；如果旧路径耗尽总超时，代码虽调用 Proxy fallback，它也没有剩余时间。Runtime Lab 同时要求 `auto` 装配只注册实际存在的 policy writer，不得把 typed-nil 旧 evidence writer 放入 interface。
+
+ADR-0040 把真实激活顺序收敛为 `baseline → 启动 supervisor → armed → 安装/重载 → running`。`internal/runtimecheck` 对五个 loopback 地址执行可绑定或 SOCKS5 方法协商检查，绝不发送目标 CONNECT。回滚必须反向执行：先恢复原脚本并重载、确认回到 `armed`，再停止并排空 supervisor、确认 `baseline`，避免最终 MATCH 指向尚未启动或已经停止的 Guard。
+
+ADR-0041 把身份隐藏观察汇总升级为 report v7。除了 route/Guard/readiness/relay 指标，它还以有界白名单聚合 `learning_reason` 和 `durable_reason`，因此可直接区分首次 Direct/Proxy 记忆、路径不变、持久写入以及连接开始时命中固定策略。未知 reason fail-closed 且错误不回显内容；这些计数仍只证明路由与 readiness，不证明应用成功。
+
+当前人工固定策略 schema 只实现下面未来模型中的 `manual_overrides` 最小管理面；持久自动策略、网络画像、运行时应用和导出仍可能扩展为：
 
 ```text
 network_profiles
@@ -494,7 +509,15 @@ learned-proxy.yaml
 - 代理订阅密钥。
 - 默认公开的完整浏览历史。
 
-`relay_outcome` 在两条 copy 方向都结束后产生。Client→remote 计数从提交后的 relay 开始，因此 TLS readiness 阶段已发送的 ClientHello 不在其中；remote→client 包含预读回放的 ServerHello。非零远端字节不能当作应用成功，零远端字节也不能自动成为学习失败。Identity-free report 只按 Direct/Proxy 汇总这些 post-commit 计数，仍缺少静态基线和应用结果。详见 ADR-0022。
+`relay_outcome` 在两条 copy 方向都结束后产生。Client→remote 计数从提交后的 relay 开始，因此 TLS readiness 阶段已发送的 ClientHello 不在其中；remote→client 包含预读回放的 ServerHello。非零远端字节不能当作应用成功，零远端字节也不能自动成为学习失败。Identity-free report 按 Direct/Proxy 汇总这些 post-commit 计数；后续声明基线只能对照配置类别，仍缺少执行过的静态反事实和应用结果。详见 ADR-0022 与 ADR-0024。
+
+Sidecar 为每个已解析目标生成一个随机 `conn-<128-bit hex>` scope，使 terminal `decision`/`diagnostic` 与后续 `relay_outcome` 能精确关联。它不是路由键、目标身份或学习输入；熵源或校验失败只会形成 unscoped 观测，不会影响连接。报告仅给出 scoped/unscoped、paired、unmatched 与 committed-without-outcome 计数。后两者可能是 cutoff、pause、crash 或仍在 relay，绝不转换为路径失败。详见 ADR-0023。
+
+为了回答 adaptive lane 是否改变原 `Other/MATCH` 选择，运行时还把 `original_fallback` 作为 `declared_baseline_path` 贯穿 terminal 与 relay outcome。它只是对 `original_endpoint` 背后策略类别的操作者声明，受控试用前必须单独确认，不是 Mihomo 实时 rule trace。报告可统计 same/changed、Direct-instead-of-Proxy、Proxy-instead-of-Direct，以及改道 winner 实际承载的 post-commit 字节；这些字节不是未执行反事实路径的节省量。详见 ADR-0024。
+
+`netrelay` 同时保留两条 `io.Copy` 的结束类别，但只映射为 `eof`、`timeout`、`reset`、`closed`、`io_error`、`canceled` 六个固定 token；任何原始错误字符串都在 data plane 内丢弃。显式 context cancellation 将两方向统一标记为 `canceled`，并继续保留全局 termination。报告分别统计 client→remote 与 remote→client；旧 schema 的 relay 进入 `unclassified`。EOF 不是应用成功，其他类别也不是可直接学习的路径失败。详见 ADR-0025。
+
+试用前，preflight 把随机 session、解码后配置指纹、观察窗口和数据质量阈值写入带 SHA-256 digest 的 assessment plan。试用停止并暂停记录后，`trial assess` 必须读取这份成功报告，拒绝配置/计划漂移，并用计划 session 和窗口从受管 JSONL 构建 identity-free report v7。它再检查只有预期 session、样本量、committed connection scope、declared baseline scope、terminal/relay 精确配对和生命周期取消比例。通过字段刻意命名为 `ready_for_descriptive_analysis`，并固定声明没有 verified static baseline、client outcome 或 policy authority。详见 ADR-0026、ADR-0027 与 ADR-0041。
 
 ## 14. 从 Sidecar 到内核的迁移条件
 

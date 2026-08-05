@@ -3,16 +3,40 @@ package netrelay
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"sync"
 	"sync/atomic"
+	"syscall"
 )
 
 type Result struct {
 	LeftToRightBytes int64
 	RightToLeftBytes int64
+	LeftToRightEnd   EndReason
+	RightToLeftEnd   EndReason
 	Canceled         bool
+}
+
+type EndReason string
+
+const (
+	EndEOF      EndReason = "eof"
+	EndTimeout  EndReason = "timeout"
+	EndReset    EndReason = "reset"
+	EndClosed   EndReason = "closed"
+	EndIOError  EndReason = "io_error"
+	EndCanceled EndReason = "canceled"
+)
+
+func (r EndReason) Valid() bool {
+	switch r {
+	case EndEOF, EndTimeout, EndReset, EndClosed, EndIOError, EndCanceled:
+		return true
+	default:
+		return false
+	}
 }
 
 // Bidirectional relays until both directions finish. Cancellation closes both
@@ -40,6 +64,7 @@ func Bidirectional(ctx context.Context, left, right net.Conn) Result {
 	type directionResult struct {
 		leftToRight bool
 		bytes       int64
+		end         EndReason
 	}
 	directions := make(chan directionResult, 2)
 	var wait sync.WaitGroup
@@ -53,8 +78,8 @@ func Bidirectional(ctx context.Context, left, right net.Conn) Result {
 			}
 			wait.Done()
 		}()
-		copied, _ := io.Copy(dst, src)
-		directions <- directionResult{leftToRight: leftToRight, bytes: copied}
+		copied, err := io.Copy(dst, src)
+		directions <- directionResult{leftToRight: leftToRight, bytes: copied, end: classifyCopyEnd(err)}
 		if closeWriter, ok := dst.(interface{ CloseWrite() error }); ok {
 			_ = closeWriter.CloseWrite()
 		}
@@ -68,14 +93,35 @@ func Bidirectional(ctx context.Context, left, right net.Conn) Result {
 	for direction := range directions {
 		if direction.leftToRight {
 			result.LeftToRightBytes = direction.bytes
+			result.LeftToRightEnd = direction.end
 		} else {
 			result.RightToLeftBytes = direction.bytes
+			result.RightToLeftEnd = direction.end
 		}
 	}
 	select {
 	case <-canceled:
 		result.Canceled = true
+		result.LeftToRightEnd = EndCanceled
+		result.RightToLeftEnd = EndCanceled
 	default:
 	}
 	return result
+}
+
+func classifyCopyEnd(err error) EndReason {
+	if err == nil || errors.Is(err, io.EOF) {
+		return EndEOF
+	}
+	var networkError net.Error
+	if errors.As(err, &networkError) && networkError.Timeout() {
+		return EndTimeout
+	}
+	if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) {
+		return EndReset
+	}
+	if errors.Is(err, net.ErrClosed) || errors.Is(err, io.ErrClosedPipe) {
+		return EndClosed
+	}
+	return EndIOError
 }

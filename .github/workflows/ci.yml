@@ -16,13 +16,30 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
       - name: Check formatting
         run: test -z "$(gofmt -l cmd internal)"
       - name: Vet
         run: go vet ./...
       - name: Unit tests
         run: go test -race ./...
+      - name: Clash Verge transform tests
+        run: node scripts/test-clash-transform.mjs
       - name: Isolated test lab
         run: go run ./cmd/smartroute-testlab
+      - name: Network-free trial lab
+        run: go run ./cmd/smartroute-trial-lab
+      - name: Loopback benchmark smoke
+        run: go run ./cmd/smartroute-benchmark-lab -runs 1 -samples 20 -warmup 2
+      - name: Loopback TLS readiness benchmark smoke
+        run: go run ./cmd/smartroute-benchmark-lab -tls -runs 1 -samples 20 -warmup 2
+      - name: Concurrent relay load smoke
+        run: go run ./cmd/smartroute-load-lab -runs 1 -concurrency 4 -bytes-per-connection 65536 -chunk-bytes 4096 -warmup-connections 1
+      - name: Fixed relay load sweep smoke
+        run: go run ./cmd/smartroute-load-sweep -runs 1 -chunk-bytes 4096 -warmup-max 1
+      - name: Offered-load capacity lab
+        run: go run ./cmd/smartroute-capacity-lab -runs 1 -bytes-per-connection 65536 -chunk-bytes 4096 -warmup-connections 1
       - name: Documentation consistency
         run: bash scripts/check-docs.sh

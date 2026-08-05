@@ -14,12 +14,14 @@ import (
 )
 
 const (
-	FailureTLSCanceled         = "canceled"
-	FailureTLSTimeout          = "tls_timeout"
-	FailureTLSConnectionClosed = "tls_connection_closed"
-	FailureClientHelloWrite    = "client_hello_write_failed"
-	ReasonDirectPolicyOnly     = "direct_policy_only"
-	ReasonProxyPolicyOnly      = "proxy_policy_only"
+	FailureTLSCanceled          = "canceled"
+	FailureTLSTimeout           = "tls_timeout"
+	FailureTLSConnectionClosed  = "tls_connection_closed"
+	FailureClientHelloWrite     = "client_hello_write_failed"
+	ReasonDirectPolicyOnly      = "direct_policy_only"
+	ReasonProxyPolicyOnly       = "proxy_policy_only"
+	ReasonDurablePolicySelected = "durable_policy_selected"
+	ReasonDurablePolicyFallback = "durable_policy_fallback"
 )
 
 type TLSPathError struct {
@@ -120,7 +122,80 @@ func (r TLSRacer) ConnectPath(ctx context.Context, target model.Target, hello tl
 	}
 	pathCtx, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
-	conn, observation, err := (tlsReadyDialer{base: base, gate: r.Gate, clientHello: hello.WireBytes()}).Dial(pathCtx, target)
+	return r.connectPath(pathCtx, target, hello, path, reason)
+}
+
+// ConnectPreferredWithFallback avoids parallel candidate work for an automatic
+// last-known-good mapping. If its selected path fails before commitment, the
+// opposite path is attempted once within the same total timeout and the pair
+// is exposed so a successful opposite result can overwrite the mapping.
+func (r TLSRacer) ConnectPreferredWithFallback(ctx context.Context, target model.Target, hello tlsinspect.ClientHello, preferred model.Path) (RaceResult, error) {
+	if preferred != model.PathDirect && preferred != model.PathProxy {
+		return RaceResult{}, fmt.Errorf("unsupported durable TLS path %q", preferred)
+	}
+	if r.Timeout <= 0 {
+		return RaceResult{}, errors.New("TLS path timeout must be positive")
+	}
+	pathCtx, cancel := context.WithTimeout(ctx, r.Timeout)
+	defer cancel()
+	// A selected Mihomo listener can acknowledge SOCKS before the target is
+	// ready. Reserve half of the total budget for the one allowed opposite-path
+	// attempt so a silent selected path cannot consume all fallback time.
+	firstCtx, firstCancel := context.WithTimeout(pathCtx, r.Timeout/2)
+	first, firstErr := r.connectPath(firstCtx, target, hello, preferred, ReasonDurablePolicySelected)
+	firstCancel()
+	if firstErr == nil {
+		return first, nil
+	}
+	var firstPathError *TLSPathError
+	if !errors.As(firstErr, &firstPathError) {
+		return RaceResult{}, firstErr
+	}
+	opposite := model.PathDirect
+	if preferred == model.PathDirect {
+		opposite = model.PathProxy
+	}
+	second, secondErr := r.connectPath(pathCtx, target, hello, opposite, ReasonDurablePolicyFallback)
+	if secondErr == nil {
+		firstObservation := firstPathError.Observation
+		second.OtherObservation = &firstObservation
+		return second, nil
+	}
+	var secondPathError *TLSPathError
+	if !errors.As(secondErr, &secondPathError) {
+		return RaceResult{}, secondErr
+	}
+	raceError := &RaceError{}
+	if preferred == model.PathDirect {
+		raceError.Direct = firstPathError.Observation
+		raceError.Proxy = secondPathError.Observation
+	} else {
+		raceError.Proxy = firstPathError.Observation
+		raceError.Direct = secondPathError.Observation
+	}
+	return RaceResult{}, raceError
+}
+
+func (r TLSRacer) connectPath(ctx context.Context, target model.Target, hello tlsinspect.ClientHello, path model.Path, reason string) (RaceResult, error) {
+	if hello.Len() == 0 {
+		return RaceResult{}, errors.New("validated ClientHello is required")
+	}
+	if r.Gate == nil {
+		return RaceResult{}, errors.New("TLS readiness gate is required")
+	}
+	var base CandidateDialer
+	switch path {
+	case model.PathDirect:
+		base = r.Direct
+	case model.PathProxy:
+		base = r.Proxy
+	default:
+		return RaceResult{}, fmt.Errorf("unsupported TLS path %q", path)
+	}
+	if base == nil {
+		return RaceResult{}, fmt.Errorf("%s TLS candidate is required", path)
+	}
+	conn, observation, err := (tlsReadyDialer{base: base, gate: r.Gate, clientHello: hello.WireBytes()}).Dial(ctx, target)
 	if observation.Path == "" {
 		observation.Path = path
 	}

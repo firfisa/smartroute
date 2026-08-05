@@ -24,6 +24,14 @@ func TestPreflightAcceptsFreshIsolatedShadowTrial(t *testing.T) {
 	if !report.Ready || report.Counts.Fail != 0 {
 		t.Fatalf("report = %+v", report)
 	}
+	if report.ReportVersion != PreflightReportVersion || report.AssessmentPlan == nil || report.AssessmentPlan.PlanSHA256 == "" {
+		t.Fatalf("missing assessment plan = %+v", report)
+	}
+	reportPath := filepath.Join(t.TempDir(), "preflight.json")
+	writeJSON(t, reportPath, report)
+	if _, err := LoadAssessmentPlan(reportPath, options.Config); err != nil {
+		t.Fatalf("load emitted assessment plan: %v", err)
+	}
 	if report.PersistentStateChanged || report.ActiveClashInspected || report.AuthorizesLiveActivation {
 		t.Fatalf("unsafe report claims = %+v", report)
 	}
@@ -39,6 +47,7 @@ func TestPreflightFailsClosedOnAcknowledgementsAndEvidence(t *testing.T) {
 		check  string
 	}{
 		{"direct acknowledgment", func(o *Options) { o.AcknowledgeDirectProbes = false }, "privacy.direct_probes"},
+		{"original baseline acknowledgment", func(o *Options) { o.AcknowledgeOriginalBaseline = false }, "baseline.original_path"},
 		{"cleartext acknowledgment", func(o *Options) { o.Config.Observation.IncludeCleartextHostname = true }, "privacy.cleartext_hostname"},
 		{"ephemeral auto acknowledgment", func(o *Options) { o.Config.Learning.Mode = learning.ModeEphemeralAuto }, "learning.mode"},
 		{"missing test report", func(o *Options) { o.TestLabReportPath = "" }, "lab.testlab"},
@@ -52,6 +61,16 @@ func TestPreflightFailsClosedOnAcknowledgementsAndEvidence(t *testing.T) {
 				t.Fatalf("report = %+v", report)
 			}
 		})
+	}
+}
+
+func TestPreflightTreatsDurableAutoConfigAsGlobalOptIn(t *testing.T) {
+	options := validOptions(t)
+	options.Config.Learning.Mode = learning.ModeDurableAuto
+	options.Config.Learning.Persistence.Enabled = true
+	report := Preflight(context.Background(), options)
+	if got := checkStatus(report, "learning.mode"); got != StatusWarn {
+		t.Fatalf("learning.mode status=%q report=%+v", got, report)
 	}
 }
 
@@ -79,6 +98,15 @@ func TestPreflightRejectsStaleOrFalseIsolationEvidence(t *testing.T) {
 	report = Preflight(context.Background(), options)
 	if report.Ready || checkStatus(report, "lab.mihomo") != StatusFail {
 		t.Fatalf("incomplete scenario report = %+v", report)
+	}
+
+	testReport := validTestLab(now)
+	testReport.Scenarios[3].LearnedPath = "proxy"
+	writeJSON(t, options.TestLabReportPath, testReport)
+	writeJSON(t, options.MihomoLabReportPath, validMihomoLab(now))
+	report = Preflight(context.Background(), options)
+	if report.Ready || checkStatus(report, "lab.testlab") != StatusFail {
+		t.Fatalf("forged automatic-learning report = %+v", report)
 	}
 }
 
@@ -137,7 +165,9 @@ func validOptions(t *testing.T) Options {
 	cfg.Observation.Directory = observationDirectory
 	return Options{
 		Config: cfg, TestLabReportPath: testReportPath, MihomoLabReportPath: mihomoReportPath,
-		AcknowledgeDirectProbes: true, Clock: func() time.Time { return now },
+		AcknowledgeDirectProbes: true, AcknowledgeOriginalBaseline: true,
+		TrialSessionID: "trial-0123456789abcdef0123456789abcdef", AssessmentWindow: 168 * time.Hour,
+		AssessmentThresholds: DefaultAssessmentThresholds(), Clock: func() time.Time { return now },
 	}
 }
 
@@ -162,11 +192,22 @@ func validMihomoLab(now time.Time) mihomolab.Report {
 }
 
 func testScenarioResults() []testlab.ScenarioResult {
-	results := make([]testlab.ScenarioResult, 0, len(requiredTestLabScenarios))
-	for _, name := range requiredTestLabScenarios {
-		results = append(results, testlab.ScenarioResult{Name: name, Passed: true})
+	return []testlab.ScenarioResult{
+		{Name: "direct_candidate_before_head_start", ExpectedPath: "direct", SelectedPath: "direct", ReasonCode: "direct_candidate_before_head_start",
+			DirectAttempts: 1, DomainPreserved: true, PayloadVerified: true, Passed: true},
+		{Name: "proxy_recovers_slow_direct", ExpectedPath: "proxy", SelectedPath: "proxy", ReasonCode: "proxy_candidate_won",
+			DirectAttempts: 1, ProxyAttempts: 1, DomainPreserved: true, PayloadVerified: true, Passed: true},
+		{Name: "both_paths_fail", DirectAttempts: 1, ProxyAttempts: 1, DomainPreserved: true,
+			FailureExpected: true, FailureObserved: true, Passed: true},
+		{Name: "auto_first_ready_remembered", ExpectedPath: "direct", SelectedPath: "direct", ReasonCode: "direct_candidate_before_head_start",
+			DirectAttempts: 1, DomainPreserved: true, ReadinessVerified: true, LearnedPath: "direct", Passed: true},
+		{Name: "auto_reuses_direct_without_proxy", ExpectedPath: "direct", SelectedPath: "direct", ReasonCode: "durable_policy_selected",
+			DirectAttempts: 1, DomainPreserved: true, ReadinessVerified: true, LearnedPath: "direct", Passed: true},
+		{Name: "auto_fallback_overwrites_proxy", ExpectedPath: "proxy", SelectedPath: "proxy", ReasonCode: "durable_policy_fallback",
+			DirectAttempts: 1, ProxyAttempts: 1, DomainPreserved: true, ReadinessVerified: true, LearnedPath: "proxy", Passed: true},
+		{Name: "auto_reuses_proxy_without_direct", ExpectedPath: "proxy", SelectedPath: "proxy", ReasonCode: "durable_policy_selected",
+			ProxyAttempts: 1, DomainPreserved: true, ReadinessVerified: true, LearnedPath: "proxy", Passed: true},
 	}
-	return results
 }
 
 func mihomoScenarioResults() []mihomolab.ScenarioResult {

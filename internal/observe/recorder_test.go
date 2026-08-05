@@ -11,6 +11,7 @@ import (
 
 	"github.com/firfisa/smartroute/internal/learning"
 	"github.com/firfisa/smartroute/internal/model"
+	"github.com/firfisa/smartroute/internal/netrelay"
 )
 
 func testOptions(directory string) Options {
@@ -32,7 +33,8 @@ func TestRecorderHashesSensitiveTargetFields(t *testing.T) {
 	other := model.Observation{Path: model.PathDirect, StageReached: model.StageTCP, FailureClass: "direct_reset"}
 	err = recorder.Record(Event{
 		EventType: "decision", Target: &model.Target{NetworkProfileID: "home-wifi", Hostname: "Secret.Example.", Port: 443, Transport: model.TransportTCP},
-		SelectedPath: model.PathProxy, ReasonCode: "proxy_candidate_won", OtherObservation: &other, Committed: &committed,
+		DeclaredBaselinePath: model.PathProxy,
+		SelectedPath:         model.PathProxy, ReasonCode: "proxy_candidate_won", OtherObservation: &other, Committed: &committed,
 		LearningReason: "ephemeral_proxy_preference_promoted", DurableReason: "durable_evidence_queued",
 		PolicyState: model.StateProxyPreferred,
 	})
@@ -54,7 +56,7 @@ func TestRecorderHashesSensitiveTargetFields(t *testing.T) {
 	if event.Target == nil || len(event.Target.HostnameHash) != 64 || len(event.Target.NetworkProfileHash) != 64 || event.Target.Hostname != "" {
 		t.Fatalf("stored target = %+v", event.Target)
 	}
-	if event.SchemaVersion != schemaVersion || !event.CommittedValue() {
+	if event.SchemaVersion != schemaVersion || event.DeclaredBaselinePath != model.PathProxy || !event.CommittedValue() {
 		t.Fatalf("stored event = %+v", event)
 	}
 	if event.OtherObservation == nil || event.OtherObservation.Path != model.PathDirect || event.OtherObservation.FailureClass != "direct_reset" {
@@ -62,6 +64,52 @@ func TestRecorderHashesSensitiveTargetFields(t *testing.T) {
 	}
 	if event.LearningReason != "ephemeral_proxy_preference_promoted" || event.DurableReason != "durable_evidence_queued" || event.PolicyState != model.StateProxyPreferred {
 		t.Fatalf("stored learning metadata = %+v", event)
+	}
+}
+
+func TestRecorderRejectsSemanticConnectionScope(t *testing.T) {
+	recorder, err := New(testOptions(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recorder.Close()
+	if err := recorder.Record(Event{EventType: "diagnostic", ConnectionID: "alice-home-network"}); err == nil || !strings.Contains(err.Error(), "validate observation connection ID") {
+		t.Fatalf("invalid connection scope error=%v", err)
+	}
+}
+
+func TestRecorderRejectsInvalidDeclaredBaseline(t *testing.T) {
+	recorder, err := New(testOptions(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recorder.Close()
+	if err := recorder.Record(Event{EventType: "diagnostic", DeclaredBaselinePath: model.PathOriginal}); err == nil || !strings.Contains(err.Error(), "baseline path") {
+		t.Fatalf("invalid declared baseline error=%v", err)
+	}
+	if err := recorder.Record(Event{EventType: "guard_decision", DeclaredBaselinePath: model.PathProxy}); err == nil || !strings.Contains(err.Error(), "only for sidecar") {
+		t.Fatalf("misplaced declared baseline error=%v", err)
+	}
+}
+
+func TestRecorderRejectsUnsafeRelayDirectionEnds(t *testing.T) {
+	recorder, err := New(testOptions(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recorder.Close()
+	zero := int64(0)
+	base := Event{EventType: "relay_outcome", ClientToRemoteBytes: &zero, RemoteToClientBytes: &zero,
+		RelayDurationMS: &zero, Termination: "ended", ClientToRemoteEnd: string(netrelay.EndEOF), RemoteToClientEnd: string(netrelay.EndEOF)}
+	unsafe := base
+	unsafe.RemoteToClientEnd = "reset by private.example:443"
+	if err := recorder.Record(unsafe); err == nil || !strings.Contains(err.Error(), "bounded direction end reasons") || strings.Contains(err.Error(), "private.example") {
+		t.Fatalf("unsafe relay end error=%v", err)
+	}
+	inconsistent := base
+	inconsistent.Termination = "canceled"
+	if err := recorder.Record(inconsistent); err == nil || !strings.Contains(err.Error(), "requires canceled") {
+		t.Fatalf("inconsistent relay end error=%v", err)
 	}
 }
 
@@ -180,10 +228,13 @@ func TestRecorderStoresRelayOutcomeWithoutPayloadOrCleartextIdentity(t *testing.
 		t.Fatal(err)
 	}
 	target := model.Target{NetworkProfileID: "private-network", Hostname: "secret.example", Port: 443, Transport: model.TransportTCP}
+	connection := "conn-6123456789abcdef0123456789abcdef"
 	clientToRemote, remoteToClient, duration := int64(123), int64(456), int64(789)
 	if err := recorder.Record(Event{
-		EventType: "relay_outcome", Target: &target, SelectedPath: model.PathProxy,
+		EventType: "relay_outcome", ConnectionID: connection, Target: &target,
+		DeclaredBaselinePath: model.PathDirect, SelectedPath: model.PathProxy,
 		ClientToRemoteBytes: &clientToRemote, RemoteToClientBytes: &remoteToClient,
+		ClientToRemoteEnd: string(netrelay.EndEOF), RemoteToClientEnd: string(netrelay.EndReset),
 		RelayDurationMS: &duration, Termination: "ended",
 	}); err != nil {
 		t.Fatal(err)
@@ -199,9 +250,10 @@ func TestRecorderStoresRelayOutcomeWithoutPayloadOrCleartextIdentity(t *testing.
 	if err := json.Unmarshal([]byte(data), &event); err != nil {
 		t.Fatal(err)
 	}
-	if event.SchemaVersion != schemaVersion || event.ClientToRemoteBytes == nil || *event.ClientToRemoteBytes != 123 ||
+	if event.SchemaVersion != schemaVersion || event.ConnectionID != connection || event.DeclaredBaselinePath != model.PathDirect || event.ClientToRemoteBytes == nil || *event.ClientToRemoteBytes != 123 ||
 		event.RemoteToClientBytes == nil || *event.RemoteToClientBytes != 456 || event.RelayDurationMS == nil ||
-		*event.RelayDurationMS != 789 || event.Termination != "ended" {
+		*event.RelayDurationMS != 789 || event.ClientToRemoteEnd != string(netrelay.EndEOF) ||
+		event.RemoteToClientEnd != string(netrelay.EndReset) || event.Termination != "ended" {
 		t.Fatalf("stored relay event = %+v", event)
 	}
 }

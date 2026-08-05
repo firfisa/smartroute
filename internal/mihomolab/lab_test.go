@@ -47,6 +47,18 @@ func TestSyntheticDNSResponseMapsAOnly(t *testing.T) {
 	}
 }
 
+func TestSyntheticDNSResponseUsesRequestedAddress(t *testing.T) {
+	query := []byte{
+		0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0,
+		4, 'e', 'c', 'h', 'o', 4, 't', 'e', 's', 't', 0,
+		0, 1, 0, 1,
+	}
+	response, ok := syntheticDNSResponseFor(query, [4]byte{127, 0, 0, 1})
+	if !ok || !strings.HasSuffix(string(response), string([]byte{127, 0, 0, 1})) {
+		t.Fatalf("syntheticDNSResponseFor() ok=%v response=%v", ok, response)
+	}
+}
+
 func TestIsolatedEnvironmentRemovesMihomoOverrides(t *testing.T) {
 	t.Setenv("CLASH_HOME_DIR", "/should-not-survive")
 	t.Setenv("MIHOMO_TEST_OVERRIDE", "unsafe")
@@ -79,5 +91,17 @@ func TestContainsVersionTokenRequiresExactField(t *testing.T) {
 	}
 	if containsVersionToken("Mihomo Meta v1.19.290 SmartRoute-isolated-lab-extra", PinnedMihomoVersion) {
 		t.Fatal("accepted a version prefix instead of an exact token")
+	}
+}
+
+func TestRenderDirectBenchmarkConfigIsLoopbackOnlyAndForcedDirect(t *testing.T) {
+	config := string(renderDirectBenchmarkConfig(32001, "127.0.0.1:32002"))
+	for _, required := range []string{"mixed-port: 0", "bind-address: 127.0.0.1", "127.0.0.1:32002", "port: 32001", "proxy: DIRECT", "MATCH,DIRECT"} {
+		if !strings.Contains(config, required) {
+			t.Fatalf("benchmark config missing %q:\n%s", required, config)
+		}
+	}
+	if strings.Contains(config, "0.0.0.0") || strings.Contains(config, "tun:\n  enable: true") {
+		t.Fatalf("benchmark config violates isolation:\n%s", config)
 	}
 }

@@ -196,6 +196,75 @@ func TestTLSRacerConnectPathReportsSelectedFailure(t *testing.T) {
 	}
 }
 
+func TestTLSRacerDurablePolicyUsesOneCandidateWhenHealthy(t *testing.T) {
+	hello, wire := parsedClientHello(t)
+	serverWire := syntheticServerHelloRecord()
+	direct := &pipeCandidateDialer{path: model.PathDirect, handler: func(net.Conn) {}}
+	proxy := &pipeCandidateDialer{path: model.PathProxy, handler: func(conn net.Conn) {
+		_, _ = io.CopyN(io.Discard, conn, int64(len(wire)))
+		_, _ = conn.Write(serverWire)
+	}}
+	result, err := (TLSRacer{Direct: direct, Proxy: proxy, Gate: TLSServerHelloGate{}, Timeout: time.Second}).ConnectPreferredWithFallback(
+		context.Background(), testTarget(), hello, model.PathProxy,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Conn.Close()
+	if result.Observation.Path != model.PathProxy || result.ReasonCode != ReasonDurablePolicySelected || result.OtherObservation != nil || proxy.attempts.Load() != 1 || direct.attempts.Load() != 0 {
+		t.Fatalf("result=%+v attempts proxy=%d direct=%d", result, proxy.attempts.Load(), direct.attempts.Load())
+	}
+}
+
+func TestTLSRacerDurablePolicyFallsBackSequentiallyAndExposesContradiction(t *testing.T) {
+	hello, wire := parsedClientHello(t)
+	serverWire := syntheticServerHelloRecord()
+	direct := &pipeCandidateDialer{path: model.PathDirect, handler: func(conn net.Conn) {
+		_, _ = io.CopyN(io.Discard, conn, int64(len(wire)))
+	}}
+	proxy := &pipeCandidateDialer{path: model.PathProxy, handler: func(conn net.Conn) {
+		_, _ = io.CopyN(io.Discard, conn, int64(len(wire)))
+		_, _ = conn.Write(serverWire)
+	}}
+	result, err := (TLSRacer{Direct: direct, Proxy: proxy, Gate: TLSServerHelloGate{}, Timeout: time.Second}).ConnectPreferredWithFallback(
+		context.Background(), testTarget(), hello, model.PathDirect,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Conn.Close()
+	if result.Observation.Path != model.PathProxy || result.ReasonCode != ReasonDurablePolicyFallback || result.OtherObservation == nil || result.OtherObservation.Path != model.PathDirect || result.OtherObservation.Success || direct.attempts.Load() != 1 || proxy.attempts.Load() != 1 {
+		t.Fatalf("result=%+v attempts direct=%d proxy=%d", result, direct.attempts.Load(), proxy.attempts.Load())
+	}
+}
+
+func TestTLSRacerDurablePolicyReservesTimeForFallbackAfterSilentSelectedPath(t *testing.T) {
+	hello, wire := parsedClientHello(t)
+	serverWire := syntheticServerHelloRecord()
+	direct := &pipeCandidateDialer{path: model.PathDirect, handler: func(conn net.Conn) {
+		_, _ = io.CopyN(io.Discard, conn, int64(len(wire)))
+		time.Sleep(time.Second)
+	}}
+	proxy := &pipeCandidateDialer{path: model.PathProxy, handler: func(conn net.Conn) {
+		_, _ = io.CopyN(io.Discard, conn, int64(len(wire)))
+		_, _ = conn.Write(serverWire)
+	}}
+	started := time.Now()
+	result, err := (TLSRacer{Direct: direct, Proxy: proxy, Gate: TLSServerHelloGate{}, Timeout: 200 * time.Millisecond}).ConnectPreferredWithFallback(
+		context.Background(), testTarget(), hello, model.PathDirect,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Conn.Close()
+	elapsed := time.Since(started)
+	if result.Observation.Path != model.PathProxy || result.ReasonCode != ReasonDurablePolicyFallback ||
+		result.OtherObservation == nil || result.OtherObservation.FailureClass != FailureTLSTimeout ||
+		direct.attempts.Load() != 1 || proxy.attempts.Load() != 1 || elapsed < 80*time.Millisecond || elapsed > 350*time.Millisecond {
+		t.Fatalf("elapsed=%s result=%+v attempts direct=%d proxy=%d", elapsed, result, direct.attempts.Load(), proxy.attempts.Load())
+	}
+}
+
 func parsedClientHello(t *testing.T) (tlsinspect.ClientHello, []byte) {
 	t.Helper()
 	body := []byte{0x03, 0x03}

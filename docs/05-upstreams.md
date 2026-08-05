@@ -1,6 +1,6 @@
 # Upstream Inventory
 
-Last verified: 2026-08-02 via `git ls-remote --tags --refs`.
+Last verified: 2026-08-04.
 
 SmartRoute keeps upstream sources outside the tracked repository in `.upstream/`. The exact references are recorded in `upstreams.lock` and prepared by `scripts/prepare-upstreams.sh`.
 
@@ -9,7 +9,7 @@ SmartRoute keeps upstream sources outside the tracked repository in `.upstream/`
 | Project | Repository | Locked release | Commit | License | Role | Integration status |
 | --- | --- | --- | --- | --- | --- | --- |
 | Mihomo | `MetaCubeX/mihomo` | `v1.19.29` | `e26714a181ac0e2fa803453c0a8e9a9ce94e31cb` | GPL-3.0 | TUN, DNS, static routing, Direct and proxy outbounds | macOS arm64 and Linux amd64 isolated TLS topology verified; ADR-0004/0005 apply |
-| Clash Verge Rev | `clash-verge-rev/clash-verge-rev` | `v2.5.2` | `28f2efc504059b1dc75c793618b775c8e1b2a5f1` | GPL-3.0 | Possible future desktop UI and lifecycle integration | Reference only; no fork |
+| Clash Verge Rev | `clash-verge-rev/clash-verge-rev` | `v2.5.2` | `28f2efc504059b1dc75c793618b775c8e1b2a5f1` | GPL-3.0 | Desktop profile/script lifecycle reference | No fork; first-party post-script transform passes synthetic tests and pinned-Mihomo syntax validation |
 
 SmartRoute's first-party standalone source is released under MIT. The upstream projects in this table remain under GPL-3.0 and are not relicensed by SmartRoute. The current sidecar-first boundary keeps their source outside this repository; any future copying, linking, fork distribution, or bundled release requires a fresh license-boundary review and the notices/source obligations applicable to that distribution model.
 
@@ -23,6 +23,16 @@ SmartRoute's first-party standalone source is released under MIT. The upstream p
 The SQLite driver is a linked runtime dependency, not source copied into this repository. Its transitive modules are pinned by `go.sum`. Upgrade steps require checking the canonical release notes, license files, supported targets, SQLite/libc pairing, migration/recovery tests, and clean-checkout build size. ADR-0012 records the selection and privacy boundary.
 
 Primary references: [modernc SQLite package](https://pkg.go.dev/modernc.org/sqlite), [canonical repository](https://gitlab.com/cznic/sqlite).
+
+## 2.1 Development tool inventory
+
+| Tool | Version policy | Purpose | Runtime impact |
+| --- | --- | --- | --- |
+| Node.js | 24 in CI | Execute the dependency-free Clash transform/composer tests and isolated full Runtime Lab | Development only; SmartRoute daemon remains Go |
+| `actions/setup-node` | `v6` | Provision Node for the transform test job | CI only |
+| macOS system Ruby | 2.6-compatible standard library surface | Private active-candidate packaging and checksum-gated file replacement | Local integration tooling only; no gem dependency |
+
+The transform and composer use only Node built-ins and add no npm dependency or shipped JavaScript package tree.
 
 ## 3. Mihomo source-contract evidence
 
@@ -49,15 +59,18 @@ Isolated runtime results from `make mihomo-lab` on macOS arm64 and the Ubuntu am
 | Loop prevention | Only the front adaptive connection entered SmartRoute; forced listeners did not recurse |
 | Readiness semantics | Forced Direct still proves only L1 when no ServerHello returns |
 | TLS adaptive recovery | Front path copied a parsed no-early-data ClientHello; Proxy returned ServerHello and was committed at `StageTLS` |
+| Full transformed process runtime | Actual composer output, pinned Mihomo, `smartroute supervise` children and policy-only SQLite passed Direct persistence, two restart reloads, silent-Direct timeout fallback and Proxy overwrite |
 | Isolation | Temporary home/config, synthetic local DNS, random loopback ports, no TUN/system proxy/external network/active Clash reads or writes |
+| Paired forced-DIRECT benchmark | macOS arm64 5×200 pairs: aggregate paired p95 200µs, worst-run p95 231µs, 2000/2000 exact echoes, 1100/1100 sidecar Direct selections, zero Proxy attempts |
+| Paired TLS ServerHello benchmark | macOS arm64 5×200 pairs: aggregate paired p95 230µs, worst-run p95 254µs, 2000/2000 exact ServerHello responses, 2200/2200 target ClientHellos including warmups, zero Proxy attempts |
+| Concurrent relay load | macOS arm64 3×16×1MiB: 48/48 measured connections and exact bytes per arm, median sidecar 939.24 MiB/s, worst sidecar/baseline ratio 0.677, provisional 0.70 gate missed, zero Proxy attempts |
 
 Remaining runtime checks:
 
 - Confirm Fake-IP/TUN combinations preserve `metadata.Host` before the adapter boundary.
 - Confirm both forced listeners work through config reloads on macOS; startup behavior is verified.
 - Confirm the proxy listener cannot resolve to `DIRECT` through a user selector when collecting a Proxy counterfactual.
-- Re-run the new Guard engine-stop/original-fallback/restart scenarios on macOS and Linux; the implementation and unit tests are complete, but this added child-process topology has not yet been recorded as passed.
-- Run the new SmartRoute supervisor with the pinned Mihomo fault lab; the in-process lifecycle/restart contract is implemented, while host-service integration and any outer Mihomo health fallback remain pending. Neither can retry the first connection that observed Guard failure.
+- The pinned Mihomo fault lab passed engine stop, original-policy fallback, rebind, and adaptive recovery on macOS arm64/v1.19.29 on 2026-08-02. Actual OS host-service integration and any outer Mihomo health fallback remain pending; neither can retry the first connection that observed Guard failure.
 
 ## 4. Preparation
 

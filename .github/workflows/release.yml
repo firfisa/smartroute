@@ -1,0 +1,41 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Verify
+        run: |
+          go vet ./...
+          go test -race ./...
+          node scripts/test-clash-transform.mjs
+          make macos-launch-agent-test
+          make relocate-live-runtime-test
+          bash scripts/check-docs.sh
+      - name: Build release archives
+        run: bash scripts/build-release.sh "${GITHUB_REF_NAME}"
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/${GITHUB_REF_NAME}/* \
+            --title "SmartRoute ${GITHUB_REF_NAME}" \
+            --notes-file "docs/releases/${GITHUB_REF_NAME}.md"

@@ -26,5 +26,26 @@ ADRs are append-only decision records. Supersede an old decision with a new ADR 
 | [0020](0020-read-only-evidence-based-trial-preflight.md) | Gate controlled trials with fresh read-only evidence | Accepted | 2026-08-02 |
 | [0021](0021-context-cancel-and-drain-runtime-connections.md) | Cancel and drain accepted connections before runtime server exit | Accepted | 2026-08-02 |
 | [0022](0022-post-commit-relay-telemetry.md) | Record bounded post-commit relay telemetry without claiming application success | Accepted | 2026-08-02 |
+| [0023](0023-random-connection-observation-scope.md) | Correlate adaptive terminal events with random per-connection scopes | Accepted | 2026-08-02 |
+| [0024](0024-declared-original-policy-baseline.md) | Compare adaptive selections with an explicitly declared original-policy baseline | Accepted | 2026-08-02 |
+| [0025](0025-bounded-relay-direction-end-reasons.md) | Record bounded directional relay end reasons without raw I/O errors | Accepted | 2026-08-02 |
+| [0026](0026-post-trial-descriptive-data-quality-gate.md) | Gate post-trial descriptive analysis on observation data quality | Accepted | 2026-08-02 |
+| [0027](0027-pre-register-trial-assessment-plan.md) | Bind assessment to a preflight session, config, window, and thresholds | Accepted | 2026-08-02 |
+| [0028](0028-synthetic-trial-control-plane-lab.md) | Rehearse the observation and assessment control plane with synthetic local data | Accepted | 2026-08-02 |
+| [0029](0029-paired-loopback-sidecar-overhead-benchmark.md) | Measure local sidecar overhead with alternating paired loopback samples | Accepted | 2026-08-02 |
+| [0030](0030-paired-pinned-mihomo-forced-direct-benchmark.md) | Add an isolated pinned Mihomo forced-DIRECT benchmark tier | Accepted | 2026-08-02 |
+| [0031](0031-paired-tls-serverhello-readiness-benchmark.md) | Benchmark exact ClientHello-to-ServerHello readiness across both gateway tiers | Accepted | 2026-08-02 |
+| [0032](0032-separate-concurrent-chunked-relay-load-lab.md) | Keep concurrent chunked relay load separate and retain the provisional gate miss | Accepted | 2026-08-02 |
+| [0033](0033-retain-standard-library-tcp-copy-after-load-sweep.md) | Retain standard-library TCP copying after the fixed load sweep | Accepted | 2026-08-02 |
+| [0034](0034-client-paced-offered-load-capacity-lab.md) | Add a client-paced offered-load capacity lab | Accepted | 2026-08-02 |
+| [0035](0035-manual-fixed-policy-management-plane.md) | Add a manual fixed-policy management plane without runtime activation | Accepted | 2026-08-03 |
+| [0036](0036-opt-in-automatic-durable-policy-layer.md) | Remember the last ready path without per-target approval | Superseded in part by 0037 | 2026-08-03 |
+| [0037](0037-make-automatic-last-known-good-the-product-default.md) | Make automatic last-known-good routing the product default | Accepted | 2026-08-03 |
+| [0038](0038-private-checksum-gated-live-candidate.md) | Use a private checksum-gated package for live integration | Accepted | 2026-08-03 |
+| [0039](0039-reserve-readiness-time-for-automatic-fallback.md) | Reserve readiness time for automatic fallback | Accepted | 2026-08-04 |
+| [0040](0040-arm-runtime-before-active-reload.md) | Arm Engine and Guard before activating the Clash transform | Accepted | 2026-08-04 |
+| [0041](0041-report-automatic-policy-effect.md) | Report automatic-policy learning and reuse without target identity | Accepted | 2026-08-04 |
+| [0042](0042-verify-semantic-active-script-binding.md) | Verify the resolved active script binding instead of whole-profile metadata | Accepted | 2026-08-05 |
+| [0043](0043-own-live-supervisor-with-macos-launchagent.md) | Own an active macOS trial Supervisor with a user LaunchAgent | Accepted | 2026-08-05 |
 
 Status values: `Proposed`, `Accepted`, `Superseded`, `Rejected`.

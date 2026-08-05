@@ -31,6 +31,9 @@ type StoreStatus struct {
 	EvidenceCount    int64      `json:"evidence_count"`
 	DirectEvidence   int64      `json:"direct_evidence"`
 	ProxyEvidence    int64      `json:"proxy_evidence"`
+	DurablePolicies  int64      `json:"durable_policies"`
+	DirectPolicies   int64      `json:"direct_policies"`
+	ProxyPolicies    int64      `json:"proxy_policies"`
 	OldestObservedAt *time.Time `json:"oldest_observed_at,omitempty"`
 	NewestObservedAt *time.Time `json:"newest_observed_at,omitempty"`
 }
@@ -65,11 +68,15 @@ SELECT
     COALESCE(SUM(CASE WHEN direction = 'direct' THEN 1 ELSE 0 END), 0),
     COALESCE(SUM(CASE WHEN direction = 'proxy' THEN 1 ELSE 0 END), 0),
     MIN(observed_at_ms),
-    MAX(observed_at_ms)
+    MAX(observed_at_ms),
+    (SELECT COUNT(*) FROM durable_policies),
+    (SELECT COUNT(*) FROM durable_policies WHERE path = 'direct'),
+    (SELECT COUNT(*) FROM durable_policies WHERE path = 'proxy')
 FROM strong_evidence`).Scan(
 		&status.SessionCount, &status.EvidenceCount,
 		&status.DirectEvidence, &status.ProxyEvidence,
 		&oldestMS, &newestMS,
+		&status.DurablePolicies, &status.DirectPolicies, &status.ProxyPolicies,
 	)
 	if err != nil {
 		return StoreStatus{}, fmt.Errorf("inspect durable learning store: %w", err)

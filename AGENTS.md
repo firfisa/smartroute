@@ -14,19 +14,22 @@ The repository is in Phase 0: architecture and feasibility spike.
 
 Current scope:
 
-- Go-based process supervisor, TCP/SOCKS5 availability Guard, adaptive sidecar, preferred-order candidate racer, ephemeral learning engine, decision engine, and bounded local observation recorder.
+- Go-based process supervisor, TCP/SOCKS5 availability Guard, adaptive sidecar, first-readiness candidate decision, bounded automatic last-known-good index, and local observation recorder.
 - Deterministic loopback Test Lab plus a pinned, isolated Mihomo child-process contract lab before any active Clash integration.
 - macOS-first development while keeping platform boundaries explicit.
 - TCP and TLS observability first.
 - Direct-probe privacy policy is enforced before candidate creation; denied TLS targets use Proxy-only L3 validation.
 - DNS as a separate diagnostic path.
 - UDP/QUIC use static or historical policy until protocol-specific validators exist.
-- Opt-in SQLite strong-evidence collection uses a bounded asynchronous writer; durable policy application waits for trial evidence, policy authorization, and user controls. The runtime health gate suppresses new learning but does not rewrite earlier durable rows.
-- Durable evidence status and verified backup/restore-to-new-path are local lifecycle tools; destructive clear and automatic activation remain out of scope.
-- Cross-session durable assessment is shadow-only and requires both strong-win and independent-session thresholds; any retained opposite-direction evidence is conflicting.
+- Canonical `auto` mode and local persistence are the defaults. The first TCP/TLS-ready path is immediately remembered in an HMAC-keyed bounded index without per-target approval, promotion counters, temporary tiers, or TTL; `durable-auto` is a compatibility spelling.
+- A full isolated Runtime Lab now exercises the real Clash transform, pinned Mihomo, actual `smartroute supervise` children, SQLite restart reuse, and opposite overwrite before any active installation.
+- A macOS user LaunchAgent may own the exact pinned trial supervisor command from a private Application Support runtime so an active transform never depends on a terminal or agent session for top-level liveness; cross-platform service installation remains future work.
+- Durable evidence status and verified backup/restore-to-new-path remain legacy diagnostic lifecycle tools. Evidence deletion remains out of scope; automatic policy rows may be cleared independently.
+- Automatic last-known-good mappings have no promotion counter, provisional/confirmed tier, or TTL. A later successful opposite fallback overwrites the exact mapping immediately; cross-session thresholds remain analytical only.
 - Aggregate Shadow reports omit target keys and identities and use only targets with retained strong paired evidence as their explicit denominator.
 - Paused observation reports aggregate readiness, path selection, Guard fallback, and timing without returning target/profile hashes; readiness must not be labeled application success.
 - Enabled runtime observation uses a random trial session shared by supervisor children and restarts; human-readable session labels are rejected and aggregate reports omit concrete IDs.
+- Shadow, ephemeral promotion, cross-session suggestion, health-freeze, and user-authored fixed-policy facilities are retained only as legacy diagnostics or advanced management surfaces. They are not the MVP runtime path and receive no new feature work without measured trial evidence.
 
 Out of scope until an ADR changes it:
 
@@ -46,7 +49,7 @@ These rules must not be weakened silently:
 3. `Direct failed + Proxy succeeded` is strong proxy evidence. A Direct failure alone is not.
 4. A failure on both paths does not promote either route.
 5. A learned policy is scoped by network profile, target identity, port, and transport.
-6. Automatically learned policy expires and decays. Only users or administrators create permanent locks.
+6. An automatic last-known-good mapping is not a manual lock. It may be overwritten by a later successful opposite fallback, removed by bounded capacity eviction or explicit clear, and is isolated by network profile.
 7. Once potentially side-effecting application data has been committed to a remote path, SmartRoute must not transparently replay it on another path.
 8. TLS 1.3 early data must never be duplicated.
 9. Unknown UDP has no generic success signal and must not be treated as if it were TCP.
@@ -59,21 +62,41 @@ These rules must not be weakened silently:
 16. Trial readiness must be derived from fresh, content-validated isolated-lab evidence and explicit privacy/risk acknowledgments. A successful preflight is read-only and never authorizes an active Clash write, reload, or trial start.
 17. Sidecar and Guard shutdown must cancel every accepted handshake/relay, close both owned relay connections, and wait for all connection handlers before `Serve` returns; shutdown interruption is never routing evidence or a replay trigger.
 18. Relay telemetry may persist only post-commit directional byte counts, duration, selected path, and bounded termination. Remote bytes include protocol readiness data and are never application-success evidence; zero remote bytes alone are never a learned failure.
-16. `privacy-first`, matching `never_direct_probe` entries, invalid targets, and missing runtime policy must open zero Direct candidates; privacy denial still requires the Proxy path to meet its protocol readiness gate.
-17. Guard and adaptive engine are supervised independently; restart shortens future failure windows but never justifies replaying the connection that observed a process failure, and supervisor failure requires an external service manager.
-18. Persistent observation is opt-in and capacity bounded; target/profile identity is pseudonymous by default, raw events are not duplicated to stdout while recording, and recorder failure never changes a routing outcome.
-19. A successful race may expose the other path only when that path completed before selection; canceled, still-running, and unstarted candidates are never learning evidence, and the winner is never delayed to manufacture a pair.
-20. Runtime learning defaults to `shadow`; `ephemeral-auto` changes launch order only, never removes the opposite candidate, and every in-memory preference expires or disappears on restart.
-21. Ephemeral learning accepts only a ready winner paired with an opposite failure that reached outbound admission; incomplete, canceled, not-started, privacy-forced, and pre-outbound failures never update preference counters.
-22. The in-memory learning table is capacity bounded; reaching the bound may suppress new learning but must never reject, delay, or reroute the current connection.
-23. Durable target identity is HMAC-pseudonymous with a separate local key; a missing key, corrupt database, corrupt record, or future schema must be reported without automatic deletion, replacement, or routing impact.
-24. Durable evidence collection defaults off and is shadow-only; enqueue and runtime write failure must never delay, reject, replay, or reroute the current connection, and stored evidence cannot select a route until a later ADR authorizes it.
-25. Durable backups include the target-HMAC key and are as sensitive as the live store; status/backup must not create or migrate the source, incomplete artifacts must be rejected, and restore must never overwrite or automatically activate a database.
-26. A durable `direct_suggested` or `proxy_suggested` assessment is diagnostic only and must never feed `PreferredPath`, candidate order, generated rules, or an applied-policy row; retained evidence in both directions produces no suggestion.
-27. Aggregate reports must never expose target keys or imply that targets with strong evidence represent all traffic; suggestion coverage alone is not proof of latency, reliability, or proxy-usage improvement.
-28. Systemic-health freezing affects learning inputs and process-local preferences only. It must not change an in-flight route, replay application data, delete durable evidence, or bypass the original-policy Guard.
-29. Observation reports must omit target/profile identifiers, reject corrupt or incompatible rows, and label TCP/TLS readiness separately from application or client-visible success.
-30. Trial-session identifiers must be random non-semantic scopes, never account/network/user labels; supervisor children share one ID across restarts, while aggregate reports expose only counts.
+19. `privacy-first`, matching `never_direct_probe` entries, invalid targets, and missing runtime policy must open zero Direct candidates; privacy denial still requires the Proxy path to meet its protocol readiness gate.
+20. Guard and adaptive engine are supervised independently; restart shortens future failure windows but never justifies replaying the connection that observed a process failure, and supervisor failure requires an external service manager.
+21. Persistent observation is opt-in and capacity bounded; target/profile identity is pseudonymous by default, raw events are not duplicated to stdout while recording, and recorder failure never changes a routing outcome.
+22. A successful race may expose the other path only when that path completed before selection; canceled, still-running, and unstarted candidates are never learning evidence, and the winner is never delayed to manufacture a pair.
+23. Runtime learning defaults to `auto`: the first ready path becomes the exact last-known-good mapping immediately. A mapping hit opens one path and must attempt the opposite path once after a pre-commit selected-path failure; opposite readiness overwrites immediately.
+24. Automatic mappings have no approval, win/session threshold, provisional state, confidence tier, or TTL. Legacy ephemeral evidence rules must never gate or alter the automatic path.
+25. The in-memory automatic index is capacity bounded; eviction may remove an old mapping but must never reject, delay, or reroute the current connection.
+26. Durable target identity is HMAC-pseudonymous with a separate local key; a missing key, corrupt database, corrupt record, or future schema must be reported without automatic deletion, replacement, or routing impact.
+27. Automatic application and local persistence default on. Enqueue or write failure must never delay, reject, replay, or alter the current connection; `auto` updates its bounded memory index immediately after readiness and persists the change asynchronously for later processes.
+28. Durable backups include the target-HMAC key and are as sensitive as the live store; status/backup must not create or migrate the source, incomplete artifacts must be rejected, and restore must never overwrite or automatically activate a database.
+29. Raw `direct_suggested` and `proxy_suggested` assessments remain legacy diagnostics and never feed runtime selection. In `auto`, only an actual TCP/TLS-ready selected path creates or overwrites an exact HMAC-keyed mapping; no automatic suffix/generalized rule is permitted.
+30. Aggregate reports must never expose target keys or imply that targets with strong evidence represent all traffic; suggestion coverage alone is not proof of latency, reliability, or proxy-usage improvement.
+31. Legacy systemic-health freezing must not affect `auto` lookup or updates. Both-path failure leaves the existing mapping unchanged; no health state may change an in-flight route, replay application data, delete policies, or bypass the original-policy Guard.
+32. Observation reports must omit target/profile identifiers, reject corrupt or incompatible rows, and label TCP/TLS readiness separately from application or client-visible success.
+33. Trial-session identifiers must be random non-semantic scopes, never account/network/user labels; supervisor children share one ID across restarts, while aggregate reports expose only counts.
+34. Connection identifiers must be random non-semantic correlation scopes, never learning or identity keys. Missing or invalid generation must not affect routing; aggregate reports omit identifiers, count incomplete pairs explicitly, and never reinterpret them as path failure.
+35. `original_fallback` is a declared category for the original-policy listener, not an observed counterfactual. Baseline reports must label it as declared, require controlled-trial acknowledgment, and never call changed winner bytes or selections saved traffic or application success.
+36. Relay direction endings may persist only fixed EOF/timeout/reset/closed/I/O-error/canceled tokens; raw errors are forbidden. These tokens are diagnostic transport metadata, never application success, learned path failure, retry authority, or replay authority.
+37. A post-trial data-quality pass authorizes descriptive analysis only. It must never be presented as verified baseline improvement, client-visible success, statistical significance, policy-change authority, or permission to modify/reload Clash.
+38. Controlled-trial assessment session, configuration fingerprint, time window, and thresholds must be fixed by a successful preflight before activation. Assessment must reject plan/config drift and any missing, unscoped, or unexpected session without exposing concrete session identifiers in aggregate output.
+39. Synthetic Trial Lab output is plumbing evidence only. It must be visibly synthetic, identity-free, temporary, network-free, unacceptable to preflight, and incapable of authorizing a live trial or policy change.
+40. Loopback benchmark correctness is mandatory, but its latency gate is environment-dependent and opt-in. Results must identify the fake-gateway or pinned-Mihomo tier and never be generalized to unmeasured TUN/TLS, real application success, product benefit, or live-trial authority.
+41. TLS benchmark input must be a fully parsed ClientHello without `early_data`; success requires an exact structurally valid ServerHello and must remain labeled L3 readiness rather than full handshake, certificate, HTTP, or application success.
+42. Concurrent relay load is a separate chunked-echo experiment, not a latency or maximum-throughput benchmark. Byte correctness is mandatory; its environment-dependent ratio gate is opt-in, and a missed gate must remain visible rather than be moved after observing results.
+43. The fixed-policy database contains only explicit user-authored exact targets and is management-plane-only in Phase 0. Durable suggestions, observations, and ephemeral preferences must never populate it; `serve`, Guard, and candidate ordering must not read it until a later ADR authorizes activation.
+44. Automatic durable policy lookup performs no SQLite I/O on the connection path; startup loads at most `learning.max_entries` pseudonymous keys into a bounded index.
+45. Automatic mappings use the last known ready path immediately, without win thresholds, independent-session promotion, provisional/confirmed tiers, or TTL. Any future lifecycle mechanism requires measured trial evidence and a new ADR.
+46. A live candidate package is sensitive, private, and checksum-gated. Install/rollback may atomically replace only the verified active script, require explicit confirmation, and must not reload Clash; binding or content drift must fail closed.
+47. Live strong evidence in legacy diagnostic modes is bounded by both retention time and `learning.persistence.max_evidence_rows`; runtime trimming may exceed the configured row ceiling by at most 255 queued writes and must return to the exact ceiling at clean startup/shutdown.
+48. A healthy automatic policy opens one candidate. Its opposite candidate may open only after selected-path pre-commit failure; committed application data is never replayed.
+49. Automatic mode persists only the exact last-ready mapping through a bounded asynchronous writer. It must not create evidence/session rows, run cross-session assessment, or validate unused promotion, TTL, health-freeze, retention, or suggestion settings.
+50. A selected automatic TLS path receives at most half the total readiness timeout so one sequential opposite attempt retains a real time budget. A healthy mapping still opens one candidate, and this split must not become an unmeasured per-target tuning system.
+51. A live transform may be reloaded only after Engine and Guard pass the local `armed` topology check. Rollback restores and reloads the original Clash script before stopping the runtime; topology checks never send a destination CONNECT.
+52. Observation aggregates must recognize every emitted automatic route, learning, and writer reason through bounded catalogs and expose only identity-free counts. Unknown reasons fail closed without echoing the rejected value.
+53. While an active Clash transform routes traffic to the Guard, the top-level supervisor must be owned by an external service boundary independent of a terminal or coding-agent session. That boundary must use the verified pinned runtime command, keep logs local/private, and preserve restore-and-reload-before-stop rollback order.
 
 ## 4. Repository map
 
@@ -83,12 +106,20 @@ Keep this map current whenever a top-level component is added, removed, or renam
 | --- | --- |
 | `cmd/smartroute/` | Main CLI/daemon entry point |
 | `cmd/smartroute-testlab/` | Standalone deterministic integration-test executable |
+| `cmd/smartroute-trial-lab/` | Network-free synthetic observation/assessment rehearsal executable |
+| `cmd/smartroute-benchmark-lab/` | Paired loopback sidecar overhead benchmark executable |
+| `cmd/smartroute-load-lab/` | Concurrent chunked-echo relay load executable |
+| `cmd/smartroute-load-sweep/` | Fixed concurrency/payload matrix and runtime-allocation diagnostic executable |
+| `cmd/smartroute-capacity-lab/` | Fixed client-paced offered-load capacity executable |
 | `cmd/smartroute-mihomo-lab/` | Isolated pinned-Mihomo topology and contract probe |
+| `cmd/smartroute-runtime-lab/` | Full process-level Clash transform, supervisor, persistence, restart, and overwrite lab |
 | `internal/config/` | Configuration schema, defaults, validation |
 | `internal/decision/` | Policy state machine and route decisions |
-| `internal/learning/` | Process-local ephemeral preferences plus pure cross-session shadow assessment |
+| `internal/learning/` | Automatic target-key helpers plus legacy ephemeral/Shadow diagnostics |
+| `internal/fixedpolicy/` | User-authored exact-target lock/list/revoke SQLite management plane; no runtime activation |
 | `internal/health/` | Systemic-failure learning freeze and deterministic recovery gate |
 | `internal/model/` | Stable domain types shared by internal components |
+| `internal/connectionid/` | Random non-semantic per-connection observation scopes |
 | `internal/transport/` | Candidate dialers and protocol-aware readiness gates |
 | `internal/socks5/` | Minimal no-authentication SOCKS5 client/server protocol |
 | `internal/sidecar/` | Inbound SOCKS server, path commitment, and TCP relay |
@@ -96,16 +127,21 @@ Keep this map current whenever a top-level component is added, removed, or renam
 | `internal/netrelay/` | Shared bidirectional TCP relay primitive |
 | `internal/privacy/` | Local Direct-probe policy compilation, normalization, and reason codes |
 | `internal/observe/` | Bounded local JSONL recording, pseudonymization, rotation, and lifecycle controls |
-| `internal/store/` | Pseudonymous SQLite evidence, read-only status, async writing, retention, and verified backup/restore lifecycle |
+| `internal/store/` | Pseudonymous SQLite evidence diagnostics plus a bounded last-known-good mapping/index and dedicated asynchronous policy writer |
 | `internal/supervisor/` | Independent child lifecycle, bounded restart backoff, and structured service events |
-| `internal/testlab/` | Loopback targets, fake gateways, and fault scenarios |
+| `internal/testlab/` | Loopback echo/TLS targets, exact handshake fixtures, mutable fake gateways, base faults, and the four-step last-known-good learning contract |
+| `internal/triallab/` | Temporary synthetic recorder/report/assessment integration scenarios |
+| `internal/runtimecheck/` | Local-only baseline/armed/running SOCKS topology doctor for live sequencing |
+| `internal/benchlab/` | Alternating baseline/sidecar TCP echo and TLS ServerHello benchmark |
+| `internal/loadlab/` | Alternating concurrent baseline/sidecar chunked relay load |
 | `internal/mihomolab/` | Temporary Mihomo config, child lifecycle, synthetic DNS, and topology assertions |
-| `internal/trial/` | Read-only controlled-trial prerequisites and evidence validation |
+| `internal/trial/` | Read-only controlled-trial prerequisites, pre-registered assessment plans, and descriptive data-quality gates |
 | `internal/tlsinspect/` | Bounded ClientHello/ServerHello record parsing and early-data rejection |
 | `internal/upstream/` | Mihomo integration boundaries and adapters |
 | `docs/` | Maintained product, architecture, interface, and validation documentation |
 | `docs/adr/` | Architecture Decision Records |
 | `configs/` | Safe examples; never store real subscriptions or secrets |
+| `integrations/clash-verge/` | Idempotent post-script transform for the final MATCH and loopback SmartRoute objects |
 | `scripts/` | Reproducible development and upstream-preparation commands |
 | `.github/workflows/` | CI checks required before merge |
 
@@ -189,12 +225,13 @@ Minimum tests by layer:
 | Layer | Required coverage |
 | --- | --- |
 | Config | Defaults, invalid combinations, safe fallback |
-| Decision engine | All outcome-matrix transitions, TTL, decay, manual precedence |
-| Ephemeral learning | Strong-pair gate, shadow/auto behavior, scope isolation, thresholds, TTL, contradiction, capacity, and no route impact on rejection |
+| Automatic routing | First readiness, exact scope, same-path reuse, pre-commit fallback, immediate overwrite, no expiry, capacity, and persistence failure independence |
+| Legacy ephemeral learning | Strong-pair gate, scope isolation, thresholds, TTL, contradiction, capacity, and proof that it is absent from `auto` |
 | Transport | Cancellation, stagger timing, loser cleanup, no unsafe replay |
 | TLS readiness | Fragmented ClientHello, malformed input, TLS 1.3 early-data rejection |
 | Mihomo adapter | Loop prevention, forced outbound mapping, unavailable sidecar fallback |
 | Persistence | Schema migration, crash recovery, corrupted-record behavior |
+| Fixed policy | Exact scope, replacement history, expiry, revoke, read-only missing state, corruption/future schema, and no runtime activation |
 | Observation recorder | Default pseudonymization, explicit cleartext switch, pause/resume, bounded rotation/retention, confirmed clear, safe export, and routing-independent failure |
 | End-to-end | Direct-only, proxy-only, both fail, DNS fault, network-profile change |
 
@@ -210,6 +247,11 @@ Automated tests must not inspect, change, reload, or share listeners with the us
 - An isolated Mihomo test must launch its own pinned child process with a generated temporary config, separate data directory, dedicated ports, and no system proxy/TUN changes.
 - Tests involving the active Clash environment, system proxy, TUN, or real destinations are manually invoked, opt-in, and require explicit user authorization for the exact scope.
 - `smartroute serve` is never started by a default automated test; automation uses `smartroute-testlab`.
+- `smartroute-trial-lab` uses only a removed temporary workspace and synthetic metadata; its report is never accepted as preflight evidence.
+- `smartroute-runtime-lab` requires explicit Mihomo, SmartRoute, Node, composer, and apply-script inputs; creates only a removed private workspace; binds literal loopback ephemeral ports; starts only its owned children; and must report zero external network, active Clash, TUN, or system-proxy access.
+- `smartroute-benchmark-lab` uses literal loopback and ephemeral ports only. Its optional pinned-Mihomo tier accepts only an explicit lab binary and owns a temporary child/home; it never discovers the active installation. Its TLS protocol uses only the parsed no-early-data synthetic first flight and reports ServerHello readiness, not full-handshake success. CI checks correctness without enforcing latency; performance enforcement is an explicit platform run.
+- `smartroute-load-lab`, `smartroute-load-sweep`, and `smartroute-capacity-lab` have the same isolation and explicit-pinned-child boundary. They report only aggregate connection/byte/throughput/runtime distributions, never fixture payloads or raw per-connection rows. Runtime metrics cover the current Go process only, exclude kernel and Mihomo-child work, and short-window CPU deltas are diagnostic rather than a performance gate. Capacity pacing is a client-side offered-load schedule, not bandwidth/RTT/loss emulation. CI enforces correctness but not environment-dependent performance gates.
+- `make macos-launch-agent-test` creates a private synthetic runtime and parses a generated plist in a removed temporary directory. `make relocate-live-runtime-test` verifies stopped-runtime path rebasing using only temporary files and loopback port allocation. Neither calls `launchctl`, installs a LaunchAgent, or reads active Clash. Live bootstrap, bootout, or restart testing is manual and coordinated like any other active-environment operation.
 
 ### Active-environment inspection and live rollout
 
@@ -220,6 +262,7 @@ Automated tests must not inspect, change, reload, or share listeners with the us
 - Before a write, prepare a fresh recoverable backup, redacted diff, exact target list, verified rollback action, smoke test, and stop conditions.
 - Prefer changing the durable active profile merge/script layer over editing a generated output, but determine the real binding read-only each time.
 - Live observation recording is local and off by default. It requires bounded retention and explicit controls for cleartext hostname, process identity, export, pause, and deletion.
+- An active SmartRoute transform must not rely on a foreground shell, PTY, or coding-agent execution cell to keep the Supervisor alive. Use the verified OS-service boundary or roll back the transform before ending that owner.
 - Never record payloads, URL paths/queries, headers, cookies, credentials, subscription contents, or TLS secrets.
 
 ## 9. Upstream and dependency policy

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/firfisa/smartroute/internal/learning"
 )
 
 func TestDefaultIsValid(t *testing.T) {
@@ -58,6 +60,7 @@ func TestLoadAppliesGuardDefaultsToLegacyConfig(t *testing.T) {
 	delete(fields, "original_endpoint")
 	delete(fields, "guard_adaptive_timeout_ms")
 	delete(fields, "observation")
+	delete(fields, "fixed_policy")
 	var learningFields map[string]json.RawMessage
 	if err := json.Unmarshal(fields["learning"], &learningFields); err != nil {
 		t.Fatal(err)
@@ -88,6 +91,9 @@ func TestLoadAppliesGuardDefaultsToLegacyConfig(t *testing.T) {
 	}
 	if cfg.Observation != defaults.Observation {
 		t.Fatalf("legacy observation defaults = %+v", cfg.Observation)
+	}
+	if cfg.FixedPolicy != defaults.FixedPolicy {
+		t.Fatalf("legacy fixed policy defaults = %+v", cfg.FixedPolicy)
 	}
 	if cfg.Learning.Mode != defaults.Learning.Mode {
 		t.Fatalf("legacy learning mode = %q", cfg.Learning.Mode)
@@ -146,6 +152,26 @@ func TestValidateRejectsUnknownLearningMode(t *testing.T) {
 	}
 }
 
+func TestAutomaticModeRequiresPersistence(t *testing.T) {
+	cfg := Default()
+	cfg.Learning.Persistence.Enabled = false
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "requires learning.persistence.enabled") {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	cfg.Learning.Persistence.Enabled = true
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("auto config rejected: %v", err)
+	}
+}
+
+func TestLegacyDurableAutoSpellingRemainsValid(t *testing.T) {
+	cfg := Default()
+	cfg.Learning.Mode = "durable-auto"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("legacy durable-auto config rejected: %v", err)
+	}
+}
+
 func TestValidateRejectsLearningCapacityOutsideBounds(t *testing.T) {
 	cfg := Default()
 	cfg.Learning.MaxEntries = 0
@@ -156,15 +182,17 @@ func TestValidateRejectsLearningCapacityOutsideBounds(t *testing.T) {
 
 func TestValidateRejectsUnsafeLearningPersistence(t *testing.T) {
 	cfg := Default()
+	cfg.Learning.Mode = learning.ModeShadow
 	cfg.Learning.Persistence.DatabasePath = "."
 	cfg.Learning.Persistence.QueueSize = 0
 	cfg.Learning.Persistence.RetentionHours = 0
+	cfg.Learning.Persistence.MaxEvidenceRows = 0
 	cfg.Learning.Persistence.ShutdownTimeoutMS = 50
 	cfg.Learning.Persistence.DirectSuggestionSessions = 1
 	cfg.Learning.Persistence.ProxySuggestionSessions = 1001
 
 	err := cfg.Validate()
-	for _, field := range []string{"database_path", "queue_size", "retention_hours", "shutdown_timeout_ms", "direct_suggestion_sessions", "proxy_suggestion_sessions"} {
+	for _, field := range []string{"database_path", "queue_size", "retention_hours", "max_evidence_rows", "shutdown_timeout_ms", "direct_suggestion_sessions", "proxy_suggestion_sessions"} {
 		if err == nil || !strings.Contains(err.Error(), field) {
 			t.Fatalf("Validate() error = %v, want %s error", err, field)
 		}
@@ -179,6 +207,14 @@ func TestValidateRejectsUnsafeObservationBounds(t *testing.T) {
 	err := cfg.Validate()
 	if err == nil || !strings.Contains(err.Error(), "observation.directory") || !strings.Contains(err.Error(), "max_files_per_source") {
 		t.Fatalf("Validate() error = %v, want observation errors", err)
+	}
+}
+
+func TestValidateRejectsUnsafeFixedPolicyPath(t *testing.T) {
+	cfg := Default()
+	cfg.FixedPolicy.DatabasePath = "."
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "fixed_policy.database_path") {
+		t.Fatalf("Validate() error = %v, want fixed-policy path error", err)
 	}
 }
 
@@ -207,11 +243,33 @@ func TestValidateRejectsInvalidPrivacyPattern(t *testing.T) {
 
 func TestValidateRejectsInvalidLearningHealthBounds(t *testing.T) {
 	cfg := Default()
+	cfg.Learning.Mode = learning.ModeEphemeralAuto
+	cfg.Learning.Health.Enabled = true
 	cfg.Learning.Health.FailureThreshold = 1
 	cfg.Learning.Health.FreezeDurationSeconds = 0
 	err := cfg.Validate()
 	if err == nil || !strings.Contains(err.Error(), "learning.health.failure_threshold") || !strings.Contains(err.Error(), "learning.health.freeze_duration_seconds") {
 		t.Fatalf("Validate() error = %v, want health bounds", err)
+	}
+}
+
+func TestAutomaticModeIgnoresLegacyPromotionTTLHealthAndEvidenceSettings(t *testing.T) {
+	cfg := Default()
+	cfg.Learning.Mode = learning.ModeAuto
+	cfg.Learning.ProxyPromotionWins = 0
+	cfg.Learning.DirectPromotionWins = 0
+	cfg.Learning.PolicyTTLHours = 0
+	cfg.Learning.Health.Enabled = true
+	cfg.Learning.Health.FailureThreshold = 0
+	cfg.Learning.Health.RecoveryThreshold = 0
+	cfg.Learning.Health.FailureWindowSeconds = 0
+	cfg.Learning.Health.FreezeDurationSeconds = 0
+	cfg.Learning.Persistence.RetentionHours = 0
+	cfg.Learning.Persistence.MaxEvidenceRows = 0
+	cfg.Learning.Persistence.DirectSuggestionSessions = 0
+	cfg.Learning.Persistence.ProxySuggestionSessions = 0
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("automatic mode was blocked by unused legacy settings: %v", err)
 	}
 }
 
@@ -239,7 +297,7 @@ func TestLoadDefaultsPartialLearningHealth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !loaded.Learning.Health.Enabled || loaded.Learning.Health.FailureThreshold != 4 || loaded.Learning.Health.RecoveryThreshold != 3 || loaded.Learning.Health.FreezeDurationSeconds != 300 {
+	if loaded.Learning.Health.Enabled || loaded.Learning.Health.FailureThreshold != 4 || loaded.Learning.Health.RecoveryThreshold != 3 || loaded.Learning.Health.FreezeDurationSeconds != 300 {
 		t.Fatalf("health defaults=%+v", loaded.Learning.Health)
 	}
 }

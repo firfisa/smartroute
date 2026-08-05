@@ -1,15 +1,15 @@
 # SmartRoute MVP 与验证计划
 
-版本：v0.1
+版本：v0.3
 
 ## 1. MVP 要回答的问题
 
 MVP 不是为了证明“能够自动写 YAML”，而是回答五个可证伪问题：
 
 1. 真实用户流量中，有多少连接被现有规则送到了次优路径？
-2. Direct/Proxy 对照能否比单边失败可靠地识别需要代理的目标？
-3. 错峰竞争能否降低失败等待，同时把额外开销控制在可接受范围？
-4. 学习后的策略能否在网络变化后保持准确，不频繁抖动？
+2. 首次 Direct/Proxy readiness 判断能否产生可复用的正确路径？
+3. 首判后的单路复用能否减少延迟和代理消耗，同时把 sidecar 开销控制在可接受范围？
+4. 已记住的路径失效时，提交前 fallback 能否在有界超时内成功切换并立即覆盖？
 5. 用户是否愿意信任并持续开启该功能？
 
 ## 2. MVP 范围
@@ -21,9 +21,9 @@ MVP 不是为了证明“能够自动写 YAML”，而是回答五个可证伪�
 - SOCKS5 TCP sidecar。
 - HTTPS/TLS 1.2/1.3（不复制 0-RTT）。
 - 完整域名 + 端口 + TCP + 网络画像。
-- SQLite 本地观测库。
-- Shadow、Suggest、Auto 三种模式。
-- 用户锁定、隐私列表、TTL、撤销和导出。
+- SQLite 本地精确 last-known-good 映射。
+- 默认 `auto`：首次 readiness 成功即持久化，不需要逐目标审批、晋级次数或 TTL。
+- 隐私列表、容量上限、一键清除和可恢复的试用回滚。
 - 本地诊断页或 CLI；无需先做完整桌面 UI。
 
 不包含：
@@ -58,28 +58,40 @@ MVP 不是为了证明“能够自动写 YAML”，而是回答五个可证伪�
 | 最小 SOCKS5 server/client relay | 实验性完成 | `go test -race ./...` 与 Test Lab 字节回显 |
 | Direct-first 错峰候选竞争 | 实验性完成 | Direct 快速、Proxy 恢复、双失败场景 |
 | 已完成的反事实路径证据 | 实验性完成 | Direct/Proxy 先失败后另一条成功会保留成对证据；取消与未启动明确为空 |
-| 进程内学习状态机 | 实验性完成 | 最小路由键、连续强证据阈值、TTL、矛盾转不稳定、网络/端口/传输隔离 |
-| 学习健康冻结 | 实验性完成 | 不同目标故障阈值、Proxy 专属恢复、冻结到期、网络/门户显式信号；自动网络/门户检测待接入 |
-| 偏好候选顺序 | 实验性完成 | 默认 shadow；auto 下 Proxy-first/Direct-first，首选提前失败立即启动另一条 |
-| SQLite 强证据 schema v1 与异步 writer | 实验性完成、默认关闭且 shadow-only | HMAC 目标键、独立会话、迁移/重开/并发、损坏/未来版本拒绝、裁剪、明文扫描、队列背压/排空、disabled 无文件 |
+| 默认自动固定路径 | 实验性完成 | 首次 readiness 立即记住、精确 scope、后续单候选、提交前 fallback、反向成功覆盖、无 TTL/晋级/审批 |
+| 旧 Shadow/ephemeral/health 路径 | 兼容诊断、非 MVP | 单元测试保留；默认 `auto` 不实例化或查询这些状态机 |
+| SQLite 策略/诊断 schema 与异步 writer | 实验性完成、本地默认开启 | HMAC 目标键、自动策略、独立诊断会话、迁移/重开/并发、损坏/未来版本拒绝、裁剪、明文扫描、队列背压/排空；诊断阈值不参与路由 |
 | 持久证据生命周期 | 实验性完成 | 缺失不创建、只读无迁移、聚合状态、online backup、SHA-256 清单、临时副本验证、恢复到新路径、拒绝覆盖/不完整产物 |
 | 跨会话 Shadow 评估 | 实验性完成、不应用 | wins + distinct sessions 双阈值、无证据/不足/建议/双向冲突矩阵、异步事件、离线精确目标评估、路由零影响 |
+| 自动持久策略 | 实验性完成、默认开启 | `auto`；首次 readiness 即记住 last-known-good、HMAC 有界启动索引、顺序单候选+提交前 fallback、反向成功覆盖 |
+| 自动层资源边界 | 实验性完成 | policy/index `max_entries`、policy queue 256、连接查询零 SQLite；只在映射新增/反向变化时异步写一行，`auto` 不写 evidence/session |
+| 人工固定策略管理面 | 实验性完成、不应用 | 独立明文精确目标 SQLite；永久/TTL lock、事务替换历史、read-only list、revoke、损坏/未来 schema 拒绝；runtime 零读取，激活语义待 ADR |
 | Shadow 聚合报告 | 实验性完成 | 只读按目标分组、无 target key/身份输出、保留期 cutoff、类别/reason/阈值计数、明确样本分母 |
 | 域名形式目标保留 | 实验性完成 | `echo.test` 经 sidecar 和 fake gateway 断言 |
-| 隔离故障目标 | 第一批完成 | `go run ./cmd/smartroute-testlab` |
+| 隔离故障与自动学习闭环 | 已完成 report v2 | `go run ./cmd/smartroute-testlab`；3 个基础场景 + 4 步 last-known-good TLS 场景，Preflight 严格验证全部字段 |
+| 无网络试用控制面演练 | 已完成 | `make trial-lab`；临时 schema-5 记录、report v7、完整 session 通过与混入 session fail-closed；不产生 preflight 证据 |
+| Sidecar 空载本地开销 | 2 gateway × 2 protocol 四格隔离证据完成 | TCP fake/Mihomo 最差 run p95 256/231µs；TLS ServerHello fake/Mihomo 为 249/254µs，均为显式 `-enforce` 5×200；尚不覆盖 TUN/完整握手，负载另见下一行 |
+| 并发 Relay 负载与需求容量 | fake 与锁定 Mihomo 隔离证据完成；极限门槛未通过，需求容量边界已定位 | 非节拍长流量两层都收敛约 0.665 ratio；固定 sweep 显示分配主要随连接增长；client-paced 两层均满足 100–5000 Mbps，8000 Mbps baseline 满足而 sidecar 超容差；不下调门槛，不冒充 WAN 仿真 |
 | 独立 Mihomo listener 拓扑 | macOS arm64、Linux amd64/v1.19.29 已完成 | `make mihomo-lab`；临时目录、随机端口、独立子进程 |
+| Clash Verge 最终 MATCH 变换 | 首个受控真实试用完成并继续自用 | 合成图语义/幂等/五端口冲突与 pinned Mihomo 解析通过；按 baseline→armed→running 安装并重载，原脚本回滚源保留且持久候选验证通过 |
+| 完整进程 Runtime Lab | 已完成 | `make runtime-lab`；真实 composer/transform、pinned Mihomo、`smartroute supervise` 子进程、policy-only SQLite，验证首判、两次重启复用、静默路径半预算 fallback 和反向覆盖 |
+| 真实流量窗口 | 描述性验证完成、用户选择继续自用 | 最新保留窗口 585 次 ready selection：302 Direct/283 Proxy、489 次已有路径复用、96 次新/反向记忆；累计策略 271 条。仍不等于验证过的应用成功率或反事实节省 |
 | SOCKS readiness 契约 | 已识别安全缺口并封闸 | Mihomo L1 候选产生 `candidate_below_commit_stage`，不得提交或学习 |
 | TLS readiness gate | 实验性完成 | 分片 ClientHello、early-data 预拨号拒绝、ServerHello L3、精确预读回放 |
-| adaptive engine 可用性 Guard | 单元与拓扑代码完成；隔离运行待复验 | 引擎拒绝/握手卡死时同连接回原策略；停止、回退、重启、恢复场景 |
+| adaptive engine 可用性 Guard | 单元与锁定 Mihomo 隔离拓扑均通过 | 引擎拒绝/握手卡死时同连接回原策略；2026-08-02 验证停止、回退、重启、恢复完整场景 |
 | Direct 探测隐私门控 | 实验性完成 | privacy-first、精确/后缀 deny、无效/缺失策略 fail-closed；Proxy-only 仍需 L3 |
-| Guard/engine 进程 supervisor | 实验性完成 | 独立启动/退出故障、连续失败退避、封顶、稳定窗口重置、父进程取消 |
+| Guard/engine 进程 supervisor | 实验性完成并有 macOS 外部所有者 | 独立启动/退出故障、连续失败退避、封顶、稳定窗口重置、父进程取消；Application Support LaunchAgent 强制终止后新 PID 与五端点恢复 |
 | 运行时连接关闭边界 | 实验性完成 | context 关闭 handshake/relay 两端，Sidecar/Guard 等待已接受 handler 全部退出；`net.Pipe` race 测试不依赖端口 |
 | 受限本地观测记录器 | 实验性完成 | 默认 HMAC、明文显式开关、暂停/恢复、容量与时间裁剪、确认清空、无盐导出、stdout 去重 |
-| 连接级 readiness 报告 | 实验性完成 | paused 严格读取、无身份聚合、Direct/Proxy 与 Guard 分母、decision/candidate p50/p95/p99；静态基线/应用结果仍缺失 |
+| 连接级 readiness 报告 | 实验性完成 | report v7 paused 严格读取、无身份聚合、Direct/Proxy、Guard、自动学习/写入 reasons 与 p50/p95/p99；验证过的应用结果仍缺失 |
 | Post-commit relay 报告 | 实验性完成 | JSONL schema 2、按 Direct/Proxy 双向字节和 duration、远端有字节覆盖、ended/canceled；不含静态流量/ClientHello/应用成功，schema 1 仍可读 |
+| 连接级 terminal/outcome 关联 | 实验性完成 | JSONL schema 3 随机非语义 scope；精确 target/path 配对、窗口截断计数、冲突拒绝；报告不输出 ID，schema 1/2 仍可读 |
+| 原 `Other/MATCH` 声明基线 | 实验性完成 | JSONL schema 4；统计相同/改道选择和改道 winner 实际 relay，preflight 单独确认声明；不冒充实时规则命中或反事实节省，schema 1–3 仍可读 |
+| Post-commit 方向终止分类 | 实验性完成 | JSONL schema 5；双向 EOF/timeout/reset/closed/I/O-error/canceled 固定聚合，旧 relay 显式 unclassified；不记录 raw error，不作为应用结果或学习证据 |
+| Post-trial 数据质量闸门 | 实验性完成 | preflight 预注册 session/config/window/thresholds；评估只接受该计划并检查预期 session、暂停、sample/scope/pair/cancellation 与内部守恒；只授权描述性分析 |
 | 受控试用 session scope | 实验性完成 | supervisor/Guard/engine 共享随机非语义 ID，重启保持；旧行显式 unscoped，聚合不输出 ID |
-| 只读受控试用 preflight | 实验性完成 | 稳定 pass/warn/fail JSON；严格验证确认项、暂停状态、现有 durable store 的匹配备份，以及 24 小时内两套隔离实验完整证据 |
-| 系统代理与 TUN | 待执行且仅手动 opt-in | 不使用活动 Clash 实例 |
+| 只读受控试用 preflight | 实验性完成 | 稳定 pass/warn/fail JSON；严格验证确认项、暂停状态、durable 备份及新鲜隔离证据，并生成带 digest 的预注册 assessment plan |
+| 活动 TUN 真实链路 | 首个手动 opt-in 已完成验证并继续自用 | 未改变 TUN/系统代理开关；五端点 running、真实兜底流量、自动持久复用、运行目录迁移与 Supervisor 恢复均已验证 |
 
 退出条件：
 
@@ -87,27 +99,24 @@ MVP 不是为了证明“能够自动写 YAML”，而是回答五个可证伪�
 - sidecar 空载 p95 额外延迟大到抵消预期收益。
 - 无法可靠区分候选被取消和真实失败。
 
-### Phase 1：Shadow Mode（1–2 周）
+### Phase 1：单机受控 Auto 试用（1–2 周）
 
-只观测，不改变用户路由：
+- 只把最终 `MATCH/Other` 放入 SmartRoute，高置信规则保持不变。
+- 直接启用“首判 → 立即持久化 → 单路复用 → 失效覆盖”，不让用户审批域名。
+- 本地有界记录 readiness、选路、fallback、连接耗时和 relay 结果，不记录 payload、URL 或凭据。
+- 与试用前的原 `MATCH` 体验比较：页面失败、首连/重连延迟、Proxy 使用比例和 Guard 回退。
+- 发生 DNS/TUN/广泛可达性回归时立即恢复候选包中的原脚本。
 
-- 从现有连接元数据收集目标和当前命中规则。
-- 只对非敏感、用户允许的目标做低频对照探测。
-- 记录 Direct/Proxy 成功层级、延迟和 DNS 差异。
-- 输出“如果启用 SmartRoute，理论上会改变哪些连接”。
-
-目标是先证明“次优路由比例”足够大。
-
-跨会话证据初步使用 `learning report` 统计强证据目标中的 suggestion coverage 与 conflict rate；`observations report` 补充所有已记录 adaptive attempt 的 readiness 比例、选路比例、Guard 回退、readiness 延迟和 post-commit relay 字节。两者仍不能替代静态基线或应用结果：最终判断必须继续加入 current-rule lane、client-visible outcome、端到端延迟以及可比的静态/全系统字节分母，并与静态基线配对比较。
+目标是用真实使用数据判断产品是否实际更快、更少误分流，而不是先证明一套复杂学习模型。
 
 ### Phase 2：TCP/TLS Adaptive（2–4 周）
 
 - 未知 TCP 目标进入 sidecar。
 - Direct 先发，Proxy 错峰启动。
 - 实现 TLS ClientHello 完整缓冲和安全握手竞争。
-- 实现策略状态机、缓存、TTL 和网络画像。进程内最小路由键、TTL、候选顺序与系统性故障学习冻结已完成；跨会话强证据已可 opt-in 异步收集，但画像自动生成和持久策略授权仍待实现。
-- 支持 Suggest 与 Auto 模式。
-- 加入故障冻结、速率限制和回滚。
+- 用受控试用数据调整首判 head-start、总超时和固定路径半预算 fallback，不做逐目标调参。
+- 只在数据证明有必要时，再增加网络画像自动识别或其他生命周期能力。
+- 完成一键启停、回滚和最小本地状态页。
 
 ### Phase 3：可用性与小范围试用（2–4 周）
 
@@ -284,7 +293,7 @@ MVP 不是为了证明“能够自动写 YAML”，而是回答五个可证伪�
 3. 用两个 Mihomo listener 验证 Direct/Proxy 路径隔离。macOS arm64 与 Linux amd64/v1.19.29 已完成；其 SOCKS ACK 只证明 L1。
 4. 实现候选拨号、延迟启动、取消和结构化事件。
 5. 实现 TLS record 与跨包 ClientHello 解析；明确拒绝复制 early data。最小安全切片已完成，完整真实 TLS 握手兼容矩阵仍待扩展。
-6. 建立 SQLite schema 和 deterministic state machine。schema v1、进程内状态机、opt-in 异步写入、生命周期工具、跨会话 Shadow assessment 与健康冻结已完成；持久建议的真实试验统计、策略授权、破坏性清理和更完整用户控制仍待实现。
+6. 建立 SQLite schema 和 deterministic state machine。schema v2、进程内状态机、opt-in 异步写入、生命周期工具、Shadow assessment、last-known-good 自动策略、资源边界与健康冻结已完成；真实网络收益统计、活动 Clash 接入和完整 UI 控制仍待实现。
 7. 接入网络画像、控制探针及 captive portal 自动信号源；复用已实现的学习冻结入口。
 8. 做 CLI：状态、观测、锁定、撤销、隐私列表、导出。
 9. 跑故障注入与静态规则基线。

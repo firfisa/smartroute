@@ -7,6 +7,19 @@ import (
 	"github.com/firfisa/smartroute/internal/model"
 )
 
+func TestUsesAutomaticPolicyAcceptsCanonicalAndCompatibilityNamesOnly(t *testing.T) {
+	for _, mode := range []string{ModeAuto, ModeDurableAuto} {
+		if !UsesAutomaticPolicy(mode) {
+			t.Fatalf("mode %q did not enable automatic policy", mode)
+		}
+	}
+	for _, mode := range []string{ModeShadow, ModeEphemeralAuto, "", "automatic"} {
+		if UsesAutomaticPolicy(mode) {
+			t.Fatalf("mode %q unexpectedly enabled automatic policy", mode)
+		}
+	}
+}
+
 func testEngine(t *testing.T, now *time.Time) *Engine {
 	t.Helper()
 	engine, err := New(Config{

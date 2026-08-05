@@ -17,7 +17,26 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
       - name: Prepare locked Mihomo source
         run: bash scripts/prepare-upstreams.sh mihomo
       - name: Run isolated Mihomo lab
         run: make mihomo-lab
+      - name: Validate transformed Clash config with pinned Mihomo
+        run: make clash-transform-mihomo
+      - name: Run full transformed SmartRoute runtime lab
+        run: make runtime-lab
+      - name: Validate private active-candidate packaging
+        run: make active-candidate-test
+      - name: Run pinned Mihomo sidecar benchmark smoke
+        run: go run ./cmd/smartroute-benchmark-lab -mihomo .cache/tools/mihomo-v1.19.29 -runs 2 -samples 100 -warmup 10
+      - name: Run pinned Mihomo TLS readiness benchmark smoke
+        run: go run ./cmd/smartroute-benchmark-lab -mihomo .cache/tools/mihomo-v1.19.29 -tls -runs 2 -samples 100 -warmup 10
+      - name: Run pinned Mihomo concurrent relay load smoke
+        run: go run ./cmd/smartroute-load-lab -mihomo .cache/tools/mihomo-v1.19.29 -runs 1 -concurrency 4 -bytes-per-connection 65536 -chunk-bytes 4096 -warmup-connections 1
+      - name: Run pinned Mihomo fixed relay load sweep smoke
+        run: go run ./cmd/smartroute-load-sweep -mihomo .cache/tools/mihomo-v1.19.29 -runs 1 -chunk-bytes 4096 -warmup-max 1
+      - name: Run pinned Mihomo offered-load capacity lab
+        run: go run ./cmd/smartroute-capacity-lab -mihomo .cache/tools/mihomo-v1.19.29 -runs 1 -bytes-per-connection 65536 -chunk-bytes 4096 -warmup-connections 1

@@ -117,6 +117,7 @@ type sidecarTLSCandidate struct {
 
 type stubLearningEngine struct {
 	preferred     model.Path
+	fixed         model.Path
 	update        learning.Update
 	err           error
 	observed      atomic.Int32
@@ -130,6 +131,7 @@ func (s *stubLearningEngine) ObserveProxyPathFailed(model.Target)           { s.
 func (s *stubLearningEngine) ObservePathSucceeded(model.Target, model.Path) { s.pathSucceeded.Add(1) }
 
 func (s *stubLearningEngine) PreferredPath(model.Target) model.Path { return s.preferred }
+func (s *stubLearningEngine) FixedPath(model.Target) model.Path     { return s.fixed }
 
 func (s *stubLearningEngine) Observe(model.Target, model.Observation, *model.Observation) (learning.Update, error) {
 	s.observed.Add(1)
@@ -256,6 +258,41 @@ func TestServerTLSUsesLearnedProxyPreferenceWithoutDisablingFallback(t *testing.
 	if event.ReasonCode != transport.ReasonProxyCandidateBeforeHeadStart || event.LearningReason != learning.ReasonPreferenceRefreshed ||
 		event.DurableReason != "durable_evidence_queued" || event.PolicyState != model.StateProxyPreferred {
 		t.Fatalf("event = %+v", event)
+	}
+	_ = clientConn.Close()
+}
+
+func TestServerTLSDurablePolicyAvoidsParallelCandidate(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	serverConn, clientConn := net.Pipe()
+	helloWire := fragmentedClientHello(false)
+	serverWire := validServerHelloRecord()
+	direct := &sidecarTLSCandidate{path: model.PathDirect, handler: func(net.Conn) {}}
+	proxy := &sidecarTLSCandidate{path: model.PathProxy, handler: func(conn net.Conn) {
+		_, _ = io.CopyN(io.Discard, conn, int64(len(helloWire)))
+		_, _ = conn.Write(serverWire)
+	}}
+	learner := &stubLearningEngine{fixed: model.PathProxy, update: learning.Update{ReasonCode: learning.ReasonIncompleteEvidence}}
+	events := make(chan DecisionEvent, 1)
+	server := Server{
+		HandshakeTimeout: time.Second, Learning: learner,
+		DirectProbePolicy: mustPrivacyPolicy(t, privacy.ModeExplicitOptIn, nil),
+		TLSRacer:          &transport.TLSRacer{Direct: direct, Proxy: proxy, Gate: transport.TLSServerHelloGate{}, Timeout: time.Second},
+		OnDecision:        func(event DecisionEvent) { events <- event },
+	}
+	go server.handle(ctx, serverConn)
+	performSOCKSRequest(t, clientConn)
+	if _, err := clientConn.Write(helloWire); err != nil {
+		t.Fatal(err)
+	}
+	replayed := make([]byte, len(serverWire))
+	if _, err := io.ReadFull(clientConn, replayed); err != nil {
+		t.Fatal(err)
+	}
+	event := <-events
+	if direct.attempts.Load() != 0 || proxy.attempts.Load() != 1 || event.ReasonCode != transport.ReasonDurablePolicySelected || event.PolicyState != model.StateProxyPreferred {
+		t.Fatalf("event=%+v direct=%d proxy=%d", event, direct.attempts.Load(), proxy.attempts.Load())
 	}
 	_ = clientConn.Close()
 }

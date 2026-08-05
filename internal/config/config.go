@@ -29,6 +29,7 @@ type Config struct {
 	OriginalFallback       model.Path        `json:"original_fallback"`
 	Decision               DecisionConfig    `json:"decision"`
 	Learning               LearningConfig    `json:"learning"`
+	FixedPolicy            FixedPolicyConfig `json:"fixed_policy"`
 	Privacy                PrivacyConfig     `json:"privacy"`
 	Observation            ObservationConfig `json:"observation"`
 }
@@ -62,9 +63,14 @@ type LearningPersistenceConfig struct {
 	DatabasePath             string `json:"database_path"`
 	QueueSize                int    `json:"queue_size"`
 	RetentionHours           int    `json:"retention_hours"`
+	MaxEvidenceRows          int    `json:"max_evidence_rows"`
 	ShutdownTimeoutMS        int    `json:"shutdown_timeout_ms"`
 	DirectSuggestionSessions int    `json:"direct_suggestion_sessions"`
 	ProxySuggestionSessions  int    `json:"proxy_suggestion_sessions"`
+}
+
+type FixedPolicyConfig struct {
+	DatabasePath string `json:"database_path"`
 }
 
 type PrivacyConfig struct {
@@ -97,19 +103,20 @@ func Default() Config {
 			CandidateTimeoutMS: 5000,
 		},
 		Learning: LearningConfig{
-			Mode:                learning.ModeShadow,
+			Mode:                learning.ModeAuto,
 			MaxEntries:          10000,
 			ProxyPromotionWins:  3,
 			DirectPromotionWins: 5,
 			PolicyTTLHours:      72,
 			Persistence: LearningPersistenceConfig{
-				Enabled: false, DatabasePath: "data/learning.db", QueueSize: 256,
-				RetentionHours: 720, ShutdownTimeoutMS: 2000,
+				Enabled: true, DatabasePath: "data/learning.db", QueueSize: 256,
+				RetentionHours: 720, MaxEvidenceRows: 100000, ShutdownTimeoutMS: 2000,
 				DirectSuggestionSessions: 3, ProxySuggestionSessions: 2,
 			},
-			Health: LearningHealthConfig{Enabled: true, FailureThreshold: 3,
+			Health: LearningHealthConfig{Enabled: false, FailureThreshold: 3,
 				RecoveryThreshold: 3, FailureWindowSeconds: 30, FreezeDurationSeconds: 300},
 		},
+		FixedPolicy: FixedPolicyConfig{DatabasePath: "data/fixed-policies.db"},
 		Privacy: PrivacyConfig{
 			Mode:             "explicit-opt-in",
 			NeverDirectProbe: []string{},
@@ -151,6 +158,16 @@ func Load(path string) (Config, error) {
 	if _, present := fields["observation"]; !present {
 		cfg.Observation = defaults.Observation
 	}
+	if raw, present := fields["fixed_policy"]; !present {
+		cfg.FixedPolicy = defaults.FixedPolicy
+	} else {
+		var fixedFields map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &fixedFields); err == nil {
+			if _, databasePresent := fixedFields["database_path"]; !databasePresent {
+				cfg.FixedPolicy.DatabasePath = defaults.FixedPolicy.DatabasePath
+			}
+		}
+	}
 	if raw, present := fields["learning"]; present {
 		var learningFields map[string]json.RawMessage
 		if err := json.Unmarshal(raw, &learningFields); err == nil {
@@ -159,6 +176,15 @@ func Load(path string) (Config, error) {
 			}
 			if _, capacityPresent := learningFields["max_entries"]; !capacityPresent {
 				cfg.Learning.MaxEntries = defaults.Learning.MaxEntries
+			}
+			if _, present := learningFields["proxy_promotion_wins"]; !present {
+				cfg.Learning.ProxyPromotionWins = defaults.Learning.ProxyPromotionWins
+			}
+			if _, present := learningFields["direct_promotion_wins"]; !present {
+				cfg.Learning.DirectPromotionWins = defaults.Learning.DirectPromotionWins
+			}
+			if _, present := learningFields["policy_ttl_hours"]; !present {
+				cfg.Learning.PolicyTTLHours = defaults.Learning.PolicyTTLHours
 			}
 			if healthRaw, healthPresent := learningFields["health"]; !healthPresent {
 				cfg.Learning.Health = defaults.Learning.Health
@@ -195,6 +221,9 @@ func Load(path string) (Config, error) {
 					}
 					if _, present := persistenceFields["retention_hours"]; !present {
 						cfg.Learning.Persistence.RetentionHours = defaults.Learning.Persistence.RetentionHours
+					}
+					if _, present := persistenceFields["max_evidence_rows"]; !present {
+						cfg.Learning.Persistence.MaxEvidenceRows = defaults.Learning.Persistence.MaxEvidenceRows
 					}
 					if _, present := persistenceFields["shutdown_timeout_ms"]; !present {
 						cfg.Learning.Persistence.ShutdownTimeoutMS = defaults.Learning.Persistence.ShutdownTimeoutMS
@@ -260,49 +289,63 @@ func (c Config) Validate() error {
 	if c.Decision.CandidateTimeoutMS <= c.Decision.DirectHeadStartMS {
 		validationErrors = append(validationErrors, errors.New("candidate_timeout_ms must exceed direct_head_start_ms"))
 	}
-	if c.Learning.ProxyPromotionWins < 2 || c.Learning.DirectPromotionWins < 2 {
+	if c.Learning.Mode != learning.ModeAuto && c.Learning.Mode != learning.ModeShadow && c.Learning.Mode != learning.ModeEphemeralAuto && c.Learning.Mode != learning.ModeDurableAuto {
+		validationErrors = append(validationErrors, errors.New("learning.mode must be auto, shadow, ephemeral-auto, or durable-auto"))
+	}
+	legacyLearning := c.Learning.Mode == learning.ModeShadow || c.Learning.Mode == learning.ModeEphemeralAuto
+	if legacyLearning && (c.Learning.ProxyPromotionWins < 2 || c.Learning.DirectPromotionWins < 2) {
 		validationErrors = append(validationErrors, errors.New("promotion thresholds must be at least 2"))
 	}
-	if c.Learning.Mode != learning.ModeShadow && c.Learning.Mode != learning.ModeEphemeralAuto {
-		validationErrors = append(validationErrors, errors.New("learning.mode must be shadow or ephemeral-auto"))
+	if learning.UsesAutomaticPolicy(c.Learning.Mode) && !c.Learning.Persistence.Enabled {
+		validationErrors = append(validationErrors, errors.New("learning.mode auto requires learning.persistence.enabled=true"))
 	}
 	if c.Learning.MaxEntries < 1 || c.Learning.MaxEntries > 1000000 {
 		validationErrors = append(validationErrors, errors.New("learning.max_entries must be between 1 and 1000000"))
 	}
-	if c.Learning.PolicyTTLHours < 1 {
+	if legacyLearning && c.Learning.PolicyTTLHours < 1 {
 		validationErrors = append(validationErrors, errors.New("policy_ttl_hours must be positive"))
 	}
-	if c.Learning.Health.FailureThreshold < 2 || c.Learning.Health.FailureThreshold > 1000 {
+	if legacyLearning && c.Learning.Health.Enabled && (c.Learning.Health.FailureThreshold < 2 || c.Learning.Health.FailureThreshold > 1000) {
 		validationErrors = append(validationErrors, errors.New("learning.health.failure_threshold must be between 2 and 1000"))
 	}
-	if c.Learning.Health.RecoveryThreshold < 2 || c.Learning.Health.RecoveryThreshold > 1000 {
+	if legacyLearning && c.Learning.Health.Enabled && (c.Learning.Health.RecoveryThreshold < 2 || c.Learning.Health.RecoveryThreshold > 1000) {
 		validationErrors = append(validationErrors, errors.New("learning.health.recovery_threshold must be between 2 and 1000"))
 	}
-	if c.Learning.Health.FailureWindowSeconds < 1 || c.Learning.Health.FailureWindowSeconds > 3600 {
+	if legacyLearning && c.Learning.Health.Enabled && (c.Learning.Health.FailureWindowSeconds < 1 || c.Learning.Health.FailureWindowSeconds > 3600) {
 		validationErrors = append(validationErrors, errors.New("learning.health.failure_window_seconds must be between 1 and 3600"))
 	}
-	if c.Learning.Health.FreezeDurationSeconds < 1 || c.Learning.Health.FreezeDurationSeconds > 86400 {
+	if legacyLearning && c.Learning.Health.Enabled && (c.Learning.Health.FreezeDurationSeconds < 1 || c.Learning.Health.FreezeDurationSeconds > 86400) {
 		validationErrors = append(validationErrors, errors.New("learning.health.freeze_duration_seconds must be between 1 and 86400"))
 	}
-	if c.Learning.Persistence.DatabasePath == "" {
+	if c.Learning.Persistence.Enabled && c.Learning.Persistence.DatabasePath == "" {
 		validationErrors = append(validationErrors, errors.New("learning.persistence.database_path must not be empty"))
-	} else if clean := filepath.Clean(c.Learning.Persistence.DatabasePath); clean == "." || clean == string(filepath.Separator) {
-		validationErrors = append(validationErrors, errors.New("learning.persistence.database_path must name a file"))
+	} else if c.Learning.Persistence.Enabled {
+		if clean := filepath.Clean(c.Learning.Persistence.DatabasePath); clean == "." || clean == string(filepath.Separator) {
+			validationErrors = append(validationErrors, errors.New("learning.persistence.database_path must name a file"))
+		}
 	}
-	if c.Learning.Persistence.QueueSize < 1 || c.Learning.Persistence.QueueSize > 65536 {
+	if c.Learning.Persistence.Enabled && (c.Learning.Persistence.QueueSize < 1 || c.Learning.Persistence.QueueSize > 65536) {
 		validationErrors = append(validationErrors, errors.New("learning.persistence.queue_size must be between 1 and 65536"))
 	}
-	if c.Learning.Persistence.RetentionHours < 1 || c.Learning.Persistence.RetentionHours > 87600 {
+	if c.Learning.Persistence.Enabled && legacyLearning && (c.Learning.Persistence.RetentionHours < 1 || c.Learning.Persistence.RetentionHours > 87600) {
 		validationErrors = append(validationErrors, errors.New("learning.persistence.retention_hours must be between 1 and 87600"))
 	}
-	if c.Learning.Persistence.ShutdownTimeoutMS < 100 || c.Learning.Persistence.ShutdownTimeoutMS > 30000 {
+	if c.Learning.Persistence.Enabled && legacyLearning && (c.Learning.Persistence.MaxEvidenceRows < 1000 || c.Learning.Persistence.MaxEvidenceRows > 10000000) {
+		validationErrors = append(validationErrors, errors.New("learning.persistence.max_evidence_rows must be between 1000 and 10000000"))
+	}
+	if c.Learning.Persistence.Enabled && (c.Learning.Persistence.ShutdownTimeoutMS < 100 || c.Learning.Persistence.ShutdownTimeoutMS > 30000) {
 		validationErrors = append(validationErrors, errors.New("learning.persistence.shutdown_timeout_ms must be between 100 and 30000"))
 	}
-	if c.Learning.Persistence.DirectSuggestionSessions < 2 || c.Learning.Persistence.DirectSuggestionSessions > 1000 {
+	if c.Learning.Persistence.Enabled && legacyLearning && (c.Learning.Persistence.DirectSuggestionSessions < 2 || c.Learning.Persistence.DirectSuggestionSessions > 1000) {
 		validationErrors = append(validationErrors, errors.New("learning.persistence.direct_suggestion_sessions must be between 2 and 1000"))
 	}
-	if c.Learning.Persistence.ProxySuggestionSessions < 2 || c.Learning.Persistence.ProxySuggestionSessions > 1000 {
+	if c.Learning.Persistence.Enabled && legacyLearning && (c.Learning.Persistence.ProxySuggestionSessions < 2 || c.Learning.Persistence.ProxySuggestionSessions > 1000) {
 		validationErrors = append(validationErrors, errors.New("learning.persistence.proxy_suggestion_sessions must be between 2 and 1000"))
+	}
+	if c.FixedPolicy.DatabasePath == "" {
+		validationErrors = append(validationErrors, errors.New("fixed_policy.database_path must not be empty"))
+	} else if clean := filepath.Clean(c.FixedPolicy.DatabasePath); clean == "." || clean == string(filepath.Separator) {
+		validationErrors = append(validationErrors, errors.New("fixed_policy.database_path must name a file"))
 	}
 	if _, err := privacy.New(c.Privacy.Mode, c.Privacy.NeverDirectProbe); err != nil {
 		validationErrors = append(validationErrors, fmt.Errorf("privacy: %w", err))

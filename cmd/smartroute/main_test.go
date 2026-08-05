@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/firfisa/smartroute/internal/config"
+	"github.com/firfisa/smartroute/internal/fixedpolicy"
 	"github.com/firfisa/smartroute/internal/health"
 	"github.com/firfisa/smartroute/internal/learning"
 	"github.com/firfisa/smartroute/internal/model"
@@ -22,6 +24,16 @@ import (
 type recordingDurableWriter struct {
 	requests []store.WriteRequest
 	reason   string
+}
+
+type recordingPolicyWriter struct {
+	requests []store.PolicyWriteRequest
+	reason   string
+}
+
+func (w *recordingPolicyWriter) Enqueue(request store.PolicyWriteRequest) (bool, string) {
+	w.requests = append(w.requests, request)
+	return true, w.reason
 }
 
 func (w *recordingDurableWriter) Enqueue(request store.WriteRequest) (bool, string) {
@@ -121,9 +133,11 @@ func TestRuntimeHealthFreezeClearsPreferenceAndSuppressesDurableWrite(t *testing
 	}
 }
 
-func TestDurableLearningIsOptInAndDrains(t *testing.T) {
+func TestDurableLearningCanBeDisabledAndDrainsWhenEnabled(t *testing.T) {
 	cfg := config.Default()
+	cfg.Learning.Mode = learning.ModeShadow
 	cfg.Learning.Persistence.DatabasePath = filepath.Join(t.TempDir(), "learning.db")
+	cfg.Learning.Persistence.Enabled = false
 	runtime, err := openDurableLearning(context.Background(), cfg, nil, nil)
 	if err != nil || runtime != nil {
 		t.Fatalf("disabled runtime=%v error=%v", runtime, err)
@@ -176,6 +190,7 @@ func TestDurableLearningEmitsCrossSessionShadowAssessment(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := config.Default()
+	cfg.Learning.Mode = learning.ModeShadow
 	cfg.Learning.Persistence.Enabled = true
 	cfg.Learning.Persistence.DatabasePath = databasePath
 	events := make(chan learning.DurableAssessmentEvent, 1)
@@ -203,6 +218,137 @@ func TestDurableLearningEmitsCrossSessionShadowAssessment(t *testing.T) {
 		}
 	default:
 		t.Fatal("durable assessment event was not emitted")
+	}
+}
+
+func TestDurableAutoMaterializesAndReloadsPolicyWithoutPerTargetApproval(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "learning.db")
+	now := time.Now().UTC()
+	target := model.Target{NetworkProfileID: "home", Hostname: "auto.example", Port: 443, Transport: model.TransportTCP}
+	winner := model.Observation{Path: model.PathProxy, Success: true, StageReached: model.StageTLS}
+	cfg := config.Default()
+	cfg.Learning.Mode = learning.ModeDurableAuto
+	cfg.Learning.Persistence.Enabled = true
+	cfg.Learning.Persistence.DatabasePath = databasePath
+	runtime, err := openDurableLearning(context.Background(), cfg, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	learner := &runtimeLearningEngine{
+		automatic: true, durable: runtime.index, policyWriter: runtime.policyWriter,
+		clock: func() time.Time { return now },
+	}
+	update, err := learner.Observe(target, winner, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := runtime.index.PreferredPath(target); got != model.PathProxy {
+		t.Fatalf("first readiness result was not remembered immediately: %q", got)
+	}
+	if update.DurableReason != store.ReasonPolicyQueued {
+		t.Fatalf("durable reason=%q", update.DurableReason)
+	}
+	if update.ReasonCode != learning.ReasonAutoProxyRemembered || !update.Policy.ExpiresAt.IsZero() {
+		t.Fatalf("automatic update unexpectedly used promotion or TTL state: %+v", update)
+	}
+	secondUpdate, err := learner.Observe(target, winner, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondUpdate.DurableReason != "" {
+		t.Fatalf("unchanged path queued another durable write: %+v", secondUpdate)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	stats, err := runtime.Close(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Queued != 1 || stats.Written != 1 || stats.Skipped != 0 {
+		t.Fatalf("writer stats=%+v", stats)
+	}
+	reloaded, err := openDurableLearning(context.Background(), cfg, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reloaded.index.PreferredPath(target); got != model.PathProxy {
+		t.Fatalf("reloaded path=%q", got)
+	}
+	status, err := reloaded.store.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.SessionCount != 0 || status.EvidenceCount != 0 || status.DurablePolicies != 1 {
+		t.Fatalf("automatic mode stored non-policy history: %+v", status)
+	}
+	if _, err := reloaded.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAutomaticRuntimeAttachmentDoesNotInstallTypedNilEvidenceWriter(t *testing.T) {
+	cfg := config.Default()
+	cfg.Learning.Persistence.DatabasePath = filepath.Join(t.TempDir(), "learning.db")
+	runtime, err := openDurableLearning(context.Background(), cfg, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	learner := &runtimeLearningEngine{automatic: true}
+	attachDurableLearning(learner, runtime)
+	if learner.writer != nil || learner.policyWriter == nil || learner.durable == nil {
+		t.Fatalf("automatic attachment writer=%T policyWriter=%T durable=%v", learner.writer, learner.policyWriter, learner.durable != nil)
+	}
+	target := model.Target{NetworkProfileID: "home", Hostname: "example.test", Port: 443, Transport: model.TransportTCP}
+	winner := model.Observation{Path: model.PathProxy, Success: true, StageReached: model.StageTLS}
+	if _, err := learner.Observe(target, winner, nil); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := runtime.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDurableAutoOppositeSuccessOverwritesRememberedPath(t *testing.T) {
+	cfg := config.Default()
+	cfg.Learning.Mode = learning.ModeDurableAuto
+	cfg.Learning.Persistence.Enabled = true
+	cfg.Learning.Persistence.DatabasePath = filepath.Join(t.TempDir(), "learning.db")
+	runtime, err := openDurableLearning(context.Background(), cfg, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	target := model.Target{NetworkProfileID: "home", Hostname: "changed.example", Port: 443, Transport: model.TransportTCP}
+	if _, err := runtime.index.Remember(target, model.PathDirect, now); err != nil {
+		t.Fatal(err)
+	}
+	learner := &runtimeLearningEngine{
+		automatic: true, durable: runtime.index, policyWriter: runtime.policyWriter,
+		clock: func() time.Time { return now.Add(time.Minute) },
+	}
+	winner := model.Observation{Path: model.PathProxy, Success: true, StageReached: model.StageTLS}
+	failed := model.Observation{Path: model.PathDirect, StageReached: model.StageOutbound, FailureClass: "timeout"}
+	if _, err := learner.Observe(target, winner, &failed); err != nil {
+		t.Fatal(err)
+	}
+	if got := runtime.index.PreferredPath(target); got != model.PathProxy {
+		t.Fatalf("opposite success did not overwrite immediately: %q", got)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := runtime.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	readOnly, err := store.OpenReadOnly(context.Background(), store.Config{Path: cfg.Learning.Persistence.DatabasePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer readOnly.Close()
+	policies, err := readOnly.LoadDurablePolicies(context.Background(), cfg.Learning.MaxEntries)
+	if err != nil || len(policies) != 1 || policies[0].Path != model.PathProxy {
+		t.Fatalf("policies=%+v err=%v", policies, err)
 	}
 }
 
@@ -300,7 +446,7 @@ func TestRunTrialPreflightEmitsMachineReadableFailure(t *testing.T) {
 	cfg.Observation.Directory = directory
 	configPath := writeConfig(t, cfg)
 	var stdout, stderr bytes.Buffer
-	err := run([]string{"trial", "preflight", "-config", configPath, "-acknowledge-direct-probes"}, &stdout, &stderr)
+	err := run([]string{"trial", "preflight", "-config", configPath, "-acknowledge-direct-probes", "-acknowledge-original-baseline"}, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "preflight failed") {
 		t.Fatalf("error = %v", err)
 	}
@@ -311,6 +457,71 @@ func TestRunTrialPreflightEmitsMachineReadableFailure(t *testing.T) {
 	if report.Ready || report.Counts.Fail != 2 || report.ActiveClashInspected || report.AuthorizesLiveActivation {
 		t.Fatalf("report = %+v", report)
 	}
+}
+
+func TestRunTrialAssessEmitsMachineReadableDataQualityFailure(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "observations")
+	if err := observe.Pause(directory); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Observation.Enabled = true
+	cfg.Observation.Directory = directory
+	configPath := writeConfig(t, cfg)
+	preflightPath := writeReadyPreflight(t, cfg)
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"trial", "assess", "-config", configPath, "-preflight-report", preflightPath}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "assessment failed") {
+		t.Fatalf("error=%v", err)
+	}
+	var assessment trial.ObservationAssessment
+	if err := json.Unmarshal(stdout.Bytes(), &assessment); err != nil {
+		t.Fatalf("decode assessment: %v\n%s", err, stdout.String())
+	}
+	if assessment.ReadyForDescriptiveAnalysis || assessment.Counts.Fail == 0 || assessment.PersistentStateChanged ||
+		assessment.ActiveClashInspected || assessment.AuthorizesPolicyChange {
+		t.Fatalf("assessment=%+v", assessment)
+	}
+}
+
+func TestRunTrialAssessRejectsMissingPreflightPlan(t *testing.T) {
+	cfg := config.Default()
+	cfg.Observation.Enabled = true
+	cfg.Observation.Directory = filepath.Join(t.TempDir(), "observations")
+	configPath := writeConfig(t, cfg)
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"trial", "assess", "-config", configPath}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "preflight report") || stdout.Len() != 0 {
+		t.Fatalf("error=%v stdout=%q", err, stdout.String())
+	}
+}
+
+func writeReadyPreflight(t *testing.T, cfg config.Config) string {
+	t.Helper()
+	now := time.Now().UTC()
+	plan, err := trial.NewAssessmentPlan(cfg, "trial-0123456789abcdef0123456789abcdef", now, 168*time.Hour, trial.DefaultAssessmentThresholds())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "preflight.json")
+	ids := []string{
+		"assessment.plan", "config.valid", "privacy.direct_probes", "baseline.original_path",
+		"observation.enabled", "privacy.cleartext_hostname", "observation.paused", "observation.existing_files",
+		"learning.mode", "learning.persistence", "learning.backup", "lab.testlab", "lab.mihomo", "safety.active_clash",
+	}
+	report := trial.Report{ReportVersion: trial.PreflightReportVersion, GeneratedAt: now, Ready: true, AssessmentPlan: &plan}
+	for _, id := range ids {
+		report.Checks = append(report.Checks, trial.Check{ID: id, Status: trial.StatusPass})
+		report.Counts.Pass++
+	}
+	data, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func TestRunObservationsReportIsIdentityFree(t *testing.T) {
@@ -362,6 +573,8 @@ func TestRunObservationsReportIsIdentityFree(t *testing.T) {
 func TestRunLearningStatusDoesNotCreateDisabledStore(t *testing.T) {
 	databasePath := filepath.Join(t.TempDir(), "learning.db")
 	cfg := config.Default()
+	cfg.Learning.Mode = learning.ModeShadow
+	cfg.Learning.Persistence.Enabled = false
 	cfg.Learning.Persistence.DatabasePath = databasePath
 	configPath := writeConfig(t, cfg)
 	var stdout, stderr bytes.Buffer
@@ -482,6 +695,62 @@ func TestRunLearningStatusAndBackupExistingStore(t *testing.T) {
 	}
 }
 
+func TestRunLearningClearPoliciesKeepsEvidenceAndRequiresRestart(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "learning.db")
+	evidenceStore, err := store.Open(context.Background(), store.Config{Path: databasePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := evidenceStore.StartSession(context.Background(), "session", now); err != nil {
+		t.Fatal(err)
+	}
+	target := model.Target{NetworkProfileID: "home", Hostname: "example.com", Port: 443, Transport: model.TransportTCP}
+	winner := model.Observation{Path: model.PathProxy, Success: true, StageReached: model.StageTLS}
+	failed := model.Observation{Path: model.PathDirect, StageReached: model.StageOutbound, FailureClass: "timeout"}
+	if written, err := evidenceStore.AppendStrongEvidence(context.Background(), target, "session", winner, &failed, now); err != nil || !written {
+		t.Fatalf("written=%v err=%v", written, err)
+	}
+	if change, err := evidenceStore.RememberDurablePath(context.Background(), target, model.PathProxy, now, 10); err != nil || !change.Applied {
+		t.Fatalf("change=%+v err=%v", change, err)
+	}
+	if err := evidenceStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Learning.Persistence.Enabled = true
+	cfg.Learning.Persistence.DatabasePath = databasePath
+	configPath := writeConfig(t, cfg)
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"learning", "clear-policies", "-config", configPath}, &stdout, &stderr); err == nil {
+		t.Fatal("clear without confirmation succeeded")
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if err := run([]string{"learning", "clear-policies", "-confirm-clear-policies", "-config", configPath}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	var result clearDurablePoliciesResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.ClearedPolicies != 1 || !result.EvidenceRetained || !result.RestartRequired || !strings.Contains(stderr.String(), "restart") {
+		t.Fatalf("result=%+v stderr=%s", result, stderr.String())
+	}
+	readOnly, err := store.OpenReadOnly(context.Background(), store.Config{Path: databasePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer readOnly.Close()
+	status, err := readOnly.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.DurablePolicies != 0 || status.EvidenceCount != 1 {
+		t.Fatalf("status=%+v", status)
+	}
+}
+
 func TestRunLearningBackupRequiresExistingSourceAndNewDestination(t *testing.T) {
 	cfg := config.Default()
 	cfg.Learning.Persistence.DatabasePath = filepath.Join(t.TempDir(), "missing.db")
@@ -509,6 +778,84 @@ func TestRunLearningEvaluateRequiresExactTarget(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if err := run([]string{"learning", "evaluate"}, &stdout, &stderr); err == nil || !strings.Contains(err.Error(), "network-profile") {
 		t.Fatalf("evaluate error = %v", err)
+	}
+}
+
+func TestRunPolicyLifecycleIsExplicitAndManagementOnly(t *testing.T) {
+	cfg := config.Default()
+	cfg.FixedPolicy.DatabasePath = filepath.Join(t.TempDir(), "fixed-policies.db")
+	configPath := writeConfig(t, cfg)
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"policy", "list", "-config", configPath}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	var missing fixedpolicy.ListResult
+	if err := json.Unmarshal(stdout.Bytes(), &missing); err != nil {
+		t.Fatal(err)
+	}
+	if missing.DatabaseExists || len(missing.Rules) != 0 {
+		t.Fatalf("missing=%+v", missing)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if err := run([]string{
+		"policy", "lock", "-config", configPath,
+		"-network-profile", "office", "-hostname", "API.Example.COM.", "-port", "443", "-path", "proxy",
+	}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stderr.String(), "runtime activation is not implemented") {
+		t.Fatalf("stderr=%q", stderr.String())
+	}
+	var locked fixedpolicy.LockResult
+	if err := json.Unmarshal(stdout.Bytes(), &locked); err != nil {
+		t.Fatal(err)
+	}
+	if locked.Rule.Hostname != "api.example.com" || locked.Rule.Path != model.PathProxy || locked.Rule.Source != fixedpolicy.SourceManual {
+		t.Fatalf("locked=%+v", locked)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if err := run([]string{"policy", "list", "-config", configPath}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	var listed fixedpolicy.ListResult
+	if err := json.Unmarshal(stdout.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if !listed.DatabaseExists || len(listed.Rules) != 1 || listed.Rules[0].RuleID != locked.Rule.RuleID {
+		t.Fatalf("listed=%+v", listed)
+	}
+	stdout.Reset()
+	if err := run([]string{"policy", "revoke", "-config", configPath, "-id", locked.Rule.RuleID}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	var revoked fixedpolicy.Rule
+	if err := json.Unmarshal(stdout.Bytes(), &revoked); err != nil || revoked.RevokedAt == nil {
+		t.Fatalf("revoked=%+v err=%v", revoked, err)
+	}
+	stdout.Reset()
+	if err := run([]string{"policy", "list", "-config", configPath}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &listed); err != nil || len(listed.Rules) != 0 {
+		t.Fatalf("active after revoke=%+v err=%v", listed, err)
+	}
+}
+
+func TestRunPolicyRejectsImplicitOrUnsupportedScope(t *testing.T) {
+	cfg := config.Default()
+	cfg.FixedPolicy.DatabasePath = filepath.Join(t.TempDir(), "fixed-policies.db")
+	configPath := writeConfig(t, cfg)
+	var stdout, stderr bytes.Buffer
+	for _, args := range [][]string{
+		{"policy", "lock", "-config", configPath, "-hostname", "example.com", "-port", "443", "-path", "direct"},
+		{"policy", "lock", "-config", configPath, "-network-profile", "profile", "-hostname", "example.com", "-port", "443", "-transport", "udp", "-path", "direct"},
+		{"policy", "lock", "-config", configPath, "-network-profile", "profile", "-hostname", "example.com", "-port", "443", "-path", "original"},
+	} {
+		if err := run(args, &stdout, &stderr); err == nil {
+			t.Fatalf("accepted invalid args=%q", args)
+		}
 	}
 }
 
@@ -559,8 +906,40 @@ func TestRunVersion(t *testing.T) {
 	if err := run([]string{"version"}, &stdout, &stderr); err != nil {
 		t.Fatalf("run() error = %v", err)
 	}
-	if !strings.Contains(stdout.String(), "smartroute") {
+	if !strings.Contains(stdout.String(), "smartroute 0.1.0-dev") || !strings.Contains(stdout.String(), "commit=none built=unknown") {
 		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func TestRunDoctorBaselineAndRejectsUnknownPhase(t *testing.T) {
+	cfg := config.Default()
+	addresses := make([]string, 0, 5)
+	for range 5 {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		addresses = append(addresses, listener.Addr().String())
+		_ = listener.Close()
+	}
+	cfg.ListenAddress = addresses[0]
+	cfg.DirectEndpoint = addresses[1]
+	cfg.ProxyEndpoint = addresses[2]
+	cfg.GuardListenAddress = addresses[3]
+	cfg.OriginalEndpoint = addresses[4]
+	configPath := writeConfig(t, cfg)
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"doctor", "-phase", "baseline", "-config", configPath}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	var report struct {
+		Passed bool `json:"passed"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil || !report.Passed {
+		t.Fatalf("report=%+v error=%v output=%s", report, err, stdout.String())
+	}
+	if err := run([]string{"doctor", "-phase", "unknown", "-config", configPath}, &stdout, &stderr); err == nil {
+		t.Fatal("doctor accepted unknown phase")
 	}
 }
 

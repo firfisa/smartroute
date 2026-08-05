@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/firfisa/smartroute/internal/connectionid"
 	"github.com/firfisa/smartroute/internal/learning"
 	"github.com/firfisa/smartroute/internal/model"
 	"github.com/firfisa/smartroute/internal/netrelay"
@@ -22,41 +23,49 @@ import (
 // DecisionEvent is the minimum explainable runtime event emitted by the
 // Phase 0 sidecar. It contains no payload or credentials.
 type DecisionEvent struct {
-	EventType         string             `json:"event_type"`
-	Target            model.Target       `json:"target"`
-	SelectedPath      model.Path         `json:"selected_path"`
-	ReasonCode        string             `json:"reason_code"`
-	PolicyReason      string             `json:"policy_reason,omitempty"`
-	Observation       model.Observation  `json:"observation"`
-	OtherObservation  *model.Observation `json:"other_observation,omitempty"`
-	Committed         bool               `json:"committed"`
-	LearningReason    string             `json:"learning_reason,omitempty"`
-	DurableReason     string             `json:"durable_reason,omitempty"`
-	PolicyState       model.PolicyState  `json:"policy_state,omitempty"`
-	DecisionLatencyMS *int64             `json:"decision_latency_ms,omitempty"`
+	EventType            string             `json:"event_type"`
+	ConnectionID         string             `json:"connection_id,omitempty"`
+	Target               model.Target       `json:"target"`
+	DeclaredBaselinePath model.Path         `json:"declared_baseline_path,omitempty"`
+	SelectedPath         model.Path         `json:"selected_path"`
+	ReasonCode           string             `json:"reason_code"`
+	PolicyReason         string             `json:"policy_reason,omitempty"`
+	Observation          model.Observation  `json:"observation"`
+	OtherObservation     *model.Observation `json:"other_observation,omitempty"`
+	Committed            bool               `json:"committed"`
+	LearningReason       string             `json:"learning_reason,omitempty"`
+	DurableReason        string             `json:"durable_reason,omitempty"`
+	PolicyState          model.PolicyState  `json:"policy_state,omitempty"`
+	DecisionLatencyMS    *int64             `json:"decision_latency_ms,omitempty"`
 }
 
 type DiagnosticEvent struct {
-	EventType         string       `json:"event_type"`
-	Target            model.Target `json:"target"`
-	ReasonCode        string       `json:"reason_code"`
-	FailureClass      string       `json:"failure_class"`
-	DirectFailure     string       `json:"direct_failure,omitempty"`
-	ProxyFailure      string       `json:"proxy_failure,omitempty"`
-	PolicyReason      string       `json:"policy_reason,omitempty"`
-	DecisionLatencyMS *int64       `json:"decision_latency_ms,omitempty"`
+	EventType            string       `json:"event_type"`
+	ConnectionID         string       `json:"connection_id,omitempty"`
+	Target               model.Target `json:"target"`
+	DeclaredBaselinePath model.Path   `json:"declared_baseline_path,omitempty"`
+	ReasonCode           string       `json:"reason_code"`
+	FailureClass         string       `json:"failure_class"`
+	DirectFailure        string       `json:"direct_failure,omitempty"`
+	ProxyFailure         string       `json:"proxy_failure,omitempty"`
+	PolicyReason         string       `json:"policy_reason,omitempty"`
+	DecisionLatencyMS    *int64       `json:"decision_latency_ms,omitempty"`
 }
 
 // RelayOutcomeEvent contains aggregate post-commit transfer metadata only. It
 // never contains payload bytes and does not claim application-level success.
 type RelayOutcomeEvent struct {
-	EventType           string       `json:"event_type"`
-	Target              model.Target `json:"target"`
-	SelectedPath        model.Path   `json:"selected_path"`
-	ClientToRemoteBytes int64        `json:"client_to_remote_bytes"`
-	RemoteToClientBytes int64        `json:"remote_to_client_bytes"`
-	RelayDurationMS     int64        `json:"relay_duration_ms"`
-	Termination         string       `json:"termination"`
+	EventType            string             `json:"event_type"`
+	ConnectionID         string             `json:"connection_id,omitempty"`
+	Target               model.Target       `json:"target"`
+	DeclaredBaselinePath model.Path         `json:"declared_baseline_path,omitempty"`
+	SelectedPath         model.Path         `json:"selected_path"`
+	ClientToRemoteBytes  int64              `json:"client_to_remote_bytes"`
+	RemoteToClientBytes  int64              `json:"remote_to_client_bytes"`
+	ClientToRemoteEnd    netrelay.EndReason `json:"client_to_remote_end"`
+	RemoteToClientEnd    netrelay.EndReason `json:"remote_to_client_end"`
+	RelayDurationMS      int64              `json:"relay_duration_ms"`
+	Termination          string             `json:"termination"`
 }
 
 const (
@@ -82,6 +91,13 @@ type LearningEngine interface {
 	Observe(target model.Target, winner model.Observation, other *model.Observation) (learning.Update, error)
 }
 
+// FixedPathSelector is optional. It identifies an automatic last-known-good
+// path so the sidecar can avoid parallel candidate work while still
+// falling back once before commitment if the learned path has gone stale.
+type FixedPathSelector interface {
+	FixedPath(target model.Target) model.Path
+}
+
 // LearningHealthObserver is optional so routing tests and alternate learning
 // implementations do not need to implement environmental health tracking.
 type LearningHealthObserver interface {
@@ -91,23 +107,28 @@ type LearningHealthObserver interface {
 }
 
 type Server struct {
-	Racer               transport.Racer
-	TLSRacer            *transport.TLSRacer
-	NetworkProfileID    string
-	HandshakeTimeout    time.Duration
-	MaxClientHelloBytes int
-	MinimumCommitStage  model.Stage
-	DirectProbePolicy   DirectProbePolicy
-	Learning            LearningEngine
-	Clock               func() time.Time
-	OnDecision          func(DecisionEvent)
-	OnDiagnostic        func(DiagnosticEvent)
-	OnRelayOutcome      func(RelayOutcomeEvent)
+	Racer                 transport.Racer
+	TLSRacer              *transport.TLSRacer
+	NetworkProfileID      string
+	DeclaredBaselinePath  model.Path
+	HandshakeTimeout      time.Duration
+	MaxClientHelloBytes   int
+	MinimumCommitStage    model.Stage
+	DirectProbePolicy     DirectProbePolicy
+	Learning              LearningEngine
+	Clock                 func() time.Time
+	ConnectionIDGenerator func() (string, error)
+	OnDecision            func(DecisionEvent)
+	OnDiagnostic          func(DiagnosticEvent)
+	OnRelayOutcome        func(RelayOutcomeEvent)
 }
 
 func (s Server) Serve(ctx context.Context, listener net.Listener) error {
 	if listener == nil {
 		return errors.New("listener is required")
+	}
+	if s.DeclaredBaselinePath != "" && s.DeclaredBaselinePath != model.PathDirect && s.DeclaredBaselinePath != model.PathProxy {
+		return errors.New("declared baseline path must be direct or proxy")
 	}
 	if s.HandshakeTimeout <= 0 {
 		s.HandshakeTimeout = 5 * time.Second
@@ -182,8 +203,9 @@ func (s Server) handle(ctx context.Context, inbound net.Conn) {
 		Port:             request.Port,
 		Transport:        model.TransportTCP,
 	}
+	connectionID := s.connectionID()
 	if s.TLSRacer != nil {
-		s.handleTLS(ctx, inbound, target)
+		s.handleTLS(ctx, inbound, target, connectionID)
 		return
 	}
 	result, err := s.Racer.Race(ctx, target)
@@ -199,8 +221,9 @@ func (s Server) handle(ctx context.Context, inbound net.Conn) {
 	if result.Observation.StageReached < minimumCommitStage {
 		if s.OnDecision != nil {
 			s.OnDecision(DecisionEvent{
-				EventType: EventTypeDecision,
-				Target:    target, SelectedPath: result.Observation.Path,
+				EventType:    EventTypeDecision,
+				ConnectionID: connectionID,
+				Target:       target, DeclaredBaselinePath: s.DeclaredBaselinePath, SelectedPath: result.Observation.Path,
 				ReasonCode: ReasonCandidateBelowCommitStage, Observation: result.Observation,
 				Committed: false,
 			})
@@ -214,17 +237,18 @@ func (s Server) handle(ctx context.Context, inbound net.Conn) {
 	_ = inbound.SetDeadline(time.Time{})
 	if s.OnDecision != nil {
 		s.OnDecision(DecisionEvent{
-			EventType: EventTypeDecision,
-			Target:    target, SelectedPath: result.Observation.Path,
+			EventType:    EventTypeDecision,
+			ConnectionID: connectionID,
+			Target:       target, DeclaredBaselinePath: s.DeclaredBaselinePath, SelectedPath: result.Observation.Path,
 			ReasonCode: result.ReasonCode, Observation: result.Observation,
 			OtherObservation: result.OtherObservation,
 			Committed:        true,
 		})
 	}
-	s.relay(ctx, inbound, result.Conn, target, result.Observation.Path)
+	s.relay(ctx, inbound, result.Conn, target, result.Observation.Path, connectionID)
 }
 
-func (s Server) handleTLS(ctx context.Context, inbound net.Conn, target model.Target) {
+func (s Server) handleTLS(ctx context.Context, inbound net.Conn, target model.Target, connectionID string) {
 	// A SOCKS client does not send ClientHello until CONNECT succeeds. This
 	// acknowledgment is local admission only; no remote path is committed yet.
 	if err := socks5.WriteReply(inbound, socks5.ReplySucceeded); err != nil {
@@ -233,7 +257,7 @@ func (s Server) handleTLS(ctx context.Context, inbound net.Conn, target model.Ta
 	hello, err := tlsinspect.ReadClientHello(inbound, s.MaxClientHelloBytes)
 	if err != nil {
 		s.emitDiagnostic(DiagnosticEvent{
-			Target: target, ReasonCode: ReasonClientHelloRejected,
+			ConnectionID: connectionID, Target: target, DeclaredBaselinePath: s.DeclaredBaselinePath, ReasonCode: ReasonClientHelloRejected,
 			FailureClass: classifyClientHelloFailure(ctx, err),
 		})
 		return
@@ -252,13 +276,26 @@ func (s Server) handleTLS(ctx context.Context, inbound net.Conn, target model.Ta
 	durableReason := ""
 	policyState := model.PolicyState("")
 	if privacyDecision.AllowDirect {
-		preferred := model.PathDirect
-		if s.Learning != nil {
-			if learned := s.Learning.PreferredPath(target); learned == model.PathDirect || learned == model.PathProxy {
-				preferred = learned
-			}
+		fixed := model.Path("")
+		if selector, ok := s.Learning.(FixedPathSelector); ok {
+			fixed = selector.FixedPath(target)
 		}
-		result, err = s.TLSRacer.RacePreferred(ctx, target, hello, preferred)
+		if fixed == model.PathDirect || fixed == model.PathProxy {
+			result, err = s.TLSRacer.ConnectPreferredWithFallback(ctx, target, hello, fixed)
+			if fixed == model.PathDirect {
+				policyState = model.StateDirectPreferred
+			} else {
+				policyState = model.StateProxyPreferred
+			}
+		} else {
+			preferred := model.PathDirect
+			if s.Learning != nil {
+				if learned := s.Learning.PreferredPath(target); learned == model.PathDirect || learned == model.PathProxy {
+					preferred = learned
+				}
+			}
+			result, err = s.TLSRacer.RacePreferred(ctx, target, hello, preferred)
+		}
 	} else {
 		learningReason = ReasonLearningSkippedByPolicy
 		result, err = s.TLSRacer.ConnectPath(ctx, target, hello, model.PathProxy)
@@ -270,7 +307,7 @@ func (s Server) handleTLS(ctx context.Context, inbound net.Conn, target model.Ta
 		decisionLatencyMS := nonNegativeMilliseconds(now().Sub(decisionStarted))
 		if !privacyDecision.AllowDirect {
 			event := DiagnosticEvent{
-				Target: target, ReasonCode: ReasonPrivacyProxyPathFailed,
+				ConnectionID: connectionID, Target: target, DeclaredBaselinePath: s.DeclaredBaselinePath, ReasonCode: ReasonPrivacyProxyPathFailed,
 				FailureClass: "proxy_only_tls_failed", DirectFailure: "skipped_by_privacy",
 				PolicyReason:      privacyDecision.ReasonCode,
 				DecisionLatencyMS: &decisionLatencyMS,
@@ -286,7 +323,7 @@ func (s Server) handleTLS(ctx context.Context, inbound net.Conn, target model.Ta
 			return
 		}
 		event := DiagnosticEvent{
-			Target: target, ReasonCode: ReasonTLSCandidatesFailed,
+			ConnectionID: connectionID, Target: target, DeclaredBaselinePath: s.DeclaredBaselinePath, ReasonCode: ReasonTLSCandidatesFailed,
 			FailureClass: "all_tls_candidates_failed", PolicyReason: privacyDecision.ReasonCode,
 			DecisionLatencyMS: &decisionLatencyMS,
 		}
@@ -305,7 +342,7 @@ func (s Server) handleTLS(ctx context.Context, inbound net.Conn, target model.Ta
 	defer result.Conn.Close()
 	if result.Observation.StageReached < model.StageTLS {
 		s.emitDiagnostic(DiagnosticEvent{
-			Target: target, ReasonCode: ReasonCandidateBelowCommitStage,
+			ConnectionID: connectionID, Target: target, DeclaredBaselinePath: s.DeclaredBaselinePath, ReasonCode: ReasonCandidateBelowCommitStage,
 			FailureClass:      "tls_candidate_below_tls_stage",
 			DecisionLatencyMS: &decisionLatencyMS,
 		})
@@ -323,7 +360,7 @@ func (s Server) handleTLS(ctx context.Context, inbound net.Conn, target model.Ta
 		} else {
 			learningReason = update.ReasonCode
 			durableReason = update.DurableReason
-			if update.Applied {
+			if update.Applied && policyState == "" {
 				policyState = update.Policy.State
 			}
 		}
@@ -331,8 +368,9 @@ func (s Server) handleTLS(ctx context.Context, inbound net.Conn, target model.Ta
 	_ = inbound.SetDeadline(time.Time{})
 	if s.OnDecision != nil {
 		s.OnDecision(DecisionEvent{
-			EventType: EventTypeDecision,
-			Target:    target, SelectedPath: result.Observation.Path,
+			EventType:    EventTypeDecision,
+			ConnectionID: connectionID,
+			Target:       target, DeclaredBaselinePath: s.DeclaredBaselinePath, SelectedPath: result.Observation.Path,
 			ReasonCode: result.ReasonCode, PolicyReason: privacyDecision.ReasonCode,
 			Observation:       result.Observation,
 			OtherObservation:  result.OtherObservation,
@@ -343,10 +381,10 @@ func (s Server) handleTLS(ctx context.Context, inbound net.Conn, target model.Ta
 			DecisionLatencyMS: &decisionLatencyMS,
 		})
 	}
-	s.relay(ctx, inbound, result.Conn, target, result.Observation.Path)
+	s.relay(ctx, inbound, result.Conn, target, result.Observation.Path, connectionID)
 }
 
-func (s Server) relay(ctx context.Context, inbound, outbound net.Conn, target model.Target, path model.Path) {
+func (s Server) relay(ctx context.Context, inbound, outbound net.Conn, target model.Target, path model.Path, connectionID string) {
 	if s.OnRelayOutcome == nil {
 		_ = netrelay.Bidirectional(ctx, inbound, outbound)
 		return
@@ -362,10 +400,27 @@ func (s Server) relay(ctx context.Context, inbound, outbound net.Conn, target mo
 		termination = RelayTerminationCanceled
 	}
 	s.OnRelayOutcome(RelayOutcomeEvent{
-		EventType: EventTypeRelayOutcome, Target: target, SelectedPath: path,
+		EventType: EventTypeRelayOutcome, ConnectionID: connectionID, Target: target,
+		DeclaredBaselinePath: s.DeclaredBaselinePath, SelectedPath: path,
 		ClientToRemoteBytes: result.LeftToRightBytes, RemoteToClientBytes: result.RightToLeftBytes,
+		ClientToRemoteEnd: result.LeftToRightEnd, RemoteToClientEnd: result.RightToLeftEnd,
 		RelayDurationMS: nonNegativeMilliseconds(now().Sub(started)), Termination: termination,
 	})
+}
+
+func (s Server) connectionID() string {
+	if s.OnDecision == nil && s.OnDiagnostic == nil && s.OnRelayOutcome == nil {
+		return ""
+	}
+	generate := s.ConnectionIDGenerator
+	if generate == nil {
+		generate = connectionid.New
+	}
+	value, err := generate()
+	if err != nil || connectionid.Validate(value) != nil {
+		return ""
+	}
+	return value
 }
 
 func nonNegativeMilliseconds(duration time.Duration) int64 {

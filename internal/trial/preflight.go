@@ -24,12 +24,7 @@ import (
 )
 
 const DefaultMaxEvidenceAge = 24 * time.Hour
-
-var requiredTestLabScenarios = []string{
-	"direct_candidate_before_head_start",
-	"proxy_recovers_slow_direct",
-	"both_paths_fail",
-}
+const PreflightReportVersion = 1
 
 var requiredMihomoLabScenarios = []string{
 	"forced_direct_loopback",
@@ -61,13 +56,15 @@ type Counts struct {
 }
 
 type Report struct {
-	GeneratedAt              time.Time `json:"generated_at"`
-	Ready                    bool      `json:"ready"`
-	Checks                   []Check   `json:"checks"`
-	Counts                   Counts    `json:"counts"`
-	PersistentStateChanged   bool      `json:"persistent_state_changed"`
-	ActiveClashInspected     bool      `json:"active_clash_inspected"`
-	AuthorizesLiveActivation bool      `json:"authorizes_live_activation"`
+	ReportVersion            int             `json:"report_version"`
+	GeneratedAt              time.Time       `json:"generated_at"`
+	Ready                    bool            `json:"ready"`
+	Checks                   []Check         `json:"checks"`
+	Counts                   Counts          `json:"counts"`
+	PersistentStateChanged   bool            `json:"persistent_state_changed"`
+	ActiveClashInspected     bool            `json:"active_clash_inspected"`
+	AuthorizesLiveActivation bool            `json:"authorizes_live_activation"`
+	AssessmentPlan           *AssessmentPlan `json:"assessment_plan,omitempty"`
 }
 
 type Options struct {
@@ -76,9 +73,13 @@ type Options struct {
 	MihomoLabReportPath          string
 	LearningBackupPath           string
 	AcknowledgeDirectProbes      bool
+	AcknowledgeOriginalBaseline  bool
 	AcknowledgeCleartextHostname bool
 	AcknowledgeEphemeralAuto     bool
 	MaxEvidenceAge               time.Duration
+	TrialSessionID               string
+	AssessmentWindow             time.Duration
+	AssessmentThresholds         AssessmentThresholds
 	Clock                        func() time.Time
 }
 
@@ -94,7 +95,7 @@ func Preflight(ctx context.Context, options Options) Report {
 	if maxAge <= 0 {
 		maxAge = DefaultMaxEvidenceAge
 	}
-	report := Report{GeneratedAt: now}
+	report := Report{ReportVersion: PreflightReportVersion, GeneratedAt: now}
 	add := func(id string, status Status, summary string) {
 		report.Checks = append(report.Checks, Check{ID: id, Status: status, Summary: summary})
 		switch status {
@@ -111,18 +112,34 @@ func Preflight(ctx context.Context, options Options) Report {
 		add("preflight.context", StatusFail, "preflight context is unavailable")
 		return finalize(report)
 	}
+	plan, err := NewAssessmentPlan(options.Config, options.TrialSessionID, now, options.AssessmentWindow, options.AssessmentThresholds)
+	if err != nil {
+		add("assessment.plan", StatusFail, "assessment plan is invalid")
+	} else {
+		report.AssessmentPlan = &plan
+		add("assessment.plan", StatusPass, "assessment session, window, thresholds, and configuration fingerprint are fixed before the trial")
+	}
 	if err := options.Config.Validate(); err != nil {
 		add("config.valid", StatusFail, "configuration validation failed")
 	} else {
 		add("config.valid", StatusPass, "configuration is valid")
 	}
 	checkPrivacy(options, add)
+	checkOriginalBaseline(options, add)
 	checkObservation(options.Config.Observation, options.AcknowledgeCleartextHostname, add)
 	checkLearning(ctx, options, add)
 	checkTestLab(options.TestLabReportPath, now, maxAge, add)
 	checkMihomoLab(options.MihomoLabReportPath, now, maxAge, add)
 	add("safety.active_clash", StatusPass, "active Clash configuration and runtime were not inspected")
 	return finalize(report)
+}
+
+func checkOriginalBaseline(options Options, add func(string, Status, string)) {
+	if options.AcknowledgeOriginalBaseline {
+		add("baseline.original_path", StatusPass, "declared original path was explicitly confirmed against the planned original-policy listener")
+		return
+	}
+	add("baseline.original_path", StatusFail, "original_fallback is only a declared baseline and must be confirmed against the planned original-policy listener")
 }
 
 func finalize(report Report) Report {
@@ -179,6 +196,8 @@ func checkObservation(cfg config.ObservationConfig, cleartextAcknowledged bool, 
 
 func checkLearning(ctx context.Context, options Options, add func(string, Status, string)) {
 	switch options.Config.Learning.Mode {
+	case learning.ModeAuto:
+		add("learning.mode", StatusPass, "automatic last-known-good routing is enabled; the first ready path is remembered without per-target approval or TTL")
 	case learning.ModeShadow:
 		add("learning.mode", StatusPass, "learning is in non-authoritative shadow mode")
 	case learning.ModeEphemeralAuto:
@@ -187,6 +206,8 @@ func checkLearning(ctx context.Context, options Options, add func(string, Status
 		} else {
 			add("learning.mode", StatusFail, "ephemeral-auto mode requires explicit acknowledgment")
 		}
+	case learning.ModeDurableAuto:
+		add("learning.mode", StatusWarn, "legacy durable-auto spelling is enabled; use auto for new configurations")
 	default:
 		add("learning.mode", StatusFail, "learning mode is unsupported")
 	}
@@ -256,7 +277,7 @@ func checkTestLab(path string, now time.Time, maxAge time.Duration, add func(str
 	}
 	valid := report.ReportVersion == testlab.CurrentReportVersion && report.Passed && len(report.Scenarios) > 0 &&
 		report.Isolation.LoopbackOnly && report.Isolation.EphemeralPortsOnly && !report.Isolation.ExternalNetwork &&
-		!report.Isolation.ClashFilesRead && !report.Isolation.ClashFilesWritten && testScenariosComplete(report.Scenarios) &&
+		!report.Isolation.ClashFilesRead && !report.Isolation.ClashFilesWritten && testlab.ScenariosComplete(report.Scenarios) &&
 		fresh(report.GeneratedAt, now, maxAge)
 	if !valid {
 		add("lab.testlab", StatusFail, "Test Lab report is stale or does not prove all isolation and scenario gates")
@@ -339,17 +360,6 @@ func containsToken(value, expected string) bool {
 		}
 	}
 	return false
-}
-
-func testScenariosComplete(scenarios []testlab.ScenarioResult) bool {
-	names := make(map[string]bool, len(scenarios))
-	for _, scenario := range scenarios {
-		if !scenario.Passed || names[scenario.Name] {
-			return false
-		}
-		names[scenario.Name] = true
-	}
-	return exactNames(names, requiredTestLabScenarios)
 }
 
 func mihomoScenariosComplete(scenarios []mihomolab.ScenarioResult) bool {

@@ -20,7 +20,7 @@ import (
 
 const (
 	testHostname         = "echo.test"
-	CurrentReportVersion = 1
+	CurrentReportVersion = 2
 )
 
 type Report struct {
@@ -40,19 +40,21 @@ type IsolationResult struct {
 }
 
 type ScenarioResult struct {
-	Name            string     `json:"name"`
-	ExpectedPath    model.Path `json:"expected_path,omitempty"`
-	SelectedPath    model.Path `json:"selected_path,omitempty"`
-	ReasonCode      string     `json:"reason_code,omitempty"`
-	DirectAttempts  int        `json:"direct_attempts"`
-	ProxyAttempts   int        `json:"proxy_attempts"`
-	DomainPreserved bool       `json:"domain_preserved"`
-	PayloadVerified bool       `json:"payload_verified"`
-	FailureExpected bool       `json:"failure_expected"`
-	FailureObserved bool       `json:"failure_observed"`
-	ElapsedMS       int64      `json:"elapsed_ms"`
-	Passed          bool       `json:"passed"`
-	FailureReason   string     `json:"failure_reason,omitempty"`
+	Name              string     `json:"name"`
+	ExpectedPath      model.Path `json:"expected_path,omitempty"`
+	SelectedPath      model.Path `json:"selected_path,omitempty"`
+	ReasonCode        string     `json:"reason_code,omitempty"`
+	DirectAttempts    int        `json:"direct_attempts"`
+	ProxyAttempts     int        `json:"proxy_attempts"`
+	DomainPreserved   bool       `json:"domain_preserved"`
+	PayloadVerified   bool       `json:"payload_verified"`
+	ReadinessVerified bool       `json:"readiness_verified,omitempty"`
+	LearnedPath       model.Path `json:"learned_path,omitempty"`
+	FailureExpected   bool       `json:"failure_expected"`
+	FailureObserved   bool       `json:"failure_observed"`
+	ElapsedMS         int64      `json:"elapsed_ms"`
+	Passed            bool       `json:"passed"`
+	FailureReason     string     `json:"failure_reason,omitempty"`
 }
 
 type scenarioSpec struct {
@@ -76,7 +78,16 @@ type EchoTarget struct {
 }
 
 func StartEchoTarget(ctx context.Context) (*EchoTarget, error) {
-	server, err := startEchoServer(ctx)
+	return StartEchoTargetOn(ctx, "127.0.0.1")
+}
+
+// StartEchoTargetOn starts the synthetic echo target on one explicit
+// loopback address and an OS-assigned port.
+func StartEchoTargetOn(ctx context.Context, host string) (*EchoTarget, error) {
+	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+		return nil, errors.New("echo target host must be a literal loopback address")
+	}
+	server, err := startEchoServerOn(ctx, host)
 	if err != nil {
 		return nil, err
 	}
@@ -150,10 +161,79 @@ func RunAll(ctx context.Context) (Report, error) {
 		report.Scenarios = append(report.Scenarios, result)
 		report.Passed = report.Passed && result.Passed
 	}
+	automaticResults, err := runAutomaticLearningScenarios(ctx)
+	if err != nil {
+		report.Passed = false
+		return report, fmt.Errorf("automatic learning scenarios: %w", err)
+	}
+	report.Scenarios = append(report.Scenarios, automaticResults...)
+	for _, result := range automaticResults {
+		report.Passed = report.Passed && result.Passed
+	}
+	report.Passed = report.Passed && ScenariosComplete(report.Scenarios)
 	if !report.Passed {
 		return report, errors.New("one or more isolated test-lab scenarios failed")
 	}
 	return report, nil
+}
+
+// ScenariosComplete validates the exact machine-readable Test Lab contract.
+// A top-level passed flag alone is never sufficient preflight evidence.
+func ScenariosComplete(scenarios []ScenarioResult) bool {
+	if len(scenarios) != 7 {
+		return false
+	}
+	seen := make(map[string]struct{}, len(scenarios))
+	for _, scenario := range scenarios {
+		if _, duplicate := seen[scenario.Name]; duplicate || !scenario.Passed || scenario.FailureReason != "" {
+			return false
+		}
+		seen[scenario.Name] = struct{}{}
+		switch scenario.Name {
+		case "direct_candidate_before_head_start":
+			if scenario.ExpectedPath != model.PathDirect || scenario.SelectedPath != model.PathDirect || scenario.ReasonCode != transport.ReasonDirectCandidateBeforeHeadStart ||
+				scenario.DirectAttempts != 1 || scenario.ProxyAttempts != 0 || !scenario.DomainPreserved || !scenario.PayloadVerified ||
+				scenario.FailureExpected || scenario.FailureObserved {
+				return false
+			}
+		case "proxy_recovers_slow_direct":
+			if scenario.ExpectedPath != model.PathProxy || scenario.SelectedPath != model.PathProxy || scenario.ReasonCode != transport.ReasonProxyCandidateWon ||
+				scenario.DirectAttempts != 1 || scenario.ProxyAttempts != 1 || !scenario.DomainPreserved || !scenario.PayloadVerified ||
+				scenario.FailureExpected || scenario.FailureObserved {
+				return false
+			}
+		case "both_paths_fail":
+			if scenario.SelectedPath != "" || scenario.DirectAttempts != 1 || scenario.ProxyAttempts != 1 ||
+				!scenario.DomainPreserved || scenario.PayloadVerified || !scenario.FailureExpected || !scenario.FailureObserved {
+				return false
+			}
+		case "auto_first_ready_remembered":
+			if !automaticScenarioMatches(scenario, model.PathDirect, transport.ReasonDirectCandidateBeforeHeadStart, model.PathDirect, 1, 0) {
+				return false
+			}
+		case "auto_reuses_direct_without_proxy":
+			if !automaticScenarioMatches(scenario, model.PathDirect, transport.ReasonDurablePolicySelected, model.PathDirect, 1, 0) {
+				return false
+			}
+		case "auto_fallback_overwrites_proxy":
+			if !automaticScenarioMatches(scenario, model.PathProxy, transport.ReasonDurablePolicyFallback, model.PathProxy, 1, 1) {
+				return false
+			}
+		case "auto_reuses_proxy_without_direct":
+			if !automaticScenarioMatches(scenario, model.PathProxy, transport.ReasonDurablePolicySelected, model.PathProxy, 0, 1) {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func automaticScenarioMatches(scenario ScenarioResult, selected model.Path, reason string, learned model.Path, directAttempts, proxyAttempts int) bool {
+	return scenario.ExpectedPath == selected && scenario.SelectedPath == selected && scenario.ReasonCode == reason && scenario.LearnedPath == learned &&
+		scenario.DirectAttempts == directAttempts && scenario.ProxyAttempts == proxyAttempts && scenario.DomainPreserved &&
+		scenario.ReadinessVerified && !scenario.PayloadVerified && !scenario.FailureExpected && !scenario.FailureObserved
 }
 
 func runScenario(parent context.Context, spec scenarioSpec) (ScenarioResult, error) {
@@ -184,7 +264,7 @@ func runScenario(parent context.Context, spec scenarioSpec) (ScenarioResult, err
 	defer listener.Close()
 	events := make(chan sidecar.DecisionEvent, 1)
 	server := sidecar.Server{
-		NetworkProfileID: "isolated-test-lab",
+		NetworkProfileID: "isolated-test-lab", DeclaredBaselinePath: model.PathProxy,
 		HandshakeTimeout: time.Second,
 		Racer: transport.Racer{
 			Direct: transport.SOCKS5Dialer{
@@ -268,7 +348,11 @@ type echoServer struct {
 }
 
 func startEchoServer(parent context.Context) (*echoServer, error) {
-	listener, err := listenLoopback()
+	return startEchoServerOn(parent, "127.0.0.1")
+}
+
+func startEchoServerOn(parent context.Context, host string) (*echoServer, error) {
+	listener, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
 	if err != nil {
 		return nil, fmt.Errorf("listen echo target: %w", err)
 	}
@@ -357,6 +441,12 @@ func (g *fakeGateway) Snapshot() (attempts int, lastHost string) {
 	return g.attempts, g.lastHost
 }
 
+func (g *fakeGateway) setBehavior(behavior gatewayBehavior) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.behavior = behavior
+}
+
 func (g *fakeGateway) serve(ctx context.Context) {
 	go func() {
 		<-ctx.Done()
@@ -380,10 +470,11 @@ func (g *fakeGateway) handle(ctx context.Context, inbound net.Conn) {
 	g.mu.Lock()
 	g.attempts++
 	g.lastHost = request.Host
+	behavior := g.behavior
 	g.mu.Unlock()
 
-	if g.behavior.delay > 0 {
-		timer := time.NewTimer(g.behavior.delay)
+	if behavior.delay > 0 {
+		timer := time.NewTimer(behavior.delay)
 		defer timer.Stop()
 		select {
 		case <-timer.C:
@@ -391,7 +482,7 @@ func (g *fakeGateway) handle(ctx context.Context, inbound net.Conn) {
 			return
 		}
 	}
-	if g.behavior.fail {
+	if behavior.fail {
 		_ = socks5.WriteReply(inbound, socks5.ReplyConnectionRefused)
 		return
 	}
